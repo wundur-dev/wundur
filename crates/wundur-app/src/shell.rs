@@ -3588,7 +3588,7 @@ fn folder_name(p: &Path) -> String {
 
 /// The Files header's folder: its icon and name (cut short before anything else in the row
 /// would push it out), the full path on hover; lit while its popover is open.
-#[derive(IntoElement)]
+#[derive(gpui_kit::IntoElement)]
 struct FolderChip {
     name: SharedString,
     hint: SharedString,
