@@ -92,9 +92,65 @@ pub fn status(host: &dyn Host, root: &Path) -> HashMap<PathBuf, Mark> {
     parse(&out, root, &prefix)
 }
 
+/// How a run of lines differs from the last commit, for an editor's change bars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineChange {
+    Added,
+    Modified,
+    /// Lines were removed here (the mark sits between lines).
+    Deleted,
+}
+
+/// A run of changed lines in the text now: zero-based lines `lines` (empty for a deletion,
+/// at the line it was before).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineMark {
+    pub change: LineChange,
+    pub lines: std::ops::Range<usize>,
+}
+
+/// What `current` changed from `base` (the file at the last commit), line by line. Gives up
+/// on the smallest diff after a fifth of a second, so typing in a big file never stalls.
+pub fn line_marks(base: &str, current: &str) -> Vec<LineMark> {
+    use similar::DiffOp;
+    let diff = similar::TextDiff::configure().timeout(std::time::Duration::from_millis(200)).diff_lines(base, current);
+    diff.ops()
+        .iter()
+        .filter_map(|op| match *op {
+            DiffOp::Equal { .. } => None,
+            DiffOp::Insert { new_index, new_len, .. } => Some(LineMark { change: LineChange::Added, lines: new_index..new_index + new_len }),
+            DiffOp::Delete { new_index, .. } => Some(LineMark { change: LineChange::Deleted, lines: new_index..new_index }),
+            DiffOp::Replace { new_index, new_len, .. } => Some(LineMark { change: LineChange::Modified, lines: new_index..new_index + new_len }),
+        })
+        .collect()
+}
+
+/// The file at `path` as it is in the last commit of the repository holding `root`; `None`
+/// when it is not in one, or was never committed.
+pub fn head_text(host: &dyn Host, root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let out = host.git(root, &["show", &format!("HEAD:./{}", rel.display())])?;
+    Some(String::from_utf8_lossy(&out).replace("\r\n", "\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_are_marked_added_modified_and_deleted() {
+        let base = "a\nb\nc\nd\ne\n";
+        let now = "a\nB\nc\nnew\nd\n";
+        assert_eq!(
+            line_marks(base, now),
+            [
+                LineMark { change: LineChange::Modified, lines: 1..2 },
+                LineMark { change: LineChange::Added, lines: 3..4 },
+                LineMark { change: LineChange::Deleted, lines: 5..5 },
+            ]
+        );
+        assert!(line_marks(base, base).is_empty());
+    }
 
     #[test]
     fn reads_porcelain_with_renames_and_new_files() {
