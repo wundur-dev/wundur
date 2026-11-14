@@ -246,6 +246,27 @@ pub fn session_rows(current: &str, changes: &[FileDiff]) -> Vec<DiffRow> {
     file_rows(&undo(&current, changes), &current)
 }
 
+/// What `changes` (oldest first) did to the file at `path` (as the person reads it, relative
+/// to the project), given its content now: a git-style unified patch with three lines of
+/// context, for a patch viewer. Empty when nothing differs.
+pub fn session_patch(path: &str, current: &str, changes: &[FileDiff]) -> String {
+    let current = current.replace("\r\n", "\n");
+    unified_patch(path, &undo(&current, changes), &current)
+}
+
+/// `new` against `old` as a git-style unified patch of the file `path`; empty when they are
+/// the same. Gives up on the smallest diff after a second rather than stalling.
+pub fn unified_patch(path: &str, old: &str, new: &str) -> String {
+    if old == new {
+        return String::new();
+    }
+    let diff = similar::TextDiff::configure()
+        .timeout(std::time::Duration::from_secs(1))
+        .diff_lines(old, new);
+    let body = diff.unified_diff().context_radius(3).header(&format!("a/{path}"), &format!("b/{path}")).to_string();
+    format!("diff --git a/{path} b/{path}\n{body}")
+}
+
 /// Where each run of changed rows starts, to step from change to change.
 pub fn change_starts(rows: &[DiffRow]) -> Vec<usize> {
     (0..rows.len())
@@ -318,6 +339,14 @@ fn find_block(lines: &[&str], block: &[&str], hint: Option<usize>) -> Option<usi
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_change_becomes_a_unified_patch() {
+        let patch = unified_patch("src/a.rs", "one\ntwo\nthree\n", "one\n2\nthree\n");
+        assert!(patch.starts_with("diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@"));
+        assert!(patch.contains("\n-two\n+2\n"));
+        assert_eq!(unified_patch("x", "same\n", "same\n"), "");
+    }
 
     #[test]
     fn structured_patch() {
