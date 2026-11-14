@@ -382,6 +382,11 @@ impl Workspace {
         &self.root
     }
 
+    /// The Files panel's tree (for the actions in its header).
+    pub fn files(&self) -> &Entity<FileTree> {
+        &self.files
+    }
+
     pub fn host(&self) -> Arc<dyn Host> {
         self.host.clone()
     }

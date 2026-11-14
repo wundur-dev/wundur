@@ -39,6 +39,9 @@ const LIST_MIN: f32 = 200.;
 const LIST_MAX: f32 = 520.;
 /// The tool panels' share of the column under the sessions, to start with.
 const TOOLS_HEIGHT: f32 = 340.;
+/// Under this width of the left column the Files header drops its "Files" heading so the
+/// folder keeps its room.
+const FILES_HEADER_NARROW: f32 = 250.;
 /// The toolbar along the window's left edge (Projects, Inbox, Settings).
 const TOOLBAR_WIDTH: f32 = 44.;
 /// The inbox's list, over the content beside the toolbar.
@@ -2349,38 +2352,7 @@ impl Shell {
             });
         });
         let tabs = simple_strip(&self.tools_strip, "tool-tab", &labels, picked, Joined::Top, palette, crate::dock_skin::BOTTOM_STRIP, None, select);
-        let on_files = tools.get(picked).is_some_and(|(n, _)| *n == "Files");
         let view = tools.into_iter().nth(picked).map(|(_, v)| v)?;
-        // Over the file tree: the folder it shows and its branch.
-        let root_line = on_files.then(|| {
-            let row = &self.tabs[self.active].row;
-            let muted = cx.theme().muted_foreground;
-            div()
-                .flex_none()
-                .px(px(12.))
-                .pt(px(6.))
-                .pb(px(4.))
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(Icon::new(gpui_kit::assets::IconName::Folder).small().text_color(muted))
-                .child(div().min_w_0().truncate().text_sm().font_weight(FontWeight::MEDIUM).text_color(cx.theme().foreground).child(row.folder.clone()))
-                .children(row.branch.clone().map(|b| {
-                    div()
-                        .flex_none()
-                        .px(px(6.))
-                        .py(px(1.))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .rounded(px(5.))
-                        .bg(cx.theme().ring.opacity(0.12))
-                        .text_size(px(11.))
-                        .text_color(cx.theme().ring)
-                        .child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall())
-                        .child(b)
-                }))
-        });
         Some(
             div()
                 .size_full()
@@ -2388,7 +2360,6 @@ impl Shell {
                 .flex_col()
                 .bg(content)
                 .child(title)
-                .children(root_line)
                 .child(div().flex_1().min_h_0().child(view))
                 .child(div().flex_none().h(px(crate::dock_skin::STRIP_GAP_ABOVE)))
                 .child(tabs)
@@ -2398,13 +2369,19 @@ impl Shell {
     }
 
     /// The tool panels' title bar: the panel's name, and a button that hides them (⌄) or, while
-    /// hidden, shows them again (⌃; the whole bar does too).
+    /// hidden, shows them again (⌃; the whole bar does too). On Files, the same row carries the
+    /// folder it shows (a click gives its full path), its git branch and a "…" menu.
     fn tools_title(&self, name: &'static str, open: bool, cx: &mut Context<Self>) -> AnyElement {
+        let files = (name == "Files").then(|| self.files_header(open, cx)).flatten();
         let theme = cx.theme();
         // A heading as the list's ("Projects"): the same size and weight on the column's own
         // ground, under a clear line between the two.
         let (ground, hover, fg) = (crate::theme::tool_ground(cx), theme.secondary_hover, crate::theme::list_text(cx));
         let line = crate::sheet_tabs::mix(theme.border, theme.foreground, 0.18);
+        let muted = theme.muted_foreground;
+        // A narrow column: the folder matters more than the panel's name (its tab says it).
+        let narrow = cx.global::<AppSettings>().0.borrow().layout.list_width < FILES_HEADER_NARROW;
+        let heading = files.is_none() || !narrow;
         div()
             .id("tools-title")
             .flex_none()
@@ -2419,11 +2396,182 @@ impl Shell {
             // As a project's row folds: the chevron at the left, the whole heading a click.
             .cursor_pointer()
             .hover(|d| d.bg(hover))
-            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(if open { "Hide the panels (Cmd+B)" } else { "Show the panels (Cmd+B)" }).build(w, cx))
             .on_click(cx.listener(|s, _, _, cx| s.toggle_tools(cx)))
-            .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).small().text_color(cx.theme().muted_foreground))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child(name))
+            // The chevron and the name say what a click does (not the folder and branch beside them).
+            .child(
+                div()
+                    .id("tools-title-fold")
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .map(|d| if files.is_none() { d.flex_1() } else { d.flex_none() })
+                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(if open { "Hide the panels (Cmd+B)" } else { "Show the panels (Cmd+B)" }).build(w, cx))
+                    .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).small().text_color(muted))
+                    .when(heading, |d| d.child(div().min_w_0().truncate().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child(name))),
+            )
+            .when_some(files, |d, files| {
+                d.when(heading, |d| d.child(div().flex_none().w(px(1.)).h(px(14.)).bg(line)))
+                    // Its controls are not the heading: a press on them leaves the panels as they are.
+                    .child(
+                        div()
+                            .id("files-header-controls")
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(files),
+                    )
+            })
             .into_any_element()
+    }
+
+    /// The Files header's own part: the folder (a popover with its full path, Copy path and,
+    /// on this machine, Reveal in Finder), then at the right the branch (shown, not switched)
+    /// and a "…" menu with what the tree's own menu offers for its top folder.
+    fn files_header(&self, open: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::popover::Popover;
+        let ws = self.active_workspace()?;
+        let row = &self.tabs[self.active].row;
+        let tree = ws.read(cx).files().downgrade();
+        let theme = cx.theme();
+        let (fg, muted, border) = (theme.foreground, theme.muted_foreground, theme.border);
+        let root = row.root.clone();
+        let path = root.display().to_string();
+        let (remote, host) = (row.remote, row.host.clone());
+        let hint: SharedString = match &host {
+            Some(h) => format!("{h}: {path}").into(),
+            None => path.clone().into(),
+        };
+        let folder = Popover::new("files-folder")
+            // Panels hidden, the header sits at the bottom: the popover opens above it.
+            .anchor(if open { Anchor::TopLeft } else { Anchor::BottomLeft })
+            .trigger(
+                FolderChip { name: row.folder.clone().into(), hint, open: false },
+            )
+            .trigger_style({
+                let mut st = StyleRefinement::default();
+                st.min_size.width = Some(px(0.).into());
+                st.flex_shrink = Some(1.);
+                st
+            })
+            .content(move |_, _, cx| {
+                let theme = cx.theme();
+                let (muted, fg, hover, line) = (theme.muted_foreground, theme.foreground, theme.secondary_hover, theme.border);
+                let item = |id: &'static str, icon: IconName, label: &'static str| {
+                    div()
+                        .id(id)
+                        .px_2()
+                        .py(px(5.))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(hover))
+                        .text_sm()
+                        .text_color(fg)
+                        .child(Icon::new(icon).small().text_color(muted))
+                        .child(label)
+                };
+                let copy = path.clone();
+                let reveal = root.clone();
+                div()
+                    .w(px(280.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().px_2().text_xs().text_color(muted).child(match &host {
+                        Some(h) => format!("Folder on {h}"),
+                        None => "Folder".to_string(),
+                    }))
+                    .child(
+                        div()
+                            .px_2()
+                            .pb_1()
+                            .text_sm()
+                            .child(TextView::markdown("files-folder-path", crate::tasks::escape_markdown(&path)).selectable(true)),
+                    )
+                    .child(div().h(px(1.)).mx_1().bg(line))
+                    .child(item("files-folder-copy", IconName::Copy, "Copy path").on_click(cx.listener(move |state, _, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                        state.dismiss(window, cx);
+                    })))
+                    // Finder sees only this machine's folders.
+                    .when(!remote, |d| {
+                        d.child(item("files-folder-reveal", IconName::FolderOpen, "Reveal in Finder").on_click(cx.listener(move |state, _, window, cx| {
+                            cx.reveal_path(&reveal);
+                            state.dismiss(window, cx);
+                        })))
+                    })
+            });
+        // The branch, as the row under the title showed it: shown, not a switch (Wundur does
+        // not check out branches), so no chevron promising a menu. It gives way first.
+        let branch = row.branch.clone().map(|b| {
+            let full: SharedString = format!("Branch: {b}").into();
+            div()
+                .id("files-branch")
+                .ml_auto()
+                .min_w(px(46.))
+                .map(|mut d| {
+                    d.style().flex_shrink = Some(1000.);
+                    d
+                })
+                .h(px(24.))
+                .px(px(7.))
+                .flex()
+                .items_center()
+                .gap_1()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(border)
+                .text_size(px(12.))
+                .text_color(fg)
+                .cursor_default()
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(w, cx))
+                .child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall().text_color(muted).flex_none())
+                .child(div().min_w_0().truncate().child(b))
+        });
+        let has_branch = branch.is_some();
+        let more = Button::new("files-more")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(IconName::Ellipsis))
+            .tooltip("More")
+            .flex_none()
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let item = |label: &'static str, icon: gpui_kit::assets::IconName, folder: bool| {
+                    let tree = tree.clone();
+                    PopupMenuItem::new(label).icon(Icon::new(icon)).on_click(move |_, window, cx| {
+                        let _ = tree.update(cx, |t, cx| {
+                            let root = t.root().to_path_buf();
+                            t.start_create(root, folder, window, cx)
+                        });
+                    })
+                };
+                let t = tree.clone();
+                menu.item(item("New File…", gpui_kit::assets::IconName::FilePlus, false))
+                    .item(item("New Folder…", gpui_kit::assets::IconName::FolderPlus, true))
+                    .separator()
+                    .item(PopupMenuItem::new("Refresh").icon(Icon::new(IconName::RefreshCw)).on_click(move |_, _, cx| {
+                        let _ = t.update(cx, |t, cx| t.refresh(cx));
+                    }))
+            });
+        Some(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(folder)
+                // The branch and the menu at the right end (a folder without git: the menu alone).
+                .children(branch)
+                .child(div().flex_none().when(!has_branch, |d| d.ml_auto()).child(more))
+                .into_any_element(),
+        )
     }
 
     /// The tool panels while hidden: their title bar alone, under the list.
@@ -3416,6 +3564,52 @@ pub fn default_folder(cx: &App) -> PathBuf {
 
 fn folder_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string())
+}
+
+/// The Files header's folder: its icon and name (cut short before anything else in the row
+/// would push it out), the full path on hover; lit while its popover is open.
+#[derive(IntoElement)]
+struct FolderChip {
+    name: SharedString,
+    hint: SharedString,
+    open: bool,
+}
+
+impl gpui_kit::component::Selectable for FolderChip {
+    fn selected(mut self, selected: bool) -> Self {
+        self.open = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.open
+    }
+}
+
+impl RenderOnce for FolderChip {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, hover, lit) = (theme.muted_foreground, theme.secondary_hover, theme.ring.opacity(if theme.is_dark() { 0.18 } else { 0.10 }));
+        let hint = self.hint;
+        div()
+            .id("files-folder-button")
+            .min_w_0()
+            .h(px(24.))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_size(px(14.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(crate::theme::list_text(cx))
+            .map(|d| if self.open { d.bg(lit) } else { d.hover(|d| d.bg(hover)) })
+            // Open, the popover shows the path already.
+            .when(!self.open, |d| d.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(w, cx)))
+            .child(Icon::new(IconName::Folder).small().text_color(muted).flex_none())
+            .child(div().min_w_0().truncate().child(self.name))
+    }
 }
 
 /// The repository a folder belongs to: its top folder and the branch checked out there.
