@@ -14,6 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position};
 use gpui_kit::component::Sizable;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::diff::{Diff, DiffFile, DiffHunkSeparator, DiffLinePosition, DiffMode, DiffSide, DiffState};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, WindowExt};
 use gpui_kit::prelude::*;
@@ -102,7 +103,28 @@ pub struct DocPanel {
     diff_line: Option<u32>,
     /// The pointer was pressed on the diff's overview strip and not let go: moving drags.
     overview_drag: Rc<Cell<bool>>,
+    /// How the diff shows: the whole file (with the overview strip), or only the changes in
+    /// gpui-kit's patch viewer, in one column or side by side.
+    diff_look: DiffLook,
+    /// The patch viewer's state, once the diff is worked out.
+    review: Option<Entity<DiffState>>,
     _sub: Option<Subscription>,
+}
+
+/// How a diff is shown (the last choice is kept for the next diff opened).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiffLook {
+    #[default]
+    File,
+    Changes,
+    Split,
+}
+
+struct LastDiffLook(DiffLook);
+impl Global for LastDiffLook {}
+
+fn last_diff_look(cx: &App) -> DiffLook {
+    cx.try_global::<LastDiffLook>().map_or(DiffLook::default(), |l| l.0)
 }
 
 /// The whole file as diff rows, and where each change starts.
@@ -145,6 +167,8 @@ impl DocPanel {
             diff: None,
             diff_line: None,
             overview_drag: Rc::default(),
+            diff_look: last_diff_look(cx),
+            review: None,
             _sub: None,
         };
         this.load(window, cx);
@@ -447,13 +471,45 @@ impl DocPanel {
         }
         let text = editor.read(cx).value().to_string();
         let changes = self.changes.clone();
+        let rel = self.relative();
         cx.spawn_in(window, async move |this, cx| {
-            let rows = cx
-                .background_spawn(async move { diff::session_rows(&text, &changes) })
+            let (rows, patch) = cx
+                .background_spawn(async move { (diff::session_rows(&text, &changes), diff::session_patch(&rel, &text, &changes)) })
                 .await;
-            let _ = this.update(cx, |doc, cx| doc.diff_ready(rows, cx));
+            let _ = this.update(cx, |doc, cx| {
+                doc.review_ready(&patch, cx);
+                doc.diff_ready(rows, cx);
+            });
         })
         .detach();
+    }
+
+    /// The patch viewer's files from `patch` (the session's changes to this file).
+    fn review_ready(&mut self, patch: &str, cx: &mut Context<Self>) {
+        let language = files::language_for(&self.path);
+        let files: Vec<DiffFile> = DiffFile::parse(patch).unwrap_or_default().into_iter().map(|f| f.with_language(language)).collect();
+        match &self.review {
+            Some(state) => state.update(cx, |s, cx| s.set_files(files, cx)),
+            None => {
+                let mode = if self.diff_look == DiffLook::Split { DiffMode::Split } else { DiffMode::Unified };
+                self.review = Some(cx.new(|cx| DiffState::new(files, cx).with_mode(mode)));
+            }
+        }
+        if let (Some(line), Some(state)) = (self.diff_line, &self.review) {
+            let at = DiffLinePosition::new(self.relative(), DiffSide::Modified, line as usize);
+            state.update(cx, |s, cx| s.scroll_to_line(at, cx));
+        }
+    }
+
+    /// Show the diff as `look`, and keep it for the next diff opened.
+    fn set_diff_look(&mut self, look: DiffLook, cx: &mut Context<Self>) {
+        self.diff_look = look;
+        cx.set_global(LastDiffLook(look));
+        if let Some(state) = &self.review {
+            let mode = if look == DiffLook::Split { DiffMode::Split } else { DiffMode::Unified };
+            state.update(cx, |s, cx| s.set_mode(mode, cx));
+        }
+        cx.notify();
     }
 
     fn diff_ready(&mut self, rows: Vec<DiffRow>, cx: &mut Context<Self>) {
@@ -483,6 +539,12 @@ impl DocPanel {
 
     /// Step to the next change (`forward`) or the one before, wrapping around.
     fn step_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.diff_look != DiffLook::File {
+            if let Some(state) = &self.review {
+                state.update(cx, |s, cx| if forward { s.next_change(cx) } else { s.previous_change(cx) });
+            }
+            return;
+        }
         let Some(view) = self.diff.as_mut() else {
             return;
         };
@@ -610,6 +672,17 @@ impl DocPanel {
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         if self.diff_mode && matches!(self.body, Body::Text(_)) {
+            if self.diff_look != DiffLook::File
+                && let Some(state) = &self.review
+                && self.diff.as_ref().is_some_and(|v| !v.starts.is_empty())
+            {
+                // Only the changes, in the patch viewer (its own scrolling, folds and
+                // syntax highlighting); the file's name is in the panel header already.
+                return div()
+                    .size_full()
+                    .child(Diff::new(state).header_visible(false).hunk_separator(DiffHunkSeparator::LineInfo).size_full())
+                    .into_any_element();
+            }
             return self.render_diff(cx);
         }
         match &self.body {
@@ -890,7 +963,7 @@ impl DocPanel {
     /// The path row above the content, with the markdown switch.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (muted, border, hover) = (theme.muted_foreground, theme.border, theme.secondary_hover);
+        let (muted, border, hover, fg) = (theme.muted_foreground, theme.border, theme.secondary_hover, theme.foreground);
         let (warn, green, red) = (theme.warning, theme.green, theme.red);
         let preview = self.preview;
         div()
@@ -938,8 +1011,28 @@ impl DocPanel {
                         .child(label)
                         .on_click(cx.listener(move |doc, _, _, cx| doc.step_change(forward, cx)))
                 };
+                let look = |id: &'static str, label: &'static str, which: DiffLook| {
+                    div()
+                        .id(id)
+                        .px_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .when(self.diff_look == which, |d| d.bg(hover).text_color(fg))
+                        .hover(|d| d.bg(hover))
+                        .child(label)
+                        .on_click(cx.listener(move |doc, _, _, cx| doc.set_diff_look(which, cx)))
+                };
                 d.child(div().text_color(green).child(format!("+{added}")))
                     .child(div().text_color(red).child(format!("-{removed}")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(look("look-file", "Whole file", DiffLook::File))
+                            .child(look("look-changes", "Changes", DiffLook::Changes))
+                            .child(look("look-split", "Side by side", DiffLook::Split)),
+                    )
                     .when(changes > 1, |d| {
                         d.child(step("diff-prev", "Previous", false)).child(step(
                             "diff-next",
