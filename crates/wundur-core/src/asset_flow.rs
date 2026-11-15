@@ -309,6 +309,67 @@ impl Asset {
     }
 }
 
+// ----- the asset's folder in the project -----
+
+/// A hosted asset's record in its folder (`assets/<kind>/<name>/hosted.json`): which asset on
+/// the service it is, where it was started, and what was saved here. The service's own record
+/// (its sets and models) is fetched again when the card opens; what's in the project is what
+/// was saved.
+pub const RECORD: &str = "hosted.json";
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Record {
+    /// The asset's id on the service.
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub description: String,
+    pub fields: BTreeMap<String, Value>,
+    /// The chat it was started in, to put its card back there.
+    pub origin: Option<crate::assets::Origin>,
+    /// The views saved for each set, by set id: files in the folder.
+    pub views: BTreeMap<String, Vec<String>>,
+    /// The model attempt imported, and the files it brought.
+    pub imported: Option<String>,
+    pub files: Vec<String>,
+    /// A rig being made (its id), and the rigged files once done.
+    pub rig: Option<String>,
+    pub rigged: Vec<String>,
+}
+
+/// The record in `dir`, if it is a hosted asset's folder.
+pub fn load(dir: &std::path::Path) -> Option<Record> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(RECORD)).ok()?).ok()
+}
+
+/// Write the record in `dir`.
+pub fn save(dir: &std::path::Path, record: &Record) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(RECORD), serde_json::to_string_pretty(record).unwrap_or_default())
+}
+
+/// A file name for `label` (a view's "Front"): lowercase, safe, with `ext`.
+pub fn file_name(label: &str, ext: &str) -> String {
+    let base: String = label.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let base = base.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    format!("{}.{ext}", if base.is_empty() { "file" } else { &base })
+}
+
+/// Save `url` (one of the service's short-lived links: signed, so no key is sent) to `path`.
+pub fn download(url: &str, path: &std::path::Path) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://127.0.0.1") && !url.starts_with("http://localhost") {
+        return Err(format!("not a link Wundur downloads: {url}"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).build().into();
+    let mut resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    let bytes = resp.body_mut().with_config().limit(512 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
 // ----- calls -----
 
 /// How long a call may take: answers are quick (the work happens in jobs).
@@ -529,6 +590,21 @@ mod tests {
         assert!(explain(&api(403, "engine_not_on_plan")).1);
         assert_eq!(explain(&api(500, "weird")).0, "weird said");
         assert!(explain(&Error::SignedOut).0.contains("Sign in"));
+    }
+
+    #[test]
+    fn a_record_round_trips_and_names_are_safe() {
+        let dir = std::env::temp_dir().join(format!("wundur-flow-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut r = Record { id: "as_1".into(), kind: "humanoid".into(), name: "Goblin".into(), ..Record::default() };
+        r.views.insert("set_1".into(), vec!["views/set_1/front.png".into()]);
+        save(&dir, &r).unwrap();
+        assert_eq!(load(&dir), Some(r));
+        assert!(load(&dir.join("nope")).is_none());
+        assert_eq!(file_name("Front 3/4", "png"), "front-3-4.png");
+        assert_eq!(file_name("", "glb"), "file.glb");
+        assert!(download("file:///etc/passwd", &dir.join("x")).is_err(), "only web links");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
