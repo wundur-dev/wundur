@@ -127,9 +127,15 @@ impl ApiError {
         Self { status, code: format!("http_{status}"), message: String::new() }
     }
 
-    /// An allowance or hourly limit is used up (`429`).
+    /// A rate limit was reached (`429`: the hourly limit, the generation cap): try later.
     pub fn is_limit(&self) -> bool {
         self.status == 429
+    }
+
+    /// Something is used up for this month (`402`, or an allowance code an older API sent with
+    /// `429`): more needs an upgrade.
+    pub fn is_used_up(&self) -> bool {
+        self.status == 402 || self.code.ends_with("_allowance_used") || self.code.ends_with("_credits_used") || self.code.ends_with("_seconds_used")
     }
 }
 
@@ -927,6 +933,21 @@ impl Account {
 
     /// [`Self::send`], waiting up to `timeout` for the answer (a thinking summary takes minutes).
     pub fn send_within(&self, auth: Auth, method: &str, path: &str, body: Option<&serde_json::Value>, timeout: Duration) -> Result<String, Error> {
+        self.request(auth, method, path, body, timeout, None)
+    }
+
+    /// A call to the API: `method` (GET, POST, PATCH, DELETE) on `path`, with `body` as JSON,
+    /// waiting up to `timeout`; for a call that spends, an `idempotency_key` (new per action:
+    /// the server answers a repeat of it with the first answer, so a retry can't charge twice).
+    pub fn request(
+        &self,
+        auth: Auth,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        timeout: Duration,
+        idempotency_key: Option<&str>,
+    ) -> Result<String, Error> {
         let attempt = |force: bool| -> Result<String, Error> {
             let credential = match auth {
                 Auth::Session => self.access_token(force)?,
@@ -935,10 +956,20 @@ impl Account {
             let url = format!("{}{}", self.api_base(), path);
             let bearer = format!("Bearer {credential}");
             let http = agent(timeout);
+            let key = idempotency_key.unwrap_or_default();
             let resp = match (method, body) {
                 ("GET", _) => http.get(&url).header("Authorization", &bearer).call(),
                 ("DELETE", _) => http.delete(&url).header("Authorization", &bearer).call(),
+                ("PATCH", b) => {
+                    let req = http.patch(&url).header("Authorization", &bearer);
+                    match b {
+                        Some(b) => req.send_json(b),
+                        None => req.send_empty(),
+                    }
+                }
+                (_, Some(b)) if !key.is_empty() => http.post(&url).header("Authorization", &bearer).header("Idempotency-Key", key).send_json(b),
                 (_, Some(b)) => http.post(&url).header("Authorization", &bearer).send_json(b),
+                (_, None) if !key.is_empty() => http.post(&url).header("Authorization", &bearer).header("Idempotency-Key", key).send_empty(),
                 (_, None) => http.post(&url).header("Authorization", &bearer).send_empty(),
             };
             read(resp)
