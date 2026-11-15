@@ -1018,6 +1018,7 @@ impl ChatPanel {
                 Item::Summary { state, .. } => self.render_summary(state, cx),
                 Item::Asset(dir) => self.render_asset_card(dir, cx),
                 Item::NewAsset => self.render_new_asset(cx),
+                Item::Make(id) => self.render_make(*id, cx),
             };
             out.push(el);
         }
