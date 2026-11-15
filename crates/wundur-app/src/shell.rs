@@ -2381,7 +2381,8 @@ impl Shell {
         // A heading as the list's ("Projects"): the same size and weight on the column's own
         // ground, under a clear line between the two.
         let (ground, hover, fg) = (crate::theme::tool_ground(cx), theme.secondary_hover, crate::theme::list_text(cx));
-        let line = crate::sheet_tabs::mix(theme.border, theme.foreground, 0.18);
+        // Strong enough to read as the edge between the projects and the panels.
+        let line = crate::sheet_tabs::mix(theme.border, theme.foreground, 0.38);
         let muted = theme.muted_foreground;
         // A narrow column: the folder matters more than the panel's name (its tab says it).
         let narrow = cx.global::<AppSettings>().0.borrow().layout.list_width < FILES_HEADER_NARROW;
@@ -2395,7 +2396,7 @@ impl Shell {
             .items_center()
             .gap_2()
             .bg(ground)
-            .border_t_1()
+            .border_t(px(2.))
             .border_color(line)
             // As a project's row folds: the chevron at the left, the whole heading a click.
             .cursor_pointer()
