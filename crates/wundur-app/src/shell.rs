@@ -292,7 +292,13 @@ impl Shell {
             badge: 0,
             _attention: vec![
                 // Looking at the window again, or away; a notification setting changed.
-                cx.observe_window_activation(window, |s, window, cx| s.attend(window, cx)),
+                cx.observe_window_activation(window, |s, window, cx| {
+                    s.attend(window, cx);
+                    // Back from the browser (a checkout, the billing portal): the account anew.
+                    if window.is_window_active() && s.settings.is_some() {
+                        crate::settings_account::refresh_soon(cx);
+                    }
+                }),
                 cx.observe_global_in::<AppSettings>(window, |s, window, cx| s.attend(window, cx)),
             ],
         };
@@ -1854,6 +1860,23 @@ impl Shell {
                     }
                     None => "settings are not open".into(),
                 }
+            }
+            "account" => {
+                // Tests: `account` (signed in or not, the plan; never tokens), `account refresh`,
+                // `account sign-in` (starts the loopback listener without opening the browser;
+                // replies with its port), `account cancel`.
+                match arg {
+                    "refresh" => crate::settings_account::refresh(cx),
+                    "sign-in" => {
+                        return Some(match crate::settings_account::sign_in(false, cx) {
+                            Ok(port) => format!("waiting port={port}"),
+                            Err(e) => e,
+                        });
+                    }
+                    "cancel" => crate::settings_account::cancel(cx),
+                    _ => {}
+                }
+                crate::settings_account::describe(cx)
             }
             "settings" => {
                 // Tests: `settings`, `settings off`, `settings <page>` (`mcp here`: on this

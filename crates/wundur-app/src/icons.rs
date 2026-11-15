@@ -28,6 +28,8 @@ icon_assets!(
         Sparkles,
         Puzzle,
         UserRound,
+        // Settings > Account.
+        CircleUser,
         SquareSlash,
         ScrollText,
         FolderCode,

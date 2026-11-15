@@ -9964,6 +9964,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "dirs 6.0.0",
+ "getrandom 0.3.4",
  "ignore",
  "libc",
  "md-5",

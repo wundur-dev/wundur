@@ -21,6 +21,7 @@
 //! - [`skill_install`]: installing skills from git repositories;
 //! - [`table`]: a table from a reply, as CSV or as Markdown to copy.
 
+pub mod account;
 pub mod acp;
 pub mod agent;
 pub mod assets;

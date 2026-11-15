@@ -59,6 +59,7 @@ mod on_screen;
 mod native_spinner;
 mod sheet_tabs;
 mod skill_installer;
+mod settings_account;
 mod settings_fonts;
 mod settings_mcp;
 mod settings_packs;
@@ -305,6 +306,7 @@ fn main() {
             // The chat's group is fixed: nothing docks into it, it is not dragged.
             gpui_kit::base::dock::pin_panels(&[dock_skin::CHAT]);
             cx.set_global(AppSettings(Rc::new(RefCell::new(settings))));
+            settings_account::init(cx);
             cx.set_window_appearance(forced);
             cx.set_global(panels::Names(Rc::new(RefCell::new(
                 wundur_core::tabs::NameStore::open_default(),

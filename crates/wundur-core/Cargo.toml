@@ -26,6 +26,8 @@ md5 = { package = "md-5", version = "0.10" }
 sha2 = "0.10"
 # Turn summaries ask a language model server (OpenAI-compatible: LM Studio, Ollama, llama.cpp).
 ureq = { version = "3", features = ["json"] }
+# Signing in to a Wundur account (src/account.rs): the PKCE verifier and state.
+getrandom = "0.3"
 # Tool packs (src/packs.rs): their scripts, in an embedded JavaScript engine.
 rquickjs = { version = "0.9", features = ["loader"] }
 # Removing a skill puts it in the system Trash (Finder, Recycle Bin), so it can be got back.
