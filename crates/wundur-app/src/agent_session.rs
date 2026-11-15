@@ -2102,10 +2102,16 @@ impl AgentSession {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor().timer(std::time::Duration::from_secs(u64::from(minutes) * 60)).await;
             let _ = this.update(cx, |s, cx| {
-                if s.idle_gen == generation && s.can_rest() {
+                if s.idle_gen != generation {
+                    return;
+                }
+                if s.can_rest() {
                     s.end_agent();
                     s.dormant = true;
                     cx.notify();
+                } else if s.agent.running() && !s.chat.busy && s.chat.background_work() {
+                    // Background work still runs (a subagent, a shell command): look again later.
+                    s.idle_later(cx);
                 }
             });
         })
@@ -2113,9 +2119,15 @@ impl AgentSession {
     }
 
     /// Whether the agent may end for being idle: running, between turns, in Chat, with
-    /// nothing waiting on the person or to be sent.
+    /// nothing waiting on the person or to be sent, and nothing running in the background
+    /// (ending the process would end its subagents and background commands with it).
     fn can_rest(&self) -> bool {
-        self.agent.running() && !self.chat.busy && self.view == View::Chat && self.asking.is_none() && self.outbox.is_empty()
+        self.agent.running()
+            && !self.chat.busy
+            && self.view == View::Chat
+            && self.asking.is_none()
+            && self.outbox.is_empty()
+            && !self.chat.background_work()
     }
 
     /// Whether Chat's agent process runs.
