@@ -50,10 +50,17 @@ impl Request {
 /// The socket's address: short (Unix sockets allow about 100 bytes), per user and config
 /// folder.
 pub fn socket_path() -> PathBuf {
+    let name = format!("wundur-{}-{}", user(), config_tag());
+    local_socket::address(&std::env::temp_dir().join(format!("{name}.sock")), &name)
+}
+
+/// This instance's config folder as a short tag, for names in the shared temporary folder:
+/// instances with other config folders (test copies) have other tags, and never touch what is
+/// this one's.
+pub fn config_tag() -> String {
     let mut h = DefaultHasher::new();
     wundur_core::settings::config_dir().hash(&mut h);
-    let name = format!("wundur-{}-{:08x}", user(), h.finish() as u32);
-    local_socket::address(&std::env::temp_dir().join(format!("{name}.sock")), &name)
+    format!("{:08x}", h.finish() as u32)
 }
 
 /// Who this user is, for the socket's name. On Unix the temporary folder may be shared

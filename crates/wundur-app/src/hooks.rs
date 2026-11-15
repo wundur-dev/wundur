@@ -62,7 +62,10 @@ impl Global for Hooks {}
 /// Open the socket and start serving it. Without a socket (or the helper), sessions run
 /// without hooks: permission prompts are answered in the terminal view only.
 pub fn init(cx: &mut App) {
-    let dir = std::env::temp_dir().join(format!("wundur-{}", std::process::id()));
+    // Named for this instance's config folder too, so the tidy-up below only ever looks at its
+    // own instances' folders: a test copy (another config folder) never removes the person's
+    // window's sockets, whatever it can or can't tell about other processes from a sandbox.
+    let dir = std::env::temp_dir().join(format!("wundur-{}-{}", crate::instance::config_tag(), std::process::id()));
     // Folders of windows that ended without tidying up (killed), off the UI thread.
     std::thread::spawn(remove_stale);
     let helper = std::env::current_exe()
@@ -93,16 +96,27 @@ pub fn init(cx: &mut App) {
     cx.set_global(Hooks(Rc::new(RefCell::new(state))));
 }
 
-/// Remove `wundur-<pid>` folders (or ones of the app's earlier names) whose window process is
-/// gone. On Windows the socket is a named pipe, not a file in the folder: any such folder.
+/// Remove this instance's earlier folders (`wundur-<tag>-<pid>`) whose window process is gone.
+/// Folders named the old way (`wundur-<pid>`, or the app's earlier names) only by an instance
+/// on the default config folder: they were the person's own window's. On Windows the socket is
+/// a named pipe, not a file in the folder: any such folder.
 fn remove_stale() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    let own = format!("wundur-{}-", crate::instance::config_tag());
+    let old_names: &[&str] = if wundur_core::env_var("CONFIG_DIR").is_err() { &["wundur-", "keleuo-", "keleion-", "workbench-"] } else { &[] };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if let Some(pid) = ["wundur-", "keleuo-", "keleion-", "workbench-"].iter().find_map(|p| name.strip_prefix(p)).and_then(|p| p.parse::<u32>().ok())
+        let pid = name
+            .strip_prefix(&own)
+            .or_else(|| old_names.iter().find_map(|p| name.strip_prefix(p)))
+            .and_then(|p| p.parse::<u32>().ok());
+        if let Some(pid) = pid
             && pid != std::process::id()
             && (e.path().join("hooks.sock").exists() || cfg!(windows) && e.path().is_dir())
             && !wundur_core::host::process_alive(pid)
+            // Whatever the process check says, a socket something still answers is in use (its
+            // sessions' tools reach it): never removed.
+            && !(e.path().join("hooks.sock").exists() && local_socket::connect(&e.path().join("hooks.sock")).is_ok())
         {
             let _ = std::fs::remove_dir_all(e.path());
         }
