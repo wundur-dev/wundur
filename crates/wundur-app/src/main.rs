@@ -27,6 +27,7 @@ mod tasks;
 mod tasks_web;
 mod asset_panel;
 mod asset_store;
+mod hosted_store;
 mod actions;
 mod app_icon;
 mod attention;

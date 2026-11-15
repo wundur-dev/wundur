@@ -4195,6 +4195,16 @@ pub fn open_settings(cx: &mut App) {
     });
 }
 
+/// Settings in the window, on page `name` (see `settings_window::PAGES`).
+pub fn open_settings_page(name: &'static str, cx: &mut App) {
+    let Some((handle, shell)) = cx.try_global::<crate::control::ControlTargets>().and_then(|t| t.workspace.clone()) else { return };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = shell.update(cx, |s, cx| s.show_settings_at(name, false, window, cx));
+        });
+    });
+}
+
 /// What shows while a conversation is being read: a few message shapes, pulsing.
 pub fn loading_skeleton(cx: &App) -> AnyElement {
     let shade = cx.theme().muted_foreground.opacity(0.14);

@@ -135,11 +135,28 @@ pub fn approve_model(dir: &Path, file: &str, cx: &mut App) {
 /// view_model, here, with no network), then `then` with the page to open.
 pub fn view_3d(dir: &Path, file: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
     let Some(e) = entry(dir, cx) else { return };
-    let Some(pack) = pack() else { return };
+    let (project, title, model, dir) = (e.project.clone(), e.asset.name.clone(), dir.join(file), dir.to_path_buf());
+    viewer_page_or(&project, &model, &title, cx, then, move |why, cx| update(&dir, false, cx, |e| e.error = Some(why)));
+}
+
+/// The 3D viewer's page for `model` (a file inside `cwd`), then `then` with the page.
+pub fn viewer_page(cwd: &Path, model: &Path, title: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
+    viewer_page_or(cwd, model, title, cx, then, |why, _| eprintln!("wundur: {why}"));
+}
+
+fn viewer_page_or(
+    cwd: &Path,
+    model: &Path,
+    title: &str,
+    cx: &mut App,
+    then: impl FnOnce(PathBuf, &mut App) + 'static,
+    failed: impl FnOnce(String, &mut App) + 'static,
+) {
+    let Some(pack) = pack() else { return failed("The 3D viewer comes with the game-assets pack, which isn't installed.".into(), cx) };
     let Some(tool) = pack.manifest.tools.iter().find(|t| t.name == "view_model").cloned() else { return };
-    let project = e.project.clone();
-    let model = dir.join(file).strip_prefix(&project).map(Path::to_path_buf).unwrap_or_else(|_| dir.join(file));
-    let title = e.asset.name.clone();
+    let project = cwd.to_path_buf();
+    let model = model.strip_prefix(&project).map(Path::to_path_buf).unwrap_or_else(|_| model.to_path_buf());
+    let title = title.to_string();
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let none = |_: &str| None;
@@ -148,12 +165,11 @@ pub fn view_3d(dir: &Path, file: &str, cx: &mut App, then: impl FnOnce(PathBuf, 
         let out = wundur_core::packs::run(&pack, &tool, &serde_json::json!({ "model": model.to_string_lossy(), "title": title }), &grant);
         let _ = tx.send_blocking(out);
     });
-    let dir = dir.to_path_buf();
     cx.spawn(async move |cx: &mut AsyncApp| {
         let Ok(out) = rx.recv().await else { return };
         cx.update(|cx| match out.show {
             Some(page) if !out.failed => then(page, cx),
-            _ => update(&dir, false, cx, |e| e.error = Some(format!("Couldn't make the viewer: {}", out.text))),
+            _ => failed(format!("Couldn't make the viewer: {}", out.text), cx),
         });
     })
     .detach();
