@@ -284,8 +284,12 @@ pub fn render(_window: &mut Window, cx: &mut App) -> AnyElement {
                     .child(row("Plan", plan))
                     .child(div().pt_2().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Left this month"))
                     .child(row("Images", left(a.images, "images")))
-                    .child(row("3D models", left(a.approved_models, "models")))
-                    .child(row("Model attempts", left(a.attempts, "attempts")))
+                    // Credit buckets when the API has them; the older counts until then.
+                    .when_some(a.model_credits, |d, u| d.child(row("3D models", left(u, "model credits"))))
+                    .when(a.model_credits.is_none(), |d| {
+                        d.child(row("3D models", left(a.approved_models, "models"))).child(row("Model attempts", left(a.attempts, "attempts")))
+                    })
+                    .when_some(a.sound_seconds, |d, u| d.child(row("Sound effects", left(u, "seconds"))))
                     .child(row("Turn summaries", left(a.summaries, "summaries")))
                     .child(note("A model counts when you import it; each try at one is an attempt.".into()));
             }

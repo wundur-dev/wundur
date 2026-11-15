@@ -214,11 +214,16 @@ pub struct Usage {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Allowance {
-    pub approved_models: Usage,
-    pub attempts: Usage,
     pub images: Usage,
+    /// Spent by Import, by each engine's credits (`None` from an API before credit buckets).
+    pub model_credits: Option<Usage>,
+    /// Sound effects, in seconds.
+    pub sound_seconds: Option<Usage>,
     pub summaries: Usage,
     pub summary_tokens: Usage,
+    /// From an API before credit buckets: models imported, and generations.
+    pub approved_models: Usage,
+    pub attempts: Usage,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -1036,6 +1041,19 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn me_reads_the_credit_buckets_and_the_older_counts() {
+        let new: Me = serde_json::from_str(
+            r#"{"plan":"free","allowance":{"images":{"used":1,"limit":5,"left":4},"model_credits":{"used":0,"limit":3,"left":3},"sound_seconds":{"used":10,"limit":60,"left":50}}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.allowance.model_credits.map(|u| u.left), Some(3));
+        assert_eq!(new.allowance.sound_seconds.map(|u| u.left), Some(50));
+        let old: Me = serde_json::from_str(r#"{"plan":"free","allowance":{"approved_models":{"used":0,"limit":1,"left":1}}}"#).unwrap();
+        assert!(old.allowance.model_credits.is_none());
+        assert_eq!(old.allowance.approved_models.left, 1);
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc_7636() {
