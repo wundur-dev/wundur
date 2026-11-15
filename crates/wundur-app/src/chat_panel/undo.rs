@@ -83,8 +83,25 @@ impl ChatPanel {
         if plan.files.len() > NAMED {
             panel = panel.child(line(format!("and {} more", plan.files.len() - NAMED), muted));
         }
-        if !plan.conflicts.is_empty() {
-            let n = plan.conflicts.len();
+        // Changed in the folder while the turn ran, but not by this agent as far as Wundur saw:
+        // another session's work, the person's, or a command's. Left alone unless asked.
+        if !plan.others.is_empty() {
+            let n = plan.others.len();
+            panel = panel.child(line(
+                format!(
+                    "{} also changed while the turn ran, not by {name} as far as Wundur saw (another session, you, or a command). Left as {}:",
+                    if n == 1 { "1 other file".to_string() } else { format!("{n} other files") },
+                    if n == 1 { "it is" } else { "they are" }
+                ),
+                muted,
+            ));
+            let names: Vec<String> = plan.others.iter().take(NAMED).map(|c| c.path.display().to_string()).collect();
+            let more = if n > NAMED { format!(" and {} more", n - NAMED) } else { String::new() };
+            panel = panel.child(line(format!("{}{more}", names.join(", ")), fg));
+        }
+        let conflicts = plan.conflicts.iter().filter(|p| plan.files.iter().any(|c| &c.path == *p)).count();
+        if conflicts > 0 {
+            let n = conflicts;
             panel = panel.child(line(
                 format!(
                     "{} changed again after the turn (by you or another session). Undoing {} loses that.",
@@ -107,20 +124,26 @@ impl ChatPanel {
             muted,
         ));
         let weak = self.session.downgrade();
-        let (w1, w2, w3) = (weak.clone(), weak.clone(), weak);
+        let (w1, w2, w3, w4) = (weak.clone(), weak.clone(), weak.clone(), weak);
         let mut buttons = div().px_3().py_1().flex().gap_2();
-        if plan.conflicts.is_empty() {
+        if conflicts == 0 {
             buttons = buttons.child(Button::new("undo-confirm").xsmall().primary().label("Undo").on_click(move |_, _, cx| {
-                let _ = w1.update(cx, |s, cx| s.undo_turn(false, cx));
+                let _ = w1.update(cx, |s, cx| s.undo_turn(false, false, cx));
             }));
         } else {
             buttons = buttons
                 .child(Button::new("undo-keep-later").xsmall().primary().label("Undo, keep later changes").on_click(move |_, _, cx| {
-                    let _ = w2.update(cx, |s, cx| s.undo_turn(true, cx));
+                    let _ = w2.update(cx, |s, cx| s.undo_turn(true, false, cx));
                 }))
                 .child(Button::new("undo-all").xsmall().label("Undo all").on_click(move |_, _, cx| {
-                    let _ = w1.update(cx, |s, cx| s.undo_turn(false, cx));
+                    let _ = w1.update(cx, |s, cx| s.undo_turn(false, false, cx));
                 }));
+        }
+        if !plan.others.is_empty() {
+            // Later changes are kept here too: these files are someone else's work.
+            buttons = buttons.child(Button::new("undo-others").xsmall().label("Undo the other files too").on_click(move |_, _, cx| {
+                let _ = w4.update(cx, |s, cx| s.undo_turn(true, true, cx));
+            }));
         }
         buttons = buttons.child(Button::new("undo-cancel").xsmall().ghost().label("Cancel").on_click(move |_, _, cx| {
             let _ = w3.update(cx, |s, cx| s.cancel_undo(cx));

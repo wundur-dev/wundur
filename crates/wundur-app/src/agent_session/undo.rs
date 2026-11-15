@@ -7,6 +7,7 @@
 //! Only sessions on this machine: over SSH there are no restore points.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,6 +31,9 @@ pub struct RestorePoints {
     last: Option<String>,
     /// Taken just before the turn that starts at this item.
     before: Option<(usize, String)>,
+    /// The turn that starts at this item went without its before point (it took too long):
+    /// it can't be undone, and no other point may stand in for it.
+    missed: Option<usize>,
     /// The last turn's two points: where it starts in the chat, before, after.
     turn: Option<(usize, String, String)>,
     /// What undoing would do, being shown for the person to confirm.
@@ -45,9 +49,13 @@ pub struct RestorePoints {
 pub struct UndoPlan {
     /// Where the turn starts in the chat.
     pub turn: usize,
-    /// The files it changed, relative to the session's folder.
+    /// The files this session's agent changed in the turn (its edits, and what its commands
+    /// changed), relative to the session's folder: what undo puts back.
     pub files: Vec<Changed>,
-    /// Of those, the ones changed again since (by the person or another session).
+    /// Other files that changed in the folder while the turn ran (another session, the person,
+    /// or a command whose changes weren't seen): left alone unless asked.
+    pub others: Vec<Changed>,
+    /// Of all those, the ones changed again since the turn ended.
     pub conflicts: Vec<PathBuf>,
     /// The agent forgets the turn too (else only the files go back).
     pub forgets: bool,
@@ -77,7 +85,10 @@ impl AgentSession {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor().timer(WAIT_AT_MOST).await;
             if let Some(f) = late.borrow_mut().take() {
-                let _ = this.update(cx, |s, cx| f(s, cx));
+                let _ = this.update(cx, |s, cx| {
+                    s.restore.missed = Some(turn);
+                    f(s, cx)
+                });
             }
         })
         .detach();
@@ -98,10 +109,12 @@ impl AgentSession {
                 match taken {
                     Ok((store, id)) => {
                         s.restore.store = Some(Ok(store));
+                        // Too late, the agent may already have been editing: this point is
+                        // no turn's start, nor a fallback for one.
                         if in_time.is_some() {
                             s.restore.before = Some((turn, id.clone()));
+                            s.restore.last = Some(id);
                         }
-                        s.restore.last = Some(id);
                     }
                     Err(e) => s.restore_failed(e),
                 }
@@ -129,9 +142,12 @@ impl AgentSession {
         let Some(store) = self.restore_store() else { return };
         let turn = self.chat.turn_start();
         // Before it: the point taken when it was sent, else (a message typed in the agent's
-        // own terminal) the end of the turn before.
+        // own terminal) the end of the turn before. A message that went without its point has
+        // none: the turn can't be undone.
+        let missed = self.restore.missed.take() == Some(turn);
         let before = match self.restore.before.take() {
             Some((t, id)) if t == turn => Some(id),
+            _ if missed => None,
             _ => self.restore.last.clone(),
         };
         self.restore.turn = None;
@@ -190,15 +206,20 @@ impl AgentSession {
         // it (its own terminal interface keeps the whole conversation).
         let ask = (!self.interactive()).then(|| self.chat.session_id.clone()).flatten();
         let (host, backend, cwd) = (self.host.clone(), self.backend.clone(), self.cwd.clone());
+        // What this agent changed in the turn, as its card of changes has it.
+        let mine: Vec<PathBuf> = self.chat.changes(turn).into_iter().map(|c| c.path).collect();
         cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let plan = cx
                 .background_executor()
                 .spawn(async move {
-                    let files = store.changes(&before, &after).map_err(|e| format!("{e:#}"))?;
-                    let conflicts = store.changed_since(&after, &files).map_err(|e| format!("{e:#}"))?;
+                    let changed = store.changes(&before, &after).map_err(|e| format!("{e:#}"))?;
+                    let mine = relative_to(&mine, &[cwd.as_path(), store.work_tree()]);
+                    let (files, others) = split_by_turn(changed, &mine);
+                    let all: Vec<Changed> = files.iter().chain(&others).cloned().collect();
+                    let conflicts = store.changed_since(&after, &all).map_err(|e| format!("{e:#}"))?;
                     let forgets = ask.is_some_and(|id| backend.rewind_point(host.as_ref(), &cwd, &id).is_ok());
-                    Ok::<_, String>(UndoPlan { turn, files, conflicts, forgets })
+                    Ok::<_, String>(UndoPlan { turn, files, others, conflicts, forgets })
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -218,16 +239,17 @@ impl AgentSession {
         cx.notify();
     }
 
-    /// Undo the last turn as planned. `keep_later`: leave the files changed again since alone.
-    pub fn undo_turn(&mut self, keep_later: bool, cx: &mut Context<Self>) {
+    /// Undo the last turn as planned: the files its agent changed, and with `others` the other
+    /// files that changed while it ran. `keep_later`: leave the files changed again since alone.
+    pub fn undo_turn(&mut self, keep_later: bool, others: bool, cx: &mut Context<Self>) {
         let Some(plan) = self.restore.plan.take() else { return };
         let (Some(store), Some((turn, before, _))) = (self.restore_store(), self.restore.turn.clone()) else { return };
         if turn != plan.turn || !self.can_undo() {
             cx.notify();
             return;
         }
-        let files: Vec<Changed> =
-            plan.files.iter().filter(|c| !(keep_later && plan.conflicts.contains(&c.path))).cloned().collect();
+        let chosen = plan.files.iter().chain(plan.others.iter().filter(|_| others));
+        let files: Vec<Changed> = chosen.filter(|c| !(keep_later && plan.conflicts.contains(&c.path))).cloned().collect();
         self.restore.working = true;
         let (host, backend, cwd, id) = (self.host.clone(), self.backend.clone(), self.cwd.clone(), self.chat.session_id.clone());
         let forgets = plan.forgets;
@@ -308,5 +330,56 @@ impl AgentSession {
             self.backend.name()
         ));
         true
+    }
+}
+
+/// `paths` (absolute, or relative to the session's folder) relative to whichever of `roots`
+/// (the folder as given, and as resolved) holds them.
+fn relative_to(paths: &[PathBuf], roots: &[&std::path::Path]) -> HashSet<PathBuf> {
+    paths
+        .iter()
+        .filter_map(|p| {
+            if p.is_relative() {
+                return Some(p.clone());
+            }
+            roots
+                .iter()
+                .find_map(|r| p.strip_prefix(r).ok().map(PathBuf::from))
+                .or_else(|| roots.iter().find_map(|r| p.canonicalize().ok()?.strip_prefix(r).ok().map(PathBuf::from)))
+        })
+        .collect()
+}
+
+/// The files that changed while a turn ran: those its agent changed (`mine`), and the others.
+fn split_by_turn(changed: Vec<Changed>, mine: &HashSet<PathBuf>) -> (Vec<Changed>, Vec<Changed>) {
+    changed.into_iter().partition(|c| mine.contains(&c.path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wundur_core::snapshots::Kind;
+
+    #[test]
+    fn only_the_turns_own_files_are_undone_by_default() {
+        let root = std::path::Path::new("/work/game");
+        let real = std::path::Path::new("/private/work/game");
+        let mine = relative_to(
+            &[root.join("src/player.rs"), real.join("assets/new.png"), PathBuf::from("notes.md"), PathBuf::from("/elsewhere/x")],
+            &[root, real],
+        );
+        let changed = |p: &str, kind| Changed { path: p.into(), kind };
+        let (files, others) = split_by_turn(
+            vec![
+                changed("src/player.rs", Kind::Modified),
+                changed("assets/new.png", Kind::Added),
+                changed("notes.md", Kind::Deleted),
+                // Another session's edit while the turn ran.
+                changed("src/enemy.rs", Kind::Modified),
+            ],
+            &mine,
+        );
+        assert_eq!(files.iter().map(|c| c.path.to_string_lossy().to_string()).collect::<Vec<_>>(), ["src/player.rs", "assets/new.png", "notes.md"]);
+        assert_eq!(others, [changed("src/enemy.rs", Kind::Modified)]);
     }
 }

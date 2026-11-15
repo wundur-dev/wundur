@@ -1515,20 +1515,22 @@ impl Workspace {
                 return "ok".into();
             }
             "undo" => {
-                // Tests: `undo state|plan|confirm|keep|cancel`, as the Undo turn button and
+                // Tests: `undo state|plan|confirm|keep|others|cancel`, as the Undo turn button and
                 // its panel do; `state` says whether it can, and the plan when one shows.
                 return self.session.update(cx, |s, cx| {
                     match arg {
                         "plan" => s.plan_undo(cx),
-                        "confirm" => s.undo_turn(false, cx),
-                        "keep" => s.undo_turn(true, cx),
+                        "confirm" => s.undo_turn(false, false, cx),
+                        "keep" => s.undo_turn(true, false, cx),
+                        "others" => s.undo_turn(true, true, cx),
                         "cancel" => s.cancel_undo(cx),
                         _ => {}
                     }
                     match s.undo_plan() {
                         Some(p) => format!(
-                            "plan: files={:?} conflicts={:?} forgets={}",
+                            "plan: files={:?} others={:?} conflicts={:?} forgets={}",
                             p.files.iter().map(|c| format!("{:?} {}", c.kind, c.path.display())).collect::<Vec<_>>(),
+                            p.others.iter().map(|c| format!("{:?} {}", c.kind, c.path.display())).collect::<Vec<_>>(),
                             p.conflicts,
                             p.forgets
                         ),
