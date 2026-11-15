@@ -246,6 +246,15 @@ pub struct Model {
     pub attempts_left: Option<u32>,
     pub created_at: String,
     pub error: Option<ApiErr>,
+    /// The mesh to look at (short-lived, fresh on every `GET` of the asset).
+    pub preview_url: Option<String>,
+    /// The importable file, once imported.
+    pub glb_url: Option<String>,
+    /// Model credits Import spends, and what it did spend.
+    #[serde(default, deserialize_with = "maybe_count")]
+    pub credits: Option<u32>,
+    #[serde(default, deserialize_with = "maybe_count")]
+    pub credits_charged: Option<u32>,
 }
 
 /// What a finished model can be looked at with: never the importable file.
@@ -285,6 +294,15 @@ pub struct Delivered {
     #[serde(default, deserialize_with = "maybe_count")]
     pub model_credits_left: Option<u32>,
     pub error: Option<ApiErr>,
+    /// Import's answer: the model file.
+    pub glb_url: Option<String>,
+}
+
+impl Delivered {
+    /// The model file's link: `glb_url`, else the first model in `files`.
+    pub fn model_url(&self) -> Option<&str> {
+        self.glb_url.as_deref().filter(|u| !u.is_empty()).or_else(|| self.files.iter().find(|f| f.kind == "model" || f.format == "glb").map(|f| f.url.as_str()))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -315,6 +333,11 @@ impl Set {
 }
 
 impl Model {
+    /// The mesh to look at: `preview_url`, else the older `preview.mesh`.
+    pub fn preview_link(&self) -> Option<&str> {
+        self.preview_url.as_deref().filter(|u| !u.is_empty()).or_else(|| self.preview.as_ref().and_then(|p| p.mesh.as_ref()).map(|m| m.url.as_str()))
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.status.as_str(), "queued" | "running")
     }
@@ -404,8 +427,9 @@ pub fn download(url: &str, path: &std::path::Path) -> Result<(), String> {
 
 // ----- calls -----
 
-/// How long a call may take: answers are quick (the work happens in jobs).
-const WAIT: Duration = Duration::from_secs(30);
+/// How long a call may take: the server waits out its providers' rate limits itself (about
+/// 90 seconds before it answers `busy`), so slow answers are normal.
+const WAIT: Duration = Duration::from_secs(200);
 
 /// A fresh key for a call that spends (see [`account::Account::request`]).
 pub fn idempotency_key() -> String {
@@ -465,26 +489,23 @@ pub fn approve(id: &str, set: &str) -> Result<Asset, Error> {
     call("POST", &format!("/v1/assets/{id}/sets/{set}/approve"), None, false)
 }
 
-/// `POST /v1/assets/{id}/models`: a model attempt from `set` on `engine` (nothing the person
-/// sees is spent).
-pub fn start_model(id: &str, set: &str, engine: &str) -> Result<Model, Error> {
-    call("POST", &format!("/v1/assets/{id}/models"), Some(&json!({ "set": set, "engine": engine })), false)
-}
-
-/// `POST /v1/models/{id}/reroll`: another attempt, on `engine` when given.
-pub fn reroll(model: &str, engine: Option<&str>) -> Result<Model, Error> {
+/// `POST /v1/assets/{id}/models`: a model attempt from the approved set (the server picks the
+/// views) on `engine`, or the kind's default. Free; the set's `attempts_left` counts them.
+/// The answer isn't relied on: the asset's `models` shows it on the next poll.
+pub fn start_model(id: &str, engine: Option<&str>) -> Result<(), Error> {
     let body = engine.map(|e| json!({ "engine": e }));
-    call("POST", &format!("/v1/models/{model}/reroll"), body.as_ref(), false)
+    call::<Value>("POST", &format!("/v1/assets/{id}/models"), body.as_ref(), true).map(|_| ())
 }
 
-/// `POST /v1/models/{id}/import`: spends the engine's credits and hands over the files.
-pub fn import(model: &str) -> Result<Delivered, Error> {
-    call("POST", &format!("/v1/models/{model}/import"), None, true)
+/// `POST /v1/assets/{id}/models/{model}/import`: spends the engine's credits (once; a repeat is
+/// safe) and hands over the file.
+pub fn import(id: &str, model: &str) -> Result<Delivered, Error> {
+    call("POST", &format!("/v1/assets/{id}/models/{model}/import"), None, true)
 }
 
-/// `POST /v1/models/{id}/reject`: not wanted (optional).
-pub fn reject(model: &str) -> Result<(), Error> {
-    call::<Value>("POST", &format!("/v1/models/{model}/reject"), None, false).map(|_| ())
+/// `POST /v1/assets/{id}/models/{model}/reject`: not wanted (optional).
+pub fn reject(id: &str, model: &str) -> Result<(), Error> {
+    call::<Value>("POST", &format!("/v1/assets/{id}/models/{model}/reject"), None, false).map(|_| ())
 }
 
 /// `POST /v1/models/{id}/rig`: rig an imported model (credits spent when it succeeds).
@@ -520,17 +541,26 @@ pub fn explain(e: &Error) -> (String, bool) {
         "image_allowance_used" => "This month's images are used up.",
         "sound_seconds_used" => "This month's sound effects are used up.",
         "engine_not_on_plan" => "That engine is on the Monthly plan.",
-        "attempts_used" | "rerolls_used" => "That's all the tries for these views: change the views to try again.",
-        "hourly_limit" => "That's the most for this hour; try again in a while.",
-        "generation_limit" => "That's a lot of tries this month; try again tomorrow, or contact us.",
+        "attempts_used" | "rerolls_used" => "This set's attempts are used: make a change or a new set of views.",
+        "no_approved_set" => "Approve a set of views first.",
+        "set_in_progress" => "A set of views is still being made: wait for it to finish.",
+        "hourly_limit" | "generation_limit" => "That's a lot of tries for now; try again later.",
         "job_in_progress" => "A model is already being made: wait for it to finish.",
-        "content_blocked" => "The prompt was refused by the content filter; try saying it differently.",
-        "provider_error" | "busy" => "Wundur's service is busy; try again in a minute (this one isn't counted).",
+        "content_blocked" => "That description was refused; try rewording it.",
+        "provider_error" => "Something went wrong; it wasn't counted. Try again.",
+        "busy" => "Busy right now; try again shortly.",
+        "invalid_field" | "missing_field" | "unknown_field" => "",
         "missing_key" | "invalid_key" | "invalid_token" => "Your Wundur account's key no longer works: sign in again in Settings > Account.",
         "not_found" => "This asset is gone from Wundur's server (they're kept 30 days); its files in the project stay.",
         _ => "",
     };
-    let text = if text.is_empty() { if a.message.is_empty() { a.to_string() } else { a.message.clone() } } else { text.to_string() };
+    let text = match (a.code.as_str(), a.retry_after) {
+        ("busy", Some(s)) => format!("Busy right now; try again in {s} s."),
+        // A route the server doesn't have (its own errors always carry a code).
+        ("http_404" | "http_405", _) => "Wundur's server doesn't offer this step yet; nothing was spent.".to_string(),
+        _ if text.is_empty() => if a.message.is_empty() { a.to_string() } else { a.message.clone() },
+        _ => text.to_string(),
+    };
     (text, a.is_used_up() || a.code == "engine_not_on_plan")
 }
 
@@ -624,13 +654,17 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do() {
-        let api = |status: u16, code: &str| Error::Api(ApiError { status, code: code.into(), message: format!("{code} said") });
+        let api = |status: u16, code: &str| Error::Api(ApiError { status, code: code.into(), message: format!("{code} said"), retry_after: None });
         let (text, upgrade) = explain(&api(402, "model_credits_used"));
         assert!(text.contains("out of model credits") && upgrade);
         let (_, upgrade) = explain(&api(429, "image_allowance_used"));
         assert!(upgrade, "an older API's 429 for an allowance still offers Upgrade");
         let (text, upgrade) = explain(&api(429, "hourly_limit"));
-        assert!(text.contains("this hour") && !upgrade);
+        assert!(text.contains("try again later") && !upgrade);
+        let busy = Error::Api(ApiError { status: 503, code: "busy".into(), message: String::new(), retry_after: Some(34) });
+        assert_eq!(explain(&busy).0, "Busy right now; try again in 34 s.");
+        assert!(explain(&api(404, "http_404")).0.contains("nothing was spent"), "a route the server lacks");
+        assert!(explain(&api(422, "content_blocked")).0.contains("rewording"));
         assert!(explain(&api(403, "engine_not_on_plan")).1);
         assert_eq!(explain(&api(500, "weird")).0, "weird said");
         assert!(explain(&Error::SignedOut).0.contains("Sign in"));

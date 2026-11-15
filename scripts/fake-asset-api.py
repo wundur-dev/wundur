@@ -36,7 +36,7 @@ def asset_view(a):
                 s["views"].append({"label": lab, "image_id": "img_" + name, "url": f"{BASE}/files/{name}", "width": 300, "height": 600})
     for m in [models[k] for k in a["models"]]:
         if m["status"] == "running" and now - m["t"] > 4:
-            m["status"] = "succeeded"; m["preview"] = {"mesh": {"url": f"{BASE}/files/preview.glb", "reduced": True}}
+            m["status"] = "succeeded"; m["preview_url"] = f"{BASE}/files/preview.glb"
     out = {k: v for k, v in a.items() if k != "models"}
     out["sets"] = [{k: v for k, v in s.items() if k != "t"} for s in a["sets"]]
     out["models"] = [{k: v for k, v in models[m].items() if k != "t"} for m in a["models"]]
@@ -72,16 +72,20 @@ class H(BaseHTTPRequestHandler):
             if p[3] == "sets" and p[5] == "approve":
                 for s in a["sets"]: s["approved"] = s["id"] == p[4]
                 return self.send(200, asset_view(a))
-            if p[3] == "models":
-                m = {"id": f"md_{next(ids)}", "asset": a["id"], "set": b["set"], "engine": b["engine"], "status": "running", "imported": False, "attempts_left": 3, "t": time.time()}
+            if p[3] == "models" and len(p) == 4:
+                approved = next((s for s in a["sets"] if s["approved"]), None)
+                if not approved: return self.send(409, {"error": {"code": "no_approved_set", "message": "Approve a set first."}})
+                if approved["attempts_left"] <= 0: return self.send(409, {"error": {"code": "attempts_used", "message": "Attempts used."}})
+                approved["attempts_left"] -= 1
+                engine = b.get("engine") or "trellis2"
+                credits = {"trellis2": 1, "tripo_hd": 3}.get(engine, 1)
+                m = {"id": f"md_{next(ids)}", "asset": a["id"], "set": approved["id"], "engine": engine, "status": "running", "imported": False, "credits": credits, "t": time.time()}
                 models[m["id"]] = m; a["models"].append(m["id"]); return self.send(202, {k: v for k, v in m.items() if k != "t"})
-        if p[:2] == ["v1", "models"] and len(p) == 4:
-            m = models[p[2]]
-            if p[3] == "reroll":
-                n = dict(m, id=f"md_{next(ids)}", status="running", preview=None, attempts_left=m["attempts_left"] - 1, t=time.time(), engine=b.get("engine", m["engine"]))
-                models[n["id"]] = n; assets[m["asset"]]["models"].append(n["id"]); return self.send(202, {k: v for k, v in n.items() if k != "t"})
-            if p[3] == "import":
-                m["imported"] = True; return self.send(200, {"id": m["id"], "imported": True, "files": [{"kind": "model", "format": "glb", "url": f"{BASE}/files/model.glb"}], "model_credits_left": 2})
-            if p[3] == "reject": return self.send(200, {"id": m["id"]})
+            if p[3] == "models" and len(p) == 6:
+                m = models[p[4]]
+                if p[5] == "import":
+                    m["imported"] = True; m["credits_charged"] = m["credits"]
+                    return self.send(200, {"glb_url": f"{BASE}/files/model.glb", "model_credits_left": 2})
+                if p[5] == "reject": return self.send(200, {"id": m["id"]})
         self.send(404, {"error": {"code": "not_found", "message": "No such thing."}})
 ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

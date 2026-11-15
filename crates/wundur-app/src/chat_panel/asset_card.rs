@@ -246,8 +246,9 @@ impl ChatPanel {
     }
 
     pub(super) fn render_new_asset(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Signed in to a Wundur account: the hosted flow's form (from its catalog).
-        if self.hosted_form.is_some() {
+        // The hosted flow's form (from its catalog; a sign-in prompt when signed out), unless
+        // the own-keys card is asked for.
+        if crate::hosted_store::flow_on() {
             return self.render_hosted_form(cx);
         }
         let theme = cx.theme();
