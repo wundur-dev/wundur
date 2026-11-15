@@ -115,6 +115,9 @@ pub enum Item {
     Asset(std::path::PathBuf),
     /// The form for a new game asset, in the chat until it's filled in or dismissed.
     NewAsset,
+    /// A quick image or sound effect the person is making from their Wundur account (the
+    /// window's id for its card). Wundur's own, not the agent's.
+    Make(u64),
     /// A turn's summary (see [`crate::summary`]), at the end of its turn, above its card of
     /// changes. `key`: the turn's (see [`crate::summary::TurnText::key`]).
     Summary { key: String, state: crate::summary::State },
@@ -1147,7 +1150,7 @@ pub fn to_markdown(items: &[Item], agent: &str) -> String {
             Item::Outgoing { to, text, .. } => format!("**To {to}:** {}", text.trim()),
             Item::ToolRun { tool, command, .. } => format!("**Tool {tool}:** `{command}`"),
             // Wundur's own cards, not part of the conversation.
-            Item::SignIn(_) | Item::NewAsset => continue,
+            Item::SignIn(_) | Item::NewAsset | Item::Make(_) => continue,
             Item::Asset(dir) => format!("*[Game asset: {}]*", dir.display()),
             Item::Compacted { trigger, tokens, .. } => {
                 let mut facts: Vec<String> = trigger.iter().cloned().collect();
