@@ -29,6 +29,9 @@ use wundur_core::conversation::{one_line, to_markdown};
 
 mod agents;
 mod asset_card;
+mod hosted_card;
+mod make_card;
+pub use make_card::MakeKind;
 mod composer;
 mod items;
 mod tools;
@@ -133,6 +136,9 @@ pub struct ChatPanel {
     /// revision last drawn (see `asset_card`).
     asset_notes: HashMap<PathBuf, Entity<InputState>>,
     new_asset: Option<asset_card::NewAssetForm>,
+    /// The new-asset form for a person signed in to a Wundur account (the hosted flow).
+    hosted_form: Option<hosted_card::HostedForm>,
+    makes: HashMap<u64, make_card::MakeCard>,
     asset_revision: u64,
     pub index: Arc<FileIndex>,
     last_revision: u64,
@@ -331,6 +337,8 @@ impl ChatPanel {
             toggled: HashSet::new(),
             asset_notes: HashMap::new(),
             new_asset: None,
+            hosted_form: None,
+            makes: HashMap::new(),
             asset_revision: 0,
             index: Arc::new(FileIndex::default()),
             last_revision: 0,

@@ -1123,6 +1123,11 @@ impl Workspace {
     /// one.
     /// Show the asset in `dir` (a folder with its record) in a tab: its history and model. With
     /// no folder, the chat shows the form for a new one.
+    /// A card for a quick image or sound effect from the Wundur account, in the chat.
+    pub fn start_make(&mut self, kind: crate::chat_panel::MakeKind, cx: &mut Context<Self>) {
+        self.claude.update(cx, |p, cx| p.start_make(kind, cx));
+    }
+
     pub fn open_asset(&mut self, dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = dir else {
             self.claude.update(cx, |p, cx| p.start_asset_form(cx));

@@ -72,6 +72,8 @@ icon_assets!(
         ListChecks,
         // A session in the Projects list.
         MessageCircle,
+        // A sound card's Play.
+        Play,
     ]
 );
 

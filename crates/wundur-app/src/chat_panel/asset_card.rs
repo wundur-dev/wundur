@@ -47,6 +47,12 @@ impl ChatPanel {
     /// `view-3d`, `state`.
     pub fn asset_command(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) -> String {
         let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
+        if cmd == "hosted" {
+            return self.hosted_command(arg, window, cx);
+        }
+        if cmd == "make" {
+            return self.make_command(arg, window, cx);
+        }
         if cmd == "new" {
             self.start_asset_form(cx);
             self.ensure_asset_fields(window, cx);
@@ -116,6 +122,8 @@ impl ChatPanel {
 
     /// Before drawing: the fields the asset cards need (made with the window).
     pub(super) fn ensure_asset_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_hosted_form(window, cx);
+        self.ensure_make_fields(window, cx);
         let (dirs, form): (Vec<PathBuf>, bool) = {
             let chat = &self.session.read(cx).chat;
             (
@@ -137,14 +145,14 @@ impl ChatPanel {
             });
         }
         // The asset store changed (a try came back, a step approved): the cards' heights did.
-        let revision = asset_store::revision(cx);
+        let revision = asset_store::revision(cx).wrapping_add(crate::hosted_store::revision(cx).wrapping_mul(1 << 32));
         if revision != self.asset_revision {
             self.asset_revision = revision;
             self.list.remeasure();
         }
     }
 
-    fn close_asset_form(&mut self, cx: &mut Context<Self>, replace: Option<PathBuf>) {
+    pub(super) fn close_asset_form(&mut self, cx: &mut Context<Self>, replace: Option<PathBuf>) {
         self.new_asset = None;
         self.session.update(cx, |s, cx| {
             if let Some(at) = s.chat.items.iter().position(|i| matches!(i, Item::NewAsset)) {
@@ -182,7 +190,7 @@ impl ChatPanel {
 
     /// The card: a quiet header (its name and kind, how far it has got, Open) and the step.
     #[allow(clippy::too_many_arguments)]
-    fn asset_frame(&self, id: SharedString, name: String, kind: Option<String>, stage: Option<Stage>, open: Option<PathBuf>, body: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn asset_frame(&self, id: SharedString, name: String, kind: Option<String>, stage: Option<Stage>, open: Option<PathBuf>, body: AnyElement, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted, border, bg) = (theme.foreground, theme.muted_foreground, theme.border, theme.background);
         div()
@@ -238,6 +246,10 @@ impl ChatPanel {
     }
 
     pub(super) fn render_new_asset(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Signed in to a Wundur account: the hosted flow's form (from its catalog).
+        if self.hosted_form.is_some() {
+            return self.render_hosted_form(cx);
+        }
         let theme = cx.theme();
         let danger = theme.danger;
         let Some(form) = &self.new_asset else { return div().into_any_element() };
@@ -322,7 +334,7 @@ impl ChatPanel {
     }
 
     /// Where the next picture will be, while it's made.
-    fn asset_making(&self, size: f32, label: Option<&str>, cx: &App) -> AnyElement {
+    pub(super) fn asset_making(&self, size: f32, label: Option<&str>, cx: &App) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         div()
             .relative()
@@ -347,6 +359,10 @@ impl ChatPanel {
     }
 
     pub(super) fn render_asset_card(&self, dir: &Path, cx: &mut Context<Self>) -> AnyElement {
+        // Made on the person's Wundur account: its own card.
+        if crate::hosted_store::is_hosted(dir) {
+            return self.render_hosted_card(dir, cx);
+        }
         let entry = asset_store::entry(dir, cx);
         let theme = cx.theme();
         let (muted, danger, green) = (theme.muted_foreground, theme.danger, theme.green);

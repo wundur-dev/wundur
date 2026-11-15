@@ -27,10 +27,17 @@ const MAX_OUTPUT: usize = 100_000;
 const MAX_IMAGES: usize = 4;
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
-/// What a run runs: a command (the person's own tool), or a pack's script.
+/// What a run runs: a command (the person's own tool), a pack's script, or one of the Wundur
+/// account's tools.
 enum Job {
     Command(Vec<String>),
     Pack(Box<(Pack, PackTool)>, Value),
+    Account(String, Value),
+}
+
+/// The Wundur account's tools, while the person is signed in.
+fn account_tools() -> Vec<Tool> {
+    if wundur_core::account::shared().is_signed_in() { wundur_core::account_tools::tools() } else { Vec::new() }
 }
 
 /// A run waiting for the person.
@@ -51,8 +58,9 @@ struct Runs {
 
 impl Global for Runs {}
 
-/// The tools the session's agent gets: the person's own, then the packs' (those with the keys
-/// they need; a name the person's own tools have already is theirs).
+/// The tools the session's agent gets: the person's own, then the Wundur account's (signed in),
+/// then the packs' (those with the keys they need). A name taken earlier stays with the first:
+/// signed in, the account's images and sound effects stand in for the game-assets pack's.
 fn tools_here(session: &Entity<AgentSession>, cx: &App) -> Vec<Tool> {
     let s = session.read(cx);
     if s.host_is_remote() {
@@ -60,6 +68,11 @@ fn tools_here(session: &Entity<AgentSession>, cx: &App) -> Vec<Tool> {
     }
     let settings = cx.global::<crate::AppSettings>().0.borrow();
     let mut tools = cli_tools::tools_for(&settings.cli_tools, &settings.folder_tools, s.cwd());
+    for tool in account_tools() {
+        if !tools.iter().any(|t| t.name == tool.name) {
+            tools.push(tool);
+        }
+    }
     for (pack, tool) in pack_tools(cx) {
         if !tools.iter().any(|t| t.name == tool.name) {
             tools.push(pack.as_tool(&tool));
@@ -104,7 +117,10 @@ pub fn call(session: Entity<AgentSession>, name: &str, args: Value, reply: Optio
         let settings = cx.global::<crate::AppSettings>().0.borrow();
         cli_tools::tools_for(&settings.cli_tools, &settings.folder_tools, session.read(cx).cwd()).iter().any(|t| t.name == name)
     };
-    let (job, shown) = if own {
+    let account = !own && wundur_core::account_tools::is_tool(name) && account_tools().iter().any(|t| t.name == name);
+    let (job, shown) = if account {
+        (Job::Account(name.to_string(), args.clone()), format!("{name} (Wundur account) {args} · uses your monthly allowance"))
+    } else if own {
         match cli_tools::argv(&tool, &args) {
             Ok(argv) => {
                 let shown = argv.iter().map(|a| wundur_core::host::shell_quote(a)).collect::<Vec<_>>().join(" ");
@@ -151,6 +167,14 @@ fn start(session: &Entity<AgentSession>, tool: Tool, job: Job, reply: Option<Rep
     let cwd = session.read(cx).cwd().to_path_buf();
     let argv = match job {
         Job::Command(argv) => argv,
+        Job::Account(name, args) => {
+            std::thread::spawn(move || {
+                let ran = wundur_core::account_tools::run(&name, &args, &cwd);
+                let images: Vec<PathBuf> = ran.files.iter().filter(|f| f.extension().is_some_and(|e| e == "png")).cloned().collect();
+                answer(reply, ran.text, ran.failed, images_as_content(&images));
+            });
+            return;
+        }
         Job::Pack(found, args) => {
             let (pack, ptool) = *found;
             let settings = cx.global::<crate::AppSettings>().0.borrow().pack_settings.get(&pack.manifest.id).cloned().unwrap_or_default();

@@ -127,9 +127,15 @@ impl ApiError {
         Self { status, code: format!("http_{status}"), message: String::new() }
     }
 
-    /// An allowance or hourly limit is used up (`429`).
+    /// A rate limit was reached (`429`: the hourly limit, the generation cap): try later.
     pub fn is_limit(&self) -> bool {
         self.status == 429
+    }
+
+    /// Something is used up for this month (`402`, or an allowance code an older API sent with
+    /// `429`): more needs an upgrade.
+    pub fn is_used_up(&self) -> bool {
+        self.status == 402 || self.code.ends_with("_allowance_used") || self.code.ends_with("_credits_used") || self.code.ends_with("_seconds_used")
     }
 }
 
@@ -208,11 +214,16 @@ pub struct Usage {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Allowance {
-    pub approved_models: Usage,
-    pub attempts: Usage,
     pub images: Usage,
+    /// Spent by Import, by each engine's credits (`None` from an API before credit buckets).
+    pub model_credits: Option<Usage>,
+    /// Sound effects, in seconds.
+    pub sound_seconds: Option<Usage>,
     pub summaries: Usage,
     pub summary_tokens: Usage,
+    /// From an API before credit buckets: models imported, and generations.
+    pub approved_models: Usage,
+    pub attempts: Usage,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -927,6 +938,21 @@ impl Account {
 
     /// [`Self::send`], waiting up to `timeout` for the answer (a thinking summary takes minutes).
     pub fn send_within(&self, auth: Auth, method: &str, path: &str, body: Option<&serde_json::Value>, timeout: Duration) -> Result<String, Error> {
+        self.request(auth, method, path, body, timeout, None)
+    }
+
+    /// A call to the API: `method` (GET, POST, PATCH, DELETE) on `path`, with `body` as JSON,
+    /// waiting up to `timeout`; for a call that spends, an `idempotency_key` (new per action:
+    /// the server answers a repeat of it with the first answer, so a retry can't charge twice).
+    pub fn request(
+        &self,
+        auth: Auth,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        timeout: Duration,
+        idempotency_key: Option<&str>,
+    ) -> Result<String, Error> {
         let attempt = |force: bool| -> Result<String, Error> {
             let credential = match auth {
                 Auth::Session => self.access_token(force)?,
@@ -935,10 +961,20 @@ impl Account {
             let url = format!("{}{}", self.api_base(), path);
             let bearer = format!("Bearer {credential}");
             let http = agent(timeout);
+            let key = idempotency_key.unwrap_or_default();
             let resp = match (method, body) {
                 ("GET", _) => http.get(&url).header("Authorization", &bearer).call(),
                 ("DELETE", _) => http.delete(&url).header("Authorization", &bearer).call(),
+                ("PATCH", b) => {
+                    let req = http.patch(&url).header("Authorization", &bearer);
+                    match b {
+                        Some(b) => req.send_json(b),
+                        None => req.send_empty(),
+                    }
+                }
+                (_, Some(b)) if !key.is_empty() => http.post(&url).header("Authorization", &bearer).header("Idempotency-Key", key).send_json(b),
                 (_, Some(b)) => http.post(&url).header("Authorization", &bearer).send_json(b),
+                (_, None) if !key.is_empty() => http.post(&url).header("Authorization", &bearer).header("Idempotency-Key", key).send_empty(),
                 (_, None) => http.post(&url).header("Authorization", &bearer).send_empty(),
             };
             read(resp)
@@ -1005,6 +1041,19 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn me_reads_the_credit_buckets_and_the_older_counts() {
+        let new: Me = serde_json::from_str(
+            r#"{"plan":"free","allowance":{"images":{"used":1,"limit":5,"left":4},"model_credits":{"used":0,"limit":3,"left":3},"sound_seconds":{"used":10,"limit":60,"left":50}}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.allowance.model_credits.map(|u| u.left), Some(3));
+        assert_eq!(new.allowance.sound_seconds.map(|u| u.left), Some(50));
+        let old: Me = serde_json::from_str(r#"{"plan":"free","allowance":{"approved_models":{"used":0,"limit":1,"left":1}}}"#).unwrap();
+        assert!(old.allowance.model_credits.is_none());
+        assert_eq!(old.allowance.approved_models.left, 1);
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc_7636() {

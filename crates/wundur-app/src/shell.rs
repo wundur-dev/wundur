@@ -3886,6 +3886,32 @@ impl Render for Shell {
             .ghost()
             .xsmall()
             .dropdown_menu_with_anchor(Anchor::TopRight, crate::actions::menu_popup);
+        // Create: the ways to make something for the session's project, from one labelled
+        // button (game assets, images, sound effects), where the session's own buttons are.
+        let shell = cx.entity().downgrade();
+        let create_button = gpui_kit::component::button::Button::new("t-create")
+            .icon(Icon::new(gpui_kit::assets::IconName::Sparkles))
+            .label("Create")
+            .ghost()
+            .xsmall()
+            .tooltip("Make a game asset, an image or a sound effect")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                use crate::chat_panel::MakeKind;
+                use gpui_kit::component::menu::PopupMenuItem;
+                let on_ws = |f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| {
+                    let shell = shell.clone();
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        let _ = shell.update(cx, |s, cx| {
+                            if let Some(ws) = s.active_workspace() {
+                                ws.update(cx, |w, cx| f(w, window, cx));
+                            }
+                        });
+                    }
+                };
+                menu.item(PopupMenuItem::new("Game asset…").icon(gpui_kit::assets::IconName::Box).on_click(on_ws(|w, win, cx| w.open_asset(None, win, cx))))
+                    .item(PopupMenuItem::new("Image…").icon(gpui_kit::assets::IconName::Image).on_click(on_ws(|w, _, cx| w.start_make(MakeKind::Image, cx))))
+                    .item(PopupMenuItem::new("Sound effect…").icon(gpui_kit::assets::IconName::AudioLines).on_click(on_ws(|w, _, cx| w.start_make(MakeKind::Sound, cx))))
+            });
         // Room for the macOS window buttons at the left; Windows has its own at the right.
         let left = if cfg!(target_os = "macos") { 76. } else { 8. };
         let top = TitleBar::new().h(px(34.)).pl(px(left)).child(
@@ -3936,6 +3962,7 @@ impl Render for Shell {
                             .items_center()
                             .gap_1()
                             .pr_1()
+                            .child(div().occlude().pr_1().child(create_button))
                             .child(
                                 button("t-terminal", Icon::new(IconName::SquareTerminal), "New terminal (Cmd+T)")
                                     .on_click(to_ws(|w, win, cx| w.new_terminal(win, cx))),
@@ -4191,6 +4218,16 @@ pub fn open_settings(cx: &mut App) {
     cx.defer(move |cx| {
         let _ = handle.update(cx, |_, window, cx| {
             let _ = shell.update(cx, |s, cx| s.show_settings(window, cx));
+        });
+    });
+}
+
+/// Settings in the window, on page `name` (see `settings_window::PAGES`).
+pub fn open_settings_page(name: &'static str, cx: &mut App) {
+    let Some((handle, shell)) = cx.try_global::<crate::control::ControlTargets>().and_then(|t| t.workspace.clone()) else { return };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = shell.update(cx, |s, cx| s.show_settings_at(name, false, window, cx));
         });
     });
 }

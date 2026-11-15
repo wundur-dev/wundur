@@ -1804,6 +1804,7 @@ impl AgentSession {
             self.chat.attach_summaries(&summary::cached(&id));
             if !self.host.is_remote() {
                 self.chat.attach_assets(&crate::asset_store::started_in(&self.cwd, &id));
+                self.chat.attach_assets(&crate::hosted_store::started_in(&self.cwd, &id));
             }
         }
     }
