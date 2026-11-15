@@ -139,6 +139,8 @@ pub struct ChatPanel {
     new_asset: Option<asset_card::NewAssetForm>,
     /// The new-asset form for a person signed in to a Wundur account (the hosted flow).
     hosted_form: Option<hosted_card::HostedForm>,
+    /// Each hosted asset card's "Refine" box, by the asset's folder.
+    refine_notes: HashMap<PathBuf, Entity<gpui_kit::component::input::TextareaState>>,
     makes: HashMap<u64, make_card::MakeCard>,
     asset_revision: u64,
     pub index: Arc<FileIndex>,
@@ -339,6 +341,7 @@ impl ChatPanel {
             asset_notes: HashMap::new(),
             new_asset: None,
             hosted_form: None,
+            refine_notes: HashMap::new(),
             makes: HashMap::new(),
             asset_revision: 0,
             index: Arc::new(FileIndex::default()),

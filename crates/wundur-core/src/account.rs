@@ -93,6 +93,8 @@ pub struct ApiError {
     pub status: u16,
     pub code: String,
     pub message: String,
+    /// Seconds the server asked to wait (`Retry-After`, sent with `busy`).
+    pub retry_after: Option<u32>,
 }
 
 impl ApiError {
@@ -117,14 +119,14 @@ impl ApiError {
             error_description: String,
         }
         if let Ok(w) = serde_json::from_str::<Wrapped>(body) {
-            return Self { status, code: w.error.code, message: w.error.message };
+            return Self { status, code: w.error.code, message: w.error.message, retry_after: None };
         }
         if let Ok(o) = serde_json::from_str::<OAuth>(body) {
             // Entra's descriptions run to trace ids and timestamps: the first line says it.
             let message = o.error_description.lines().next().unwrap_or("").to_string();
-            return Self { status, code: o.error, message };
+            return Self { status, code: o.error, message, retry_after: None };
         }
-        Self { status, code: format!("http_{status}"), message: String::new() }
+        Self { status, code: format!("http_{status}"), message: String::new(), retry_after: None }
     }
 
     /// A rate limit was reached (`429`: the hourly limit, the generation cap): try later.
@@ -740,8 +742,9 @@ fn agent(timeout: Duration) -> ureq::Agent {
 fn read(resp: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<String, Error> {
     let mut resp = resp.map_err(|e| Error::Network(e.to_string()))?;
     let status = resp.status().as_u16();
+    let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u32>().ok());
     let body = resp.body_mut().read_to_string().unwrap_or_default();
-    if (200..300).contains(&status) { Ok(body) } else { Err(Error::Api(ApiError::parse(status, &body))) }
+    if (200..300).contains(&status) { Ok(body) } else { Err(Error::Api(ApiError { retry_after, ..ApiError::parse(status, &body) })) }
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, Error> {

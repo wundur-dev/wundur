@@ -35,6 +35,10 @@ pub struct Entry {
     pub engine: Option<String>,
     /// Previews downloaded (outside the project), by model attempt.
     pub previews: HashMap<String, PathBuf>,
+    /// The step the card shows when the person went back to one (else the asset's own), and
+    /// the set of views picked from the versions (else the latest).
+    pub step: Option<u8>,
+    pub shown_set: Option<String>,
     polling: bool,
 }
 
@@ -44,6 +48,8 @@ struct Store {
     catalog: Option<Catalog>,
     /// The person's plan (`free`, `monthly`…), for which engines they may use.
     plan: Option<String>,
+    /// When the plan's allowance resets (paid plans: what's said instead of Upgrade).
+    period_end: Option<String>,
     loading: bool,
     catalog_error: Option<String>,
     revision: u64,
@@ -60,11 +66,10 @@ pub fn is_hosted(dir: &Path) -> bool {
     dir.join(flow::RECORD).is_file()
 }
 
-/// Whether New asset uses the hosted flow (signed in). Off until the API's asset endpoints
-/// (`/v1/assets`, `/v1/models`) are live; `WUNDUR_HOSTED_ASSETS=1` turns it on to try it (as
-/// against `scripts/fake-asset-api.py`).
+/// Whether New asset uses the hosted flow: always, unless `WUNDUR_OWN_KEY_ASSETS=1` brings back
+/// the older card that calls image and model services with the person's own keys (a dev flag).
 pub fn flow_on() -> bool {
-    wundur_core::env_var("HOSTED_ASSETS").is_ok_and(|v| v != "0")
+    !wundur_core::env_var("OWN_KEY_ASSETS").is_ok_and(|v| v != "0")
 }
 
 /// Whether the person is signed in to a Wundur account (asked once, then remembered).
@@ -78,14 +83,16 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     if store.catalog.is_none() && !store.loading {
         store.loading = true;
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let got = cx.background_spawn(async move { (flow::catalog(), account::shared().me_with(Auth::Key).map(|m| m.plan)) }).await;
+            let got = cx.background_spawn(async move { (flow::catalog(), account::shared().me_with(Auth::Key).map(|m| (m.plan, m.period_end))) }).await;
             cx.update(|cx| {
                 let store = cx.default_global::<Store>();
                 store.loading = false;
                 match got {
-                    (Ok(c), plan) => {
+                    (Ok(c), me) => {
                         store.catalog = Some(c);
-                        store.plan = plan.ok();
+                        let (plan, period_end) = me.ok().unzip();
+                        store.plan = plan;
+                        store.period_end = period_end.flatten();
                         store.catalog_error = None;
                     }
                     (Err(e), _) => store.catalog_error = Some(flow::explain(&e).0),
@@ -98,6 +105,15 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     }
     let store = cx.global::<Store>();
     (store.catalog.clone(), store.plan.clone())
+}
+
+/// When the person's monthly allowance resets, on a paid plan (`None` on the free one).
+pub fn resets_on(cx: &App) -> Option<String> {
+    let store = cx.try_global::<Store>()?;
+    if store.plan.as_deref().is_none_or(|p| p == "free") {
+        return None;
+    }
+    store.period_end.as_ref().map(|d| d.get(..10).unwrap_or(d).to_string())
 }
 
 /// Why the catalog isn't there, if fetching it failed (`catalog` tries again).
@@ -142,6 +158,16 @@ fn update(dir: &Path, save: bool, cx: &mut App, f: impl FnOnce(&mut Entry)) {
     }
     store.revision += 1;
     cx.refresh_windows();
+}
+
+/// Show step `step` (1 describe … 4 rig), or the asset's own with `None`.
+pub fn show_step(dir: &Path, step: Option<u8>, cx: &mut App) {
+    update(dir, false, cx, |e| e.step = step);
+}
+
+/// Show set `set` of the views (a version), or the latest with `None`.
+pub fn show_set(dir: &Path, set: Option<String>, cx: &mut App) {
+    update(dir, false, cx, |e| e.shown_set = set);
 }
 
 /// Pick the engine for the next model.
@@ -232,23 +258,29 @@ pub fn change(dir: &Path, instruction: &str, cx: &mut App) {
     if instruction.is_empty() {
         return;
     }
+    show_set(dir, None, cx);
     ask(dir, "Changing the views", cx, move |id| flow::new_set(id, &from, Some(&instruction)));
 }
 
 /// A fresh set from the description (one image).
 pub fn retry(dir: &Path, cx: &mut App) {
     let Some(from) = latest_set(dir, cx) else { return };
+    show_set(dir, None, cx);
     ask(dir, "Starting again", cx, move |id| flow::new_set(id, &from, None));
 }
 
 /// Approve set `set`: the one models are made from.
 pub fn approve(dir: &Path, set: &str, cx: &mut App) {
     let set = set.to_string();
+    show_step(dir, None, cx);
     ask(dir, "Approving", cx, move |id| flow::approve(id, &set));
 }
 
+/// The set a change or a fresh start comes from: the version shown, else the latest.
 fn latest_set(dir: &Path, cx: &mut App) -> Option<String> {
-    entry(dir, cx)?.asset?.latest_set().map(|s| s.id.clone())
+    let e = entry(dir, cx)?;
+    let asset = e.asset?;
+    e.shown_set.filter(|s| asset.sets.iter().any(|x| &x.id == s)).or_else(|| asset.latest_set().map(|s| s.id.clone()))
 }
 
 /// Start a model on the picked engine (or the kind's default) from the approved set; or, when
@@ -256,25 +288,22 @@ fn latest_set(dir: &Path, cx: &mut App) -> Option<String> {
 pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
     let Some(e) = entry(dir, cx) else { return };
     let Some(asset) = e.asset.clone() else { return };
-    let Some(set) = asset.approved_set().map(|s| s.id.clone()) else { return };
     let (catalog, _) = catalog(cx);
     let default = catalog.as_ref().and_then(|c| c.kind(&asset.kind)).map(|k| k.default_engine.clone()).unwrap_or_default();
     let engine = e.engine.clone().unwrap_or(default);
-    let previous_engine = reroll_of.as_ref().and_then(|m| asset.models.iter().find(|x| &x.id == m)).map(|m| m.engine.clone());
+    if asset.approved_set().is_none() {
+        return;
+    }
     update(dir, false, cx, |e| {
-        e.working = Some(if reroll_of.is_some() { "Trying again" } else { "Starting the model" });
+        e.working = Some(if reroll_of.is_some() { "Rebuilding" } else { "Starting the model" });
         e.error = None;
+        e.step = None;
     });
     let (id, folder) = (asset.id.clone(), dir.to_path_buf());
     cx.spawn(async move |cx: &mut AsyncApp| {
         let got = cx
             .background_spawn(async move {
-                let made = match &reroll_of {
-                    // A different engine than the attempt being rerolled: say so.
-                    Some(m) => flow::reroll(m, (previous_engine.as_deref() != Some(engine.as_str())).then_some(engine.as_str())),
-                    None => flow::start_model(&id, &set, &engine),
-                };
-                made.and_then(|_| flow::get(&id))
+                flow::start_model(&id, (!engine.is_empty()).then_some(engine.as_str())).and_then(|_| flow::get(&id))
             })
             .await;
         cx.update(|cx| {
@@ -296,6 +325,7 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
 pub fn import(dir: &Path, model: &str, cx: &mut App) {
     let Some(e) = entry(dir, cx) else { return };
     let name = flow::file_name(&e.record.name, "glb").trim_end_matches(".glb").to_string();
+    let asset_id = e.record.id.clone();
     update(dir, false, cx, |e| {
         e.working = Some("Importing");
         e.error = None;
@@ -305,10 +335,17 @@ pub fn import(dir: &Path, model: &str, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         let got = cx
             .background_spawn(async move {
-                let delivered = flow::import(&model).map_err(|e| flow::explain(&e))?;
+                let delivered = flow::import(&asset_id, &model).map_err(|e| flow::explain(&e))?;
                 let mut saved = Vec::new();
-                for (n, f) in delivered.files.iter().enumerate() {
-                    let base = if f.kind == "model" || n == 0 { name.clone() } else { format!("{name}-{}", f.kind) };
+                // The model file first (links expire: fetched right away), then anything else.
+                let Some(url) = delivered.model_url().map(str::to_string) else {
+                    return Err(("Wundur's server sent no model file. Import again to fetch it (it isn't charged twice).".to_string(), false));
+                };
+                let file = format!("{name}.glb");
+                flow::download(&url, &into.join(&file)).map_err(|e| (format!("The model was imported, but saving {file} failed: {e}. Import again to fetch it (it isn't charged twice)."), false))?;
+                saved.push(file);
+                for (n, f) in delivered.files.iter().filter(|f| f.url != url).enumerate() {
+                    let base = format!("{name}-{}{}", if f.kind.is_empty() { "file" } else { &f.kind }, if n == 0 { String::new() } else { format!("-{}", n + 1) });
                     let file = format!("{base}.{}", if f.format.is_empty() { "bin" } else { &f.format });
                     flow::download(&f.url, &into.join(&file)).map_err(|e| (format!("The model was imported, but saving {file} failed: {e}. Import again to fetch it (it isn't charged twice)."), false))?;
                     saved.push(file);
@@ -335,10 +372,11 @@ pub fn import(dir: &Path, model: &str, cx: &mut App) {
 
 /// Not wanted (optional; frees the preview on the service).
 pub fn reject(dir: &Path, model: &str, cx: &mut App) {
+    let Some(id) = entry(dir, cx).map(|e| e.record.id) else { return };
     let model = model.to_string();
     let folder = dir.to_path_buf();
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let _ = cx.background_spawn(async move { flow::reject(&model) }).await;
+        let _ = cx.background_spawn(async move { flow::reject(&id, &model) }).await;
         cx.update(|cx| poll(&folder, cx));
     })
     .detach();
@@ -350,7 +388,7 @@ pub fn reject(dir: &Path, model: &str, cx: &mut App) {
 pub fn preview(dir: &Path, model: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
     let Some(e) = entry(dir, cx) else { return };
     let Some(m) = e.asset.as_ref().and_then(|a| a.models.iter().find(|m| m.id == model)).cloned() else { return };
-    let Some(url) = m.preview.as_ref().and_then(|p| p.mesh.as_ref()).map(|mesh| mesh.url.clone()) else {
+    let Some(url) = m.preview_link().map(str::to_string) else {
         update(dir, false, cx, |e| e.error = Some(("This preview has no 3D mesh to show yet.".into(), false)));
         return;
     };

@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn the_account_s_answers_become_a_summary_a_quiet_skip_or_a_plain_error() {
         use crate::account::{ApiError, Error};
-        let api = |status: u16, code: &str| Err(Error::Api(ApiError { status, code: code.into(), message: format!("{code} said") }));
+        let api = |status: u16, code: &str| Err(Error::Api(ApiError { status, code: code.into(), message: format!("{code} said"), retry_after: None }));
         let answer = serde_json::json!({ "model": "gpt-5.4-nano", "choices": [{ "message": { "content":
             r#"{"status":"done","headline":"Added a test","changed":[],"checked":[],"needs_you":[]}"# } }] });
         let done = account_outcome(Ok(answer.to_string()), &[]).unwrap().unwrap();
