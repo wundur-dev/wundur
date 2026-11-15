@@ -292,6 +292,8 @@ pub struct Settings {
     pub continue_on_start: Vec<String>,
     /// Turn summaries by a language model server (off until set up).
     pub summaries: crate::summary::Config,
+    /// The Wundur account ([`crate::account`]): the API's address, this machine's key id.
+    pub account: crate::account::Config,
     /// Parent mode ([`crate::parent`]): off until a parent sets it up.
     pub parent: crate::parent::Config,
     /// Tool servers (MCP) every agent gets ([`crate::mcp`]); and each folder's own.

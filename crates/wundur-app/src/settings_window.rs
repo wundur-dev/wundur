@@ -34,7 +34,7 @@ pub struct SettingsPage {
 }
 
 /// The pages, in order, by the names links and tests use.
-const PAGES: [&str; 8] = ["general", "chat", "mcp", "tools", "terminals", "notifications", "summaries", "parent"];
+const PAGES: [&str; 9] = ["general", "account", "chat", "mcp", "tools", "terminals", "notifications", "summaries", "parent"];
 
 /// The page asks to be closed (Escape).
 pub struct CloseSettings;
@@ -44,6 +44,8 @@ impl EventEmitter<CloseSettings> for SettingsPage {}
 impl SettingsPage {
     /// `folders`: the folders the MCP servers page offers (the shown session's first).
     pub fn new(folders: Vec<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
+        // The account as it is now (signed in, what's left), for its page.
+        crate::settings_account::refresh(cx);
         Self { focus: cx.focus_handle(), font_search: None, packs: Default::default(), parent: Default::default(), tools: crate::settings_tools::ToolsState::new(folders.clone()), mcp: crate::settings_mcp::McpState::new(folders), start: 0 }
     }
 
@@ -84,6 +86,30 @@ fn parent_page(page: WeakEntity<SettingsPage>) -> SettingPage {
     SettingPage::new("Parent mode").icon(IconName::User).group(
         SettingGroup::new().item(SettingItem::render(move |_, window, cx| crate::settings_parent::render(&page, window, cx))),
     )
+}
+
+/// Account: signing in to a Wundur account (see `settings_account`), and the API's address.
+fn account_page() -> SettingPage {
+    SettingPage::new("Account").icon(gpui_kit::assets::IconName::CircleUser).groups([
+        SettingGroup::new().title("Wundur account").item(SettingItem::render(|_, window, cx| crate::settings_account::render(window, cx))),
+        SettingGroup::new().title("Advanced").item(
+            SettingItem::new(
+                "API address",
+                SettingField::input(
+                    |cx: &App| get(cx, |s| SharedString::from(s.account.api_base().to_string())),
+                    |v: SharedString, cx: &mut App| {
+                        let base = v.trim().trim_end_matches('/').to_string();
+                        let base = if base == wundur_core::account::DEFAULT_API_BASE { String::new() } else { base };
+                        wundur_core::account::shared().set_api_base(&base);
+                        change(cx, |s| s.account.api_base = base);
+                        crate::settings_account::refresh(cx);
+                    },
+                )
+                .default_value(wundur_core::account::DEFAULT_API_BASE),
+            )
+            .description("Where Wundur Studio's hosted services are. Leave it as it is unless you were given another."),
+        ),
+    ])
 }
 
 /// Read a setting.
@@ -561,7 +587,7 @@ impl Render for SettingsPage {
                         // As wide as New session's folders.
                         .sidebar_width(px(252.))
                         .default_selected_index(gpui_kit::component::setting::SelectIndex { page_ix: self.start, group_ix: None })
-                        .pages([general(cx.entity().downgrade()), chat(), mcp_page(cx.entity().downgrade()), tools_page(cx.entity().downgrade()), terminals(), notifications(), summaries(), parent_page(cx.entity().downgrade())]),
+                        .pages([general(cx.entity().downgrade()), account_page(), chat(), mcp_page(cx.entity().downgrade()), tools_page(cx.entity().downgrade()), terminals(), notifications(), summaries(), parent_page(cx.entity().downgrade())]),
                 ),
             )
     }
