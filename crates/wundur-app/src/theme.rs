@@ -141,6 +141,13 @@ pub fn tool_ground(cx: &App) -> Hsla {
     crate::sheet_tabs::mix(t.background, t.sidebar, 0.45)
 }
 
+/// The ground of the card a project's sessions sit in, in the Projects list: a step off the
+/// list's own ground (lighter on both themes), so the sessions read as set into the project.
+pub fn session_card_ground(cx: &App) -> Hsla {
+    let t = cx.theme();
+    if t.is_dark() { crate::sheet_tabs::mix(tool_ground(cx), t.foreground, 0.05) } else { crate::sheet_tabs::mix(tool_ground(cx), gpui::white(), 0.6) }
+}
+
 pub fn sync(cx: &mut App) {
     let dark = wants_dark(cx);
     if cx.theme().is_dark() != dark {
