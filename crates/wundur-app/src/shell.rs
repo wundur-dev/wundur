@@ -1423,7 +1423,9 @@ impl Shell {
             let _ = cx.global::<panels::Names>().0.borrow_mut().set(&panels::session_key(tab.number), &format!("{name} (fresh)"));
         }
         let summaries = cx.global::<AppSettings>().0.borrow().summaries.clone();
-        if summaries.model.trim().is_empty() {
+        // Condensed only by the person's own server (the account's API sums up turns, nothing
+        // else): otherwise the draft as it is.
+        if summaries.source == wundur_core::summary::Provider::Account || summaries.model.trim().is_empty() {
             chat.update(cx, |p, cx| p.take_handoff(&draft, window, cx));
             return;
         }

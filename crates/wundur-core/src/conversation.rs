@@ -557,6 +557,15 @@ impl Conversation {
         self.items.iter().skip(from + 1).position(|i| matches!(i, Item::User(_))).map_or(self.items.len(), |p| from + 1 + p)
     }
 
+    /// Take a turn's summary card away (a summary skipped after it was asked for).
+    pub fn drop_summary(&mut self, key: &str) {
+        let before = self.items.len();
+        self.items.retain(|i| !matches!(i, Item::Summary { key: k, .. } if k == key));
+        if self.items.len() != before {
+            self.revision += 1;
+        }
+    }
+
     /// Show a turn's summary: the turn whose key is `key` (found again by it: the chat may
     /// have moved on, or earlier history been read in, since it was asked for). Nothing when
     /// the turn is gone.

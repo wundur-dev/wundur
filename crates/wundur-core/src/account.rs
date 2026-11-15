@@ -922,6 +922,11 @@ impl Account {
     /// or none. With [`Auth::Session`], a `401` refreshes the access token and tries once more.
     /// The answer's body (empty for `204`).
     pub fn send(&self, auth: Auth, method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<String, Error> {
+        self.send_within(auth, method, path, body, Duration::from_secs(60))
+    }
+
+    /// [`Self::send`], waiting up to `timeout` for the answer (a thinking summary takes minutes).
+    pub fn send_within(&self, auth: Auth, method: &str, path: &str, body: Option<&serde_json::Value>, timeout: Duration) -> Result<String, Error> {
         let attempt = |force: bool| -> Result<String, Error> {
             let credential = match auth {
                 Auth::Session => self.access_token(force)?,
@@ -929,7 +934,7 @@ impl Account {
             };
             let url = format!("{}{}", self.api_base(), path);
             let bearer = format!("Bearer {credential}");
-            let http = agent(Duration::from_secs(60));
+            let http = agent(timeout);
             let resp = match (method, body) {
                 ("GET", _) => http.get(&url).header("Authorization", &bearer).call(),
                 ("DELETE", _) => http.delete(&url).header("Authorization", &bearer).call(),

@@ -476,7 +476,9 @@ fn edit_prompt(cx: &mut App) {
     }
 }
 
-fn summaries() -> SettingPage {
+fn summaries(cx: &App) -> SettingPage {
+    use wundur_core::summary::Provider;
+    let hosted = get(cx, |s| s.summaries.source) == Provider::Account;
     let summary_switch = |title: &'static str, description: &'static str, field: fn(&mut wundur_core::summary::Config) -> &mut bool, default: bool| {
         SettingItem::new(
             title,
@@ -489,11 +491,40 @@ fn summaries() -> SettingPage {
         .description(description)
     };
     SettingPage::new("Summaries").icon(IconName::BookOpen).resettable(true).groups([
-        SettingGroup::new()
+        {
+        let g = SettingGroup::new()
             .title("Turn summaries")
-            .description("When a turn ends, a language model you run (LM Studio, Ollama, llama.cpp: any server with the OpenAI API) sums it up: how it ended, what changed, how it was checked and what waits on you. It shows at the end of the turn and in the session list. Only this server gets anything.")
+            .description("When a turn ends, a language model sums it up: how it ended, what changed, how it was checked and what waits on you. It shows at the end of the turn and in the session list. From a server you run (LM Studio, Ollama, llama.cpp: any server with the OpenAI API), or from your Wundur account.")
             .items([
-                summary_switch("Summarize turns", "Ask the server below after each turn.", |c| &mut c.enabled, false),
+                summary_switch("Summarize turns", "Ask for a summary after each turn.", |c| &mut c.enabled, false),
+                choice(
+                    "Summaries from",
+                    "Your own server gets everything and nothing leaves your network; your Wundur account needs no setup and uses its monthly summaries.",
+                    &[("own", "Your own server"), ("account", "Wundur account")],
+                    "own",
+                    |s| if s.summaries.source == Provider::Account { "account".into() } else { "own".into() },
+                    |s, v| s.summaries.source = if v == "account" { Provider::Account } else { Provider::Own },
+                ),
+            ]);
+            if hosted {
+                g.item(
+                    SettingItem::new(
+                        "Your account",
+                        SettingField::render(|_, _, cx: &mut App| {
+                            let theme = cx.theme();
+                            let (muted, warn) = (theme.muted_foreground, theme.yellow);
+                            let signed_in = wundur_core::account::shared().known_signed_in().unwrap_or(false);
+                            if signed_in {
+                                div().max_w(px(260.)).text_xs().text_color(muted).child("Signed in. What's left this month is in Settings > Account.").into_any_element()
+                            } else {
+                                div().max_w(px(260.)).text_xs().text_color(warn).child("Not signed in: sign in under Settings > Account.").into_any_element()
+                            }
+                        }),
+                    )
+                    .description("The turn's text (and the changed files' paths, if on below) goes to Wundur's server and the Azure OpenAI model behind it. Wundur doesn't log it; Microsoft keeps prompts up to 30 days for abuse monitoring."),
+                )
+            } else {
+                g.items([
                 SettingItem::new(
                     "Server",
                     SettingField::input(
@@ -539,7 +570,9 @@ fn summaries() -> SettingPage {
                     }),
                 )
                 .description("The models the server has; one that runs fast is plenty."),
-            ]),
+                            ])
+            }
+        },
         SettingGroup::new().title("What it gets").items([
             summary_switch("The changed files' paths", "Paths only, never their contents. Keeps the Changed section true to what happened.", |c| &mut c.include_files, true),
             summary_switch("A line per tool call", "Each call's tool and what it was about (a command, a file name), never its output.", |c| &mut c.include_tools, false),
@@ -587,7 +620,7 @@ impl Render for SettingsPage {
                         // As wide as New session's folders.
                         .sidebar_width(px(252.))
                         .default_selected_index(gpui_kit::component::setting::SelectIndex { page_ix: self.start, group_ix: None })
-                        .pages([general(cx.entity().downgrade()), account_page(), chat(), mcp_page(cx.entity().downgrade()), tools_page(cx.entity().downgrade()), terminals(), notifications(), summaries(), parent_page(cx.entity().downgrade())]),
+                        .pages([general(cx.entity().downgrade()), account_page(), chat(), mcp_page(cx.entity().downgrade()), tools_page(cx.entity().downgrade()), terminals(), notifications(), summaries(cx), parent_page(cx.entity().downgrade())]),
                 ),
             )
     }

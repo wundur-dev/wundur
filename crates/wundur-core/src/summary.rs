@@ -26,11 +26,25 @@ const MAX_LINES: usize = 40;
 /// A turn with no tool calls and less to say than this needs no summary: the reply is one.
 const SHORT_REPLY: usize = 500;
 
+/// Where summaries come from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    /// A server the person runs (LM Studio, Ollama: the OpenAI API), with its address and model.
+    #[default]
+    Own,
+    /// The person's Wundur account: the hosted API with this machine's key (it picks the
+    /// model; the turn goes to Wundur's server and the Azure OpenAI model behind it).
+    Account,
+}
+
 /// How summaries are made: the server, the model, what goes in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
+    /// Where from: the person's own server (the fields below) or their Wundur account.
+    pub source: Provider,
     /// The server's address, as `http://host:port` (with or without `/v1`).
     pub endpoint: String,
     /// The model's id on that server.
@@ -49,6 +63,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            source: Provider::Own,
             endpoint: "http://localhost:1234".into(),
             model: String::new(),
             api_key: String::new(),
@@ -62,7 +77,11 @@ impl Default for Config {
 impl Config {
     /// Set up enough to ask.
     pub fn ready(&self) -> bool {
-        self.enabled && !self.endpoint.trim().is_empty() && !self.model.trim().is_empty()
+        self.enabled
+            && match self.source {
+                Provider::Account => true,
+                Provider::Own => !self.endpoint.trim().is_empty() && !self.model.trim().is_empty(),
+            }
     }
 }
 
@@ -641,8 +660,59 @@ fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(timeout)).build().into()
 }
 
-/// Ask the server for `turn`'s summary (blocking: run it off the UI thread).
-pub fn summarize(config: &Config, turn: &TurnText) -> Result<TurnSummary> {
+/// The model the hosted API answers as (it picks the real one).
+pub const ACCOUNT_MODEL: &str = "wundur-summary";
+
+/// Ask for `turn`'s summary (blocking: run it off the UI thread); `None` when it is skipped
+/// quietly (from the account: a turn over its size cap, or the hourly limit reached).
+pub fn summarize(config: &Config, turn: &TurnText) -> Result<Option<TurnSummary>> {
+    match config.source {
+        Provider::Own => summarize_own(config, turn).map(Some),
+        Provider::Account => summarize_with_account(config, turn),
+    }
+}
+
+/// From the person's Wundur account, with this machine's key.
+fn summarize_with_account(config: &Config, turn: &TurnText) -> Result<Option<TurnSummary>> {
+    use crate::account::Auth;
+    let config = Config { model: ACCOUNT_MODEL.into(), ..config.clone() };
+    // The API requires structured output, so there is no asking again without it.
+    let body = request(&config, turn, &instructions(), true);
+    // A small hosted model answers in seconds: a minute (two thinking) means something is wrong.
+    let wait = Duration::from_secs(if config.thinking { 120 } else { 60 });
+    account_outcome(crate::account::shared().send_within(Auth::Key, "POST", "/v1/chat/completions", Some(&body), wait), &turn.pieces)
+}
+
+/// What the account's answer means for the turn: its summary, skipped quietly (`None`), or an
+/// error worded for the person.
+fn account_outcome(answer: Result<String, crate::account::Error>, pieces: &[Piece]) -> Result<Option<TurnSummary>> {
+    use crate::account::Error;
+    match answer {
+        Ok(text) => {
+            let response: Value = serde_json::from_str(&text).context("the answer was not JSON")?;
+            let mut summary = parse(&response, pieces)?;
+            // Shown with it as who wrote it: the account's service, whichever model it picked.
+            summary.model = "Wundur".into();
+            Ok(Some(summary))
+        }
+        Err(Error::Api(e)) => match e.code.as_str() {
+            // Too long to sum up, or too many this hour: this turn goes without, quietly.
+            "summary_too_large" | "hourly_limit" => Ok(None),
+            "summary_allowance_used" | "summary_token_allowance_used" => {
+                Err(anyhow!("This month's summaries are used up. Upgrade in Settings > Account for more."))
+            }
+            "missing_key" | "invalid_key" | "invalid_token" => {
+                Err(anyhow!("Your Wundur account's key no longer works: sign in again in Settings > Account."))
+            }
+            _ => Err(anyhow!("{}", if e.message.is_empty() { e.code.clone() } else { e.message.clone() })),
+        },
+        Err(Error::SignedOut) => Err(anyhow!("Sign in to your Wundur account (Settings > Account) for summaries from it.")),
+        Err(e) => Err(anyhow!("could not reach Wundur's server: {e}")),
+    }
+}
+
+/// From the person's own server.
+fn summarize_own(config: &Config, turn: &TurnText) -> Result<TurnSummary> {
     let url = format!("{}/chat/completions", base(&config.endpoint));
     let agent = agent(Duration::from_secs(if config.thinking { 300 } else { 120 }));
     let instructions = instructions();
@@ -746,6 +816,29 @@ mod tests {
     fn turn(chat: &mut Conversation, ask: &str, reply: &str) {
         chat.push_user(ask);
         chat.apply(Event::Text { text: reply.into(), parent: None });
+    }
+
+    #[test]
+    fn the_account_s_answers_become_a_summary_a_quiet_skip_or_a_plain_error() {
+        use crate::account::{ApiError, Error};
+        let api = |status: u16, code: &str| Err(Error::Api(ApiError { status, code: code.into(), message: format!("{code} said") }));
+        let answer = serde_json::json!({ "model": "gpt-5.4-nano", "choices": [{ "message": { "content":
+            r#"{"status":"done","headline":"Added a test","changed":[],"checked":[],"needs_you":[]}"# } }] });
+        let done = account_outcome(Ok(answer.to_string()), &[]).unwrap().unwrap();
+        assert_eq!((done.headline.as_str(), done.model.as_str()), ("Added a test", "Wundur"));
+        assert!(account_outcome(api(413, "summary_too_large"), &[]).unwrap().is_none());
+        assert!(account_outcome(api(429, "hourly_limit"), &[]).unwrap().is_none());
+        assert!(account_outcome(api(429, "summary_allowance_used"), &[]).unwrap_err().to_string().contains("Upgrade"));
+        assert!(account_outcome(api(401, "invalid_key"), &[]).unwrap_err().to_string().contains("sign in again"));
+        assert!(account_outcome(Err(Error::SignedOut), &[]).unwrap_err().to_string().contains("Sign in"));
+        assert_eq!(account_outcome(api(503, "busy"), &[]).unwrap_err().to_string(), "busy said");
+    }
+
+    #[test]
+    fn the_account_needs_no_server_or_model() {
+        let c = Config { enabled: true, source: Provider::Account, model: String::new(), ..Config::default() };
+        assert!(c.ready());
+        assert!(!Config { source: Provider::Own, ..c }.ready());
     }
 
     #[test]
