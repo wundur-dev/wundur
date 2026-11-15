@@ -228,6 +228,9 @@ pub struct Conversation {
     pub items: Vec<Item>,
     /// Subagents, in start order.
     pub agents: Vec<SubAgent>,
+    /// The agent's background tasks that are not subagents (shell commands, monitors) still
+    /// running, by task id.
+    pub background_tasks: std::collections::BTreeSet<String>,
     /// Index into `agents` where the current (or last) turn's subagents begin.
     pub turn_agents_from: usize,
     pub session_id: Option<String>,
@@ -337,6 +340,7 @@ impl Conversation {
 
     pub fn process_ended(&mut self) {
         self.not_delivered();
+        self.background_tasks.clear();
         // Subagents run inside the agent's process: they end with it.
         for agent in self.agents.iter_mut().filter(|a| a.running()) {
             agent.status = AgentStatus::Failed;
@@ -475,6 +479,12 @@ impl Conversation {
     /// Subagents still running.
     pub fn running_agents(&self) -> impl Iterator<Item = &SubAgent> {
         self.agents.iter().filter(|a| a.running())
+    }
+
+    /// Whether the agent has work running in the background (subagents, shell commands,
+    /// monitors) after its turn: its process must stay.
+    pub fn background_work(&self) -> bool {
+        self.running_agents().next().is_some() || !self.background_tasks.is_empty()
     }
 
     /// Subagents of the current (or last) turn.
@@ -735,6 +745,13 @@ impl Conversation {
                 }
             }
             Event::Status(status) => self.status = Some(status),
+            Event::BackgroundTask { id, running } => {
+                if running {
+                    self.background_tasks.insert(id);
+                } else {
+                    self.background_tasks.remove(&id);
+                }
+            }
             Event::TextStart => {
                 self.finish_streaming();
                 self.items.push(Item::Assistant { text: String::new(), streaming: true });

@@ -70,6 +70,10 @@ pub enum Event {
     /// A subagent runs in the background: its tool call returns at once (`agent_id`: the id its
     /// report will come back under), and it ends with [`Event::SubagentEnded`] later.
     SubagentBackground { id: String, agent_id: Option<String> },
+    /// Work the agent runs in the background that is not a subagent (a shell command, a
+    /// monitor), by its task id: started (`running`) or ended. The agent's process must not be
+    /// ended for being idle while any runs.
+    BackgroundTask { id: String, running: bool },
     /// A message from another agent: a background subagent's report, or a teammate's.
     AgentMessage { from: String, text: String },
     /// A preview of the reply being written, read off the agent's screen before its record has

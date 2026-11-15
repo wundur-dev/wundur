@@ -200,9 +200,13 @@ impl Mapper {
                 description,
                 input,
             }],
-            Raw::TaskStarted { tool_use_id, .. } | Raw::TaskProgress { tool_use_id, .. } if self.other_tool(&tool_use_id) => {
-                Vec::new()
+            // A background task that is not a subagent (a shell command, a monitor): kept count
+            // of, so the agent is not put to rest while it runs.
+            Raw::TaskStarted { tool_use_id, task_id, .. } if self.other_tool(&tool_use_id) => {
+                self.tasks.insert(task_id.clone(), tool_use_id);
+                vec![Event::BackgroundTask { id: task_id, running: true }]
             }
+            Raw::TaskProgress { tool_use_id, .. } if self.other_tool(&tool_use_id) => Vec::new(),
             Raw::TaskStarted { tool_use_id, task_id, description, subagent_type } => {
                 self.tasks.insert(task_id, tool_use_id.clone());
                 vec![Event::SubagentStarted { id: tool_use_id, description, kind: subagent_type }]
@@ -220,9 +224,9 @@ impl Mapper {
             Raw::TaskDone { tool_use_id, task_id, status, summary, total_tokens, duration_ms } => {
                 // Unknown here (launched by an earlier process): the id it was launched under,
                 // which the chat knows it by.
-                let id = tool_use_id.or_else(|| self.tasks.get(&task_id).cloned()).unwrap_or(task_id);
+                let id = tool_use_id.or_else(|| self.tasks.get(&task_id).cloned()).unwrap_or(task_id.clone());
                 if self.other_tool(&id) {
-                    return Vec::new();
+                    return vec![Event::BackgroundTask { id: task_id, running: false }];
                 }
                 vec![Event::SubagentEnded {
                     id,
@@ -332,6 +336,40 @@ mod sign_in_tests {
         chat.apply_all(events);
         let cards = chat.items.iter().filter(|i| matches!(i, Item::SignIn(SignIn::Needed))).count();
         assert_eq!(cards, 1, "a second refusal adds no second card");
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::conversation::Conversation;
+
+    /// A background shell command and a background subagent, as Claude Code reports them: the
+    /// session has background work until both have ended.
+    #[test]
+    fn background_commands_and_subagents_keep_the_session_busy_until_they_end() {
+        let started = r#"{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_sh","name":"Bash","input":{"command":"sleep 60","run_in_background":true}},{"type":"tool_use","id":"toolu_ag","name":"Agent","input":{"description":"look","prompt":"p","run_in_background":true}}]},"parent_tool_use_id":null,"session_id":"s"}
+{"type":"system","subtype":"task_started","tool_use_id":"toolu_sh","task_id":"bash1","description":"sleep 60"}
+{"type":"system","subtype":"task_started","tool_use_id":"toolu_ag","task_id":"agent1","description":"look","subagent_type":"general-purpose"}"#;
+        let mut mapper = Mapper::new("/p");
+        let mut chat = Conversation::default();
+        chat.apply_all(mapper.map_lines(started));
+        assert!(chat.background_work());
+        assert_eq!(chat.background_tasks.len(), 1, "the shell command is counted apart from the subagent");
+        chat.apply_all(mapper.map_lines(r#"{"type":"system","subtype":"task_notification","task_id":"bash1","status":"completed"}"#));
+        assert!(chat.background_tasks.is_empty());
+        assert!(chat.background_work(), "the subagent still runs");
+        chat.apply_all(mapper.map_lines(r#"{"type":"system","subtype":"task_notification","tool_use_id":"toolu_ag","task_id":"agent1","status":"completed"}"#));
+        assert!(!chat.background_work());
+    }
+
+    #[test]
+    fn the_process_ending_ends_its_background_work() {
+        let mut chat = Conversation::default();
+        chat.apply(Event::BackgroundTask { id: "bash1".into(), running: true });
+        assert!(chat.background_work());
+        chat.process_ended();
+        assert!(!chat.background_work());
     }
 }
 
