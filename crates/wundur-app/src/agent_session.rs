@@ -1014,8 +1014,9 @@ impl AgentSession {
         }
         let fork_asked = std::mem::take(&mut self.fork_next);
         if self.rewind_next.take().is_some() {
+            self.agent_still_remembers();
             self.chat.push_notice(format!(
-                "{}'s terminal keeps the whole conversation, so it still remembers the undone turn.",
+                "{}'s terminal keeps the whole conversation, so it still remembers the undone turn; your next message tells it the changes were reverted.",
                 self.backend.name()
             ));
         }
@@ -1894,11 +1895,14 @@ impl AgentSession {
         }
         if self.interactive() {
             self.end_parked_agent();
+            if !text.is_empty() && !quiet {
+                self.chat.push_user(shown);
+            }
+            // An agent that still remembers an undone turn is told first (on one line: it is
+            // typed into its terminal).
+            let text = self.with_undo_note(text, " ");
             if !text.is_empty() {
-                if !quiet {
-                    self.chat.push_user(shown);
-                }
-                self.push_echo(text.to_string());
+                self.push_echo(text.clone());
             }
             if !images.is_empty() {
                 self.chat.apply(Event::UserImages(images.clone()));
@@ -1913,7 +1917,7 @@ impl AgentSession {
             if !self.running(cx) {
                 self.start_terminal(cx);
             }
-            let (turn, text) = (self.chat.turn_start(), text.to_string());
+            let turn = self.chat.turn_start();
             self.before_turn(
                 turn,
                 move |s, cx| {
@@ -1966,7 +1970,7 @@ impl AgentSession {
             self.chat.apply(Event::UserImages(images.clone()));
         }
         self.watch_turn(cx);
-        let (turn, text) = (self.chat.turn_start(), text.to_string());
+        let (turn, text) = (self.chat.turn_start(), self.with_undo_note(text, "\n\n"));
         self.before_turn(
             turn,
             move |s, cx| {

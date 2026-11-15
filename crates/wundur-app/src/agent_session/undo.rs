@@ -22,6 +22,10 @@ use super::{AgentSession, SessionEvent};
 /// very large folder), it goes without one: that turn can't be undone, the next ones can.
 const WAIT_AT_MOST: Duration = Duration::from_secs(3);
 
+/// Put before the next message to an agent that still remembers a turn whose files were put
+/// back, so it doesn't carry on from changes that are gone.
+const UNDO_NOTE: &str = "[I undid your last turn: its file changes were reverted. Carry on from the files as they are now.]";
+
 /// A session's restore points.
 #[derive(Default)]
 pub struct RestorePoints {
@@ -34,14 +38,55 @@ pub struct RestorePoints {
     /// The turn that starts at this item went without its before point (it took too long):
     /// it can't be undone, and no other point may stand in for it.
     missed: Option<usize>,
-    /// The last turn's two points: where it starts in the chat, before, after.
-    turn: Option<(usize, String, String)>,
+    /// The last turn's two points.
+    turn: Option<TurnPoints>,
+    /// The turn under way, as counted in [`FOLDERS`]: its folder, whether another session
+    /// there was already working when it began, and the count of starts after its own.
+    running: Option<(PathBuf, bool, u64)>,
     /// What undoing would do, being shown for the person to confirm.
     plan: Option<UndoPlan>,
     /// Working out a plan, or undoing.
     working: bool,
     /// Said once per session that undo isn't available here.
     said_unavailable: bool,
+    /// The agent still remembers a turn whose files were put back: its next message starts
+    /// with [`UNDO_NOTE`] (once).
+    tell_agent: bool,
+}
+
+/// A finished turn's restore points.
+#[derive(Clone)]
+struct TurnPoints {
+    /// Where it starts in the chat.
+    turn: usize,
+    before: String,
+    after: String,
+    /// No other session worked in the same folder while it ran: every file that changed then
+    /// is its own (also what its commands changed where Wundur can't see that).
+    alone: bool,
+}
+
+/// The sessions working in each folder now, and how many turns have begun there: so a turn
+/// can tell whether it had the folder to itself.
+static FOLDERS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (u32, u64)>>> = std::sync::Mutex::new(None);
+
+/// A turn begins in `folder`: whether another was already working there, and the count of
+/// starts there with this one.
+fn turn_began(folder: &std::path::Path) -> (bool, u64) {
+    let mut folders = FOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = folders.get_or_insert_with(Default::default).entry(folder.to_path_buf()).or_default();
+    let shared = entry.0 > 0;
+    entry.0 += 1;
+    entry.1 += 1;
+    (shared, entry.1)
+}
+
+/// The turn that began as start `started` in `folder` ended: whether another began there since.
+fn turn_ended(folder: &std::path::Path, started: u64) -> bool {
+    let mut folders = FOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(entry) = folders.get_or_insert_with(Default::default).get_mut(folder) else { return true };
+    entry.0 = entry.0.saturating_sub(1);
+    entry.1 != started
 }
 
 /// What undoing the last turn would do.
@@ -64,6 +109,17 @@ pub struct UndoPlan {
 type Then = Box<dyn FnOnce(&mut AgentSession, &mut Context<AgentSession>)>;
 
 impl AgentSession {
+    /// The agent keeps the undone turn in its conversation: tell it with the next message.
+    pub(super) fn agent_still_remembers(&mut self) {
+        self.restore.tell_agent = true;
+    }
+
+    /// `text` as it goes to the agent: after the note that its last turn was undone, when one
+    /// is due (once), `sep` between them.
+    pub(super) fn with_undo_note(&mut self, text: &str, sep: &str) -> String {
+        noted(&mut self.restore.tell_agent, text, sep)
+    }
+
     fn restore_store(&self) -> Option<Arc<Store>> {
         self.restore.store.as_ref()?.as_ref().ok().cloned()
     }
@@ -79,6 +135,7 @@ impl AgentSession {
             then(self, cx);
             return;
         }
+        self.count_turn_start();
         let then: Rc<RefCell<Option<Then>>> = Rc::new(RefCell::new(Some(Box::new(then))));
         let (store, cwd) = (self.restore_store(), self.cwd.clone());
         let late = then.clone();
@@ -137,8 +194,24 @@ impl AgentSession {
         }
     }
 
+    /// A turn begins here: counted for its folder (see [`FOLDERS`]).
+    fn count_turn_start(&mut self) {
+        if let Some((folder, _, started)) = self.restore.running.take() {
+            turn_ended(&folder, started);
+        }
+        let folder = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+        let (shared, started) = turn_began(&folder);
+        self.restore.running = Some((folder, shared, started));
+    }
+
     /// The turn ended: take its after point, so it can be undone.
     pub(super) fn after_turn(&mut self, cx: &mut Context<Self>) {
+        // Whether it had the folder to itself (a message typed in the agent's own terminal
+        // wasn't counted: not known, so not).
+        let alone = self.restore.running.take().is_some_and(|(folder, shared, started)| {
+            let others_began = turn_ended(&folder, started);
+            !shared && !others_began
+        });
         let Some(store) = self.restore_store() else { return };
         let turn = self.chat.turn_start();
         // Before it: the point taken when it was sent, else (a message typed in the agent's
@@ -172,7 +245,7 @@ impl AgentSession {
                     && s.chat.turn_start() == turn
                     && !s.chat.busy
                 {
-                    s.restore.turn = Some((turn, before, after));
+                    s.restore.turn = Some(TurnPoints { turn, before, after, alone });
                     cx.notify();
                 }
             });
@@ -192,12 +265,12 @@ impl AgentSession {
 
     /// Whether the last turn can be undone now.
     pub fn can_undo(&self) -> bool {
-        !self.chat.busy && !self.restore.working && self.restore.turn.as_ref().is_some_and(|(t, _, _)| *t == self.chat.turn_start())
+        !self.chat.busy && !self.restore.working && self.restore.turn.as_ref().is_some_and(|t| t.turn == self.chat.turn_start())
     }
 
     /// Work out what undoing the last turn would do, for the person to confirm.
     pub fn plan_undo(&mut self, cx: &mut Context<Self>) {
-        let (Some(store), Some((turn, before, after))) = (self.restore_store(), self.restore.turn.clone()) else { return };
+        let (Some(store), Some(TurnPoints { turn, before, after, alone })) = (self.restore_store(), self.restore.turn.clone()) else { return };
         if !self.can_undo() {
             return;
         }
@@ -215,7 +288,7 @@ impl AgentSession {
                 .spawn(async move {
                     let changed = store.changes(&before, &after).map_err(|e| format!("{e:#}"))?;
                     let mine = relative_to(&mine, &[cwd.as_path(), store.work_tree()]);
-                    let (files, others) = split_by_turn(changed, &mine);
+                    let (files, others) = if alone { (changed, Vec::new()) } else { split_by_turn(changed, &mine) };
                     let all: Vec<Changed> = files.iter().chain(&others).cloned().collect();
                     let conflicts = store.changed_since(&after, &all).map_err(|e| format!("{e:#}"))?;
                     let forgets = ask.is_some_and(|id| backend.rewind_point(host.as_ref(), &cwd, &id).is_ok());
@@ -243,7 +316,7 @@ impl AgentSession {
     /// files that changed while it ran. `keep_later`: leave the files changed again since alone.
     pub fn undo_turn(&mut self, keep_later: bool, others: bool, cx: &mut Context<Self>) {
         let Some(plan) = self.restore.plan.take() else { return };
-        let (Some(store), Some((turn, before, _))) = (self.restore_store(), self.restore.turn.clone()) else { return };
+        let (Some(store), Some(TurnPoints { turn, before, .. })) = (self.restore_store(), self.restore.turn.clone()) else { return };
         if turn != plan.turn || !self.can_undo() {
             cx.notify();
             return;
@@ -303,14 +376,24 @@ impl AgentSession {
                         s.chat.push_notice(format!("Undid the last turn ({n}). {} won't remember it.", s.backend.name()));
                         cx.emit(SessionEvent::Undone(text));
                     }
-                    Some(Err(why)) => s.chat.push_notice(format!(
-                        "Undid the last turn's files ({n}). {} still remembers the turn ({why}).",
-                        s.backend.name()
-                    )),
-                    None => s.chat.push_notice(format!(
-                        "Undid the last turn's files ({n}). {} still remembers the turn: tell it, if that matters.",
-                        s.backend.name()
-                    )),
+                    Some(Err(why)) => {
+                        if !files.is_empty() {
+                            s.agent_still_remembers();
+                        }
+                        s.chat.push_notice(format!(
+                            "Undid the last turn's files ({n}). {} still remembers the turn ({why}), so your next message tells it the changes were reverted.",
+                            s.backend.name()
+                        ));
+                    }
+                    None => {
+                        if !files.is_empty() {
+                            s.agent_still_remembers();
+                        }
+                        s.chat.push_notice(format!(
+                            "Undid the last turn's files ({n}). {} still remembers the turn, so your next message tells it the changes were reverted.",
+                            s.backend.name()
+                        ));
+                    }
                 }
                 cx.notify();
             });
@@ -325,8 +408,9 @@ impl AgentSession {
         }
         self.rewind_next = None;
         self.fork_next = false;
+        self.agent_still_remembers();
         self.chat.push_error(format!(
-            "{} couldn't leave out the undone turn, so it still remembers it. The files stay undone; send the message again.",
+            "{} couldn't leave out the undone turn, so it still remembers it. The files stay undone; send the message again (it will be told the changes were reverted).",
             self.backend.name()
         ));
         true
@@ -381,5 +465,51 @@ mod tests {
         );
         assert_eq!(files.iter().map(|c| c.path.to_string_lossy().to_string()).collect::<Vec<_>>(), ["src/player.rs", "assets/new.png", "notes.md"]);
         assert_eq!(others, [changed("src/enemy.rs", Kind::Modified)]);
+    }
+}
+
+/// `text` after [`UNDO_NOTE`] when `due` (which is then cleared), `sep` between them.
+fn noted(due: &mut bool, text: &str, sep: &str) -> String {
+    match (std::mem::take(due), text.is_empty()) {
+        (false, _) => text.to_string(),
+        (true, true) => UNDO_NOTE.to_string(),
+        (true, false) => format!("{UNDO_NOTE}{sep}{text}"),
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+
+    #[test]
+    fn the_undo_note_goes_once_before_the_message() {
+        let mut due = true;
+        assert_eq!(noted(&mut due, "try again with blue", "\n\n"), format!("{UNDO_NOTE}\n\ntry again with blue"));
+        assert_eq!(noted(&mut due, "next", "\n\n"), "next");
+        // Images alone: the note is the text.
+        let mut due = true;
+        assert_eq!(noted(&mut due, "", " "), UNDO_NOTE);
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_knows_whether_it_had_the_folder_to_itself() {
+        let a = std::path::Path::new("/tests/folder-a");
+        // Alone.
+        let (shared, started) = turn_began(a);
+        assert!(!shared && !turn_ended(a, started));
+        // Another session starts during it.
+        let (shared, first) = turn_began(a);
+        let (second_shared, second) = turn_began(a);
+        assert!(!shared && second_shared);
+        assert!(turn_ended(a, first), "the first saw the second begin");
+        assert!(!turn_ended(a, second), "the second began while the first ran: shared at its start");
+        // Another folder is another count.
+        let (shared, started) = turn_began(std::path::Path::new("/tests/folder-b"));
+        assert!(!shared && !turn_ended(std::path::Path::new("/tests/folder-b"), started));
     }
 }
