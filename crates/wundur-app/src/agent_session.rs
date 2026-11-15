@@ -1773,7 +1773,13 @@ impl AgentSession {
             let result = cx.background_executor().spawn(async move { summary::summarize(&config, &turn) }).await;
             let _ = this.update(cx, |s, cx| {
                 let state = match result {
-                    Ok(done) => {
+                    // Skipped quietly (from the account: too long, or the hourly limit): no card.
+                    Ok(None) => {
+                        s.chat.drop_summary(&key);
+                        cx.notify();
+                        return;
+                    }
+                    Ok(Some(done)) => {
                         if let Some(id) = &session {
                             summary::keep(id, &key, &done);
                         }
