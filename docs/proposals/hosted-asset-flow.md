@@ -1,8 +1,10 @@
 # Proposal: the hosted asset flow (API contract)
 
-Status: draft from the client session for the API session to review, 2026-11-15. Nothing is
-built yet. Decisions it rests on are Stewart's "Answers on the asset flow" (the nine points);
-each section says which one it follows.
+Status: **agreed** (2026-11-15). Drafted by the client session, reviewed by the API session;
+its answers and changes are folded in below (the open questions are answered at the end).
+Decisions it rests on are Stewart's "Answers on the asset flow" (the nine points); each section
+says which one it follows. One change the client asked for after the review is marked
+*proposed*: `attempts_left` instead of `rerolls_left`.
 
 ## What it's for
 
@@ -36,8 +38,10 @@ service's business and never shown.
   it (an agent opens the card; approving, choosing an engine, rerolling and Import are clicks).
   (Answer 8.)
 - **Every long step is a job the app polls,** the same way for views, models, rigs and sounds.
-- **Charging calls are idempotent.** The app sends an `Idempotency-Key` on create, import and
-  rig, so a retry after a dropped connection can't charge twice.
+- **Charging calls are idempotent.** The app sends an `Idempotency-Key` (a new UUID per click)
+  on create, change, retry, import, rig and sounds. The server remembers each key per account for
+  24 hours and answers a repeat with the first response, so a retry after a dropped connection
+  can't charge twice.
 
 ## 1. The catalog
 
@@ -111,7 +115,7 @@ supported.
     {
       "id": "sfx",
       "label": "Sound effect",
-      "max_seconds": 22,
+      "max_seconds": 30,
       "license": { "commercial": true, "label": "" }
     }
   ]
@@ -145,7 +149,7 @@ supported.
 ```
 
 - **Images:** one per generated set, however many views it holds (one image call makes the
-  sheet). *Open question 1.*
+  sheet).
 - **Model credits:** spent on Import, by the engine's `credits`; rigging by the rigger's.
 - **Sound seconds:** spent on generation, by the length asked for.
 - The hidden safety cap on unimported generations isn't listed; hitting it is
@@ -190,7 +194,7 @@ fails).
         { "label": "Back",  "image_id": "img_c", "url": "https://…", "width": 1024, "height": 1536 }
       ],
       "approved": false,
-      "rerolls_left": 3
+      "attempts_left": 4
     }
   ],
   "models": []
@@ -200,6 +204,10 @@ fails).
 - Set `status`: `generating`, `ready`, `failed` (with `error`, not counted).
 - `made_from`: `{ "kind": "new" }`, `{ "kind": "change", "from": "set_1", "instruction": "…" }`
   or `{ "kind": "retry", "from": "set_1" }`.
+- Views are cut from one sheet, so each is smaller than a full image (three views on a 1536×1024
+  sheet are about 500×1000). The app uses the `width`/`height` given and never assumes 1024.
+- If the server can't split a sheet cleanly it tries once more itself; if that fails too the set
+  fails (`provider_error`, not counted). The app just shows a failed set.
 - View `url`s are short-lived; every `GET` gives fresh ones. The app downloads each view when its
   set is ready (they're paid for, so the person may keep them) into the project's
   `assets/<asset>/views/`.
@@ -237,7 +245,7 @@ model attempt. Nothing the person sees is spent. One model job at a time per acc
   "progress": 0.4,
   "preview": null,
   "imported": false,
-  "rerolls_left": 3,
+  "attempts_left": 3,
   "created_at": "…"
 }
 ```
@@ -257,15 +265,18 @@ model attempt. Nothing the person sees is spent. One model job at a time per acc
 ```
 
   At least one of `turntable` (an animated image or a short MP4) and `mesh` (decimated, low
-  texture, never the import) is there. The app prefers `mesh` for its 3D viewer and falls back
-  to the turntable.
+  texture, never the import) is there. **The server does the reduced mesh first** (made on CPU),
+  a turntable later. The app prefers `mesh` for its 3D viewer and falls back to the turntable.
 
 ### Reroll
 
 `POST /v1/models/{id}/reroll` → a new attempt with the same set and engine (or
-`{ "engine": "tripo" }` to change engine). Counts against the **set's** `rerolls_left` (three per
-approved set, the first attempt not counted). At zero: `409 rerolls_used`, and the app offers
-"change the views" instead. (Answer 3.)
+`{ "engine": "tripo" }` to change engine). **Four attempts per approved set** in all: the first,
+plus three rerolls, counting fresh starts and engine changes alike; failed attempts don't count.
+`attempts_left` = 4 − attempts on that set (*proposed name*; the review called it
+`rerolls_left`, which reads as if the first try were a reroll). The app shows it as rerolls:
+"3 rerolls left" after the first attempt. At zero: `409 rerolls_used`, and the app offers "change
+the views" instead. (Answer 3.)
 
 ### Import
 
@@ -284,7 +295,9 @@ attempt, however often it's called) and returns the files:
 }
 ```
 
-The app saves them under `assets/<asset>/`, with the views already there. FBX and OBJ for Mixamo
+The GLB has its textures embedded; separate texture files are listed only when an engine
+provides them, so the app never relies on `texture` entries. It saves them under
+`assets/<asset>/`, with the views already there. FBX and OBJ for Mixamo
 are made by the app from the GLB (Answer 6); the server needn't.
 
 ### Discard
@@ -309,12 +322,15 @@ only if the card isn't on screen. (Answer 9.)
 `POST /v1/sounds` with `{ "engine": "sfx", "prompt": "Wooden door creaking open", "seconds": 3,
 "variants": 2 }` and `Idempotency-Key` → `202` job; spends `seconds × variants` from
 `sound_seconds` (refunded on failure). `GET /v1/sounds/{id}` → `status`, then
-`files: [{ "format": "mp3", "url": … }]`. The app plays them in a card and saves the ones the
-person keeps (*open question 4*).
+`files: [{ "format": "mp3", "url": … }]`. Short sounds often finish in seconds, so the first
+`GET` may already be `succeeded`. Every variant generated is charged; the app plays them in a card
+and saves the ones the person keeps. At most 30 seconds each (the catalog's `max_seconds`).
 
 ## 7. Errors
 
-Same shape as today, `{ "error": { "code", "message" } }`. New codes:
+Same shape as today, `{ "error": { "code", "message" } }`. **402 means used up this month**
+(including `image_allowance_used` and `summary_allowance_used`, which move from 429); **429 is
+for rate limits** (`hourly_limit`, `generation_limit`). New codes:
 
 | Status | Code | The app does |
 |---|---|---|
@@ -340,19 +356,38 @@ Existing ones stay (`image_allowance_used`, `hourly_limit`, `content_blocked`, `
 Nothing is kept on the server for the app beyond the 30 days of the API's storage; the project
 files are the record.
 
-## Open questions for the API session
+## Answered questions
 
-1. **Images per set:** one image per set whatever the view count (proposed), or one per view?
-2. **Reroll counting:** three per approved set (proposed), or three per model attempt chain? And
-   does changing engine on a reroll count as a reroll?
-3. **Preview format:** can the server do a reduced mesh now, or turntable only at first? The app
-   handles either.
-4. **Sound variants:** charge every variant generated (proposed), or only the ones kept? The latter
-   needs a "keep" call and a preview that isn't the file.
-5. **Concept art for places:** a set of views with `supports_3d: false`, or its own endpoint?
-6. **Old endpoints:** `/v1/images/*` and `/v1/jobs` stay for now? The app would stop using them
-   once this ships, except `/v1/images/*` if a plain image tool stays.
-7. **Push instead of polling** (SSE on `/v1/assets/{id}/events`) later; polling is fine to start.
+1. **Images per set:** one per set, whatever the view count (one generation call).
+2. **Rerolls:** four attempts per approved set, everything counting (rerolls, fresh starts,
+   engine changes), failures not.
+3. **Preview format:** a reduced mesh first, a turntable later.
+4. **Sound variants:** every variant generated is charged.
+5. **Concept art for places:** the same set mechanism with `supports_3d: false`; no endpoint of
+   its own.
+6. **Old endpoints:** `/v1/images/*` stays (a plain image tool may keep using it); `/v1/jobs` and
+   `/v1/audio/sound-effects` stay until the app has moved over, then go.
+7. **Push vs polling:** polling to start, SSE later.
+
+Server-side note from the client: views cut from a sheet are about 500×1000; the model engines
+should get the best-resolution view available (upscaled if an engine needs more), which the app
+never sees.
+
+## Build order
+
+API:
+1. Credit buckets in `/v1/me`, the new error codes (402/429 split), the hidden generation cap,
+   `Idempotency-Key`.
+2. `GET /v1/catalog`.
+3. Assets and sets: kind-specific prompts, one sheet per set, server-side split, change, retry,
+   approve, PATCH.
+4. Models: start, poll, reduced-mesh preview, four attempts per set, import.
+5. Sounds as jobs with variants.
+6. Rigging later, on its own (a self-hosted open rigger, after a licence check).
+
+App, once API steps 1–2 are live: the Account page's buckets and the 402/429 handling, the
+catalog client and the asset card's describe step; then views, models, import and sounds as the
+API steps land.
 
 ## The app side, briefly (for context)
 
