@@ -60,6 +60,13 @@ pub fn is_hosted(dir: &Path) -> bool {
     dir.join(flow::RECORD).is_file()
 }
 
+/// Whether New asset uses the hosted flow (signed in). Off until the API's asset endpoints
+/// (`/v1/assets`, `/v1/models`) are live; `WUNDUR_HOSTED_ASSETS=1` turns it on to try it (as
+/// against `scripts/fake-asset-api.py`).
+pub fn flow_on() -> bool {
+    wundur_core::env_var("HOSTED_ASSETS").is_ok_and(|v| v != "0")
+}
+
 /// Whether the person is signed in to a Wundur account (asked once, then remembered).
 pub fn signed_in() -> bool {
     account::shared().is_signed_in()

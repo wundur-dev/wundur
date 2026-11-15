@@ -22,6 +22,7 @@
 //! - [`table`]: a table from a reply, as CSV or as Markdown to copy.
 
 pub mod account;
+pub mod account_tools;
 pub mod asset_flow;
 pub mod acp;
 pub mod agent;

@@ -40,7 +40,7 @@ impl ChatPanel {
     /// Before drawing: the new-asset form's fields, for a person signed in (made with the
     /// window; a kind's own fields once the catalog says what they are).
     pub(super) fn ensure_hosted_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let wanted = self.session.read(cx).chat.items.iter().any(|i| matches!(i, Item::NewAsset)) && hosted_store::signed_in();
+        let wanted = self.session.read(cx).chat.items.iter().any(|i| matches!(i, Item::NewAsset)) && hosted_store::flow_on() && hosted_store::signed_in();
         if !wanted {
             self.hosted_form = None;
             return;
