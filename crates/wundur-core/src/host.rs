@@ -746,12 +746,30 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(&exe)).find(|p| p.is_file())
 }
 
-/// Whether a process on this machine still exists (asks `ps`; sends no signal).
+/// Whether a process on this machine still exists. On Unix it asks the kernel (`kill` with no
+/// signal: nothing is sent); one that exists but isn't ours (EPERM) is alive too. It doesn't run
+/// `ps`, which a sandbox may forbid: a refusal read as "gone" once had a test copy delete the
+/// running window's sockets.
 pub fn process_alive(pid: u32) -> bool {
-    crate::platform::command("ps")
-        .args(["-p", &pid.to_string(), "-o", "pid="])
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 only checks that the process exists and may be signalled.
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        crate::platform::command("ps")
+            .args(["-p", &pid.to_string(), "-o", "pid="])
+            .output()
+            .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+    }
 }
 
 /// Turn a list of file paths into files plus the folders that hold them, sorted.
@@ -773,6 +791,18 @@ pub fn files_with_folders<'a>(files: impl Iterator<Item = &'a str>) -> Vec<(Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_process_is_alive_and_a_finished_one_is_not() {
+        assert!(process_alive(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!process_alive(pid), "a reaped child is gone");
+        // pid 1 exists but isn't ours: still alive.
+        #[cfg(unix)]
+        assert!(process_alive(1));
+    }
 
     #[test]
     fn branches() {
