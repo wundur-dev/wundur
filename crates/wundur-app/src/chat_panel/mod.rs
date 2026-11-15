@@ -38,6 +38,7 @@ mod tools;
 mod rows;
 mod find;
 mod latest;
+mod undo;
 
 use crate::actions::CopyConversation;
 use crate::agent_session::AgentSession;

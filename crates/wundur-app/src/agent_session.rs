@@ -15,6 +15,8 @@
 //! A backend without such an interface runs its structured agent behind the window, and there
 //! is only Chat.
 
+mod undo;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -126,6 +128,9 @@ pub enum SessionEvent {
     TerminalLink { line: String, column: usize, browser: bool },
     /// A tool made a page to look at (a pack's model viewer): open it in the web panel.
     ShowPage(PathBuf),
+    /// The last turn was undone and taken out of the conversation: the person's message, to
+    /// put back in the message box.
+    Undone(Option<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +195,10 @@ pub struct AgentSession {
     pub unseen: bool,
     /// The next start forks the resumed session.
     fork_next: bool,
+    /// The next start (with `fork_next`) leaves out the undone last turn.
+    rewind_next: Option<wundur_core::agent::Rewind>,
+    /// Restore points for undoing the last turn (see `undo.rs`).
+    restore: undo::RestorePoints,
     /// Its agent may write anywhere; else only in its folder and `writable` (see
     /// [`wundur_core::sandbox`]). Kept with the session.
     pub writes_anywhere: bool,
@@ -321,6 +330,8 @@ impl AgentSession {
             effort: None,
             unseen: false,
             fork_next: false,
+            rewind_next: None,
+            restore: Default::default(),
             writes_anywhere: false,
             writable: Vec::new(),
             confined: false,
@@ -1002,6 +1013,13 @@ impl AgentSession {
             self.hooks = hooks::register(cx.entity().downgrade(), self.backend.as_ref(), cx);
         }
         let fork_asked = std::mem::take(&mut self.fork_next);
+        if self.rewind_next.take().is_some() {
+            self.agent_still_remembers();
+            self.chat.push_notice(format!(
+                "{}'s terminal keeps the whole conversation, so it still remembers the undone turn; your next message tells it the changes were reverted.",
+                self.backend.name()
+            ));
+        }
         // Continue only a conversation that exists: a session started here that has had no
         // message yet has no file, and `--resume` would fail ("No conversation found"). Every
         // launch and relaunch (model, mode, view, take over, after an exit) comes through here.
@@ -1038,6 +1056,7 @@ impl AgentSession {
             permission_mode: self.permission_mode.clone(),
             resume: None,
             fork,
+            rewind: None,
             settings,
             sandbox: self.write_policy(cx),
             mcp_config: self.mcp_config(cx),
@@ -1494,6 +1513,7 @@ impl AgentSession {
                 self.chat.status = None;
                 self.unseen = true;
                 if was_busy {
+                    self.after_turn(cx);
                     self.idle_later(cx);
                     cx.emit(SessionEvent::TurnEnded);
                     self.summarize_turn(cx);
@@ -1534,6 +1554,7 @@ impl AgentSession {
             permission_mode: self.permission_mode.clone(),
             resume: self.chat.session_id.clone(),
             fork: std::mem::take(&mut self.fork_next),
+            rewind: self.rewind_next.take(),
             settings: None,
             sandbox: self.write_policy(cx),
             mcp_config: self.mcp_config(cx),
@@ -1682,6 +1703,7 @@ impl AgentSession {
                 }
                 self.watch_turn(cx);
                 if applied.turn_ended {
+                    self.after_turn(cx);
                     self.find_command_changes(cx);
                     self.idle_later(cx);
                     cx.emit(SessionEvent::TurnEnded);
@@ -1690,7 +1712,7 @@ impl AgentSession {
                 }
             }
             Message::Log(line) => {
-                if !line.trim().is_empty() {
+                if !self.rewind_refused(&line) && !line.trim().is_empty() {
                     self.chat.push_notice(format!("{}: {line}", self.backend.name()));
                 }
             }
@@ -1874,11 +1896,14 @@ impl AgentSession {
         }
         if self.interactive() {
             self.end_parked_agent();
+            if !text.is_empty() && !quiet {
+                self.chat.push_user(shown);
+            }
+            // An agent that still remembers an undone turn is told first (on one line: it is
+            // typed into its terminal).
+            let text = self.with_undo_note(text, " ");
             if !text.is_empty() {
-                if !quiet {
-                    self.chat.push_user(shown);
-                }
-                self.push_echo(text.to_string());
+                self.push_echo(text.clone());
             }
             if !images.is_empty() {
                 self.chat.apply(Event::UserImages(images.clone()));
@@ -1893,11 +1918,19 @@ impl AgentSession {
             if !self.running(cx) {
                 self.start_terminal(cx);
             }
-            if self.ready {
-                self.type_with_images(text.to_string(), images, cx);
-            } else {
-                self.queued.push((text.to_string(), images));
-            }
+            let turn = self.chat.turn_start();
+            self.before_turn(
+                turn,
+                move |s, cx| {
+                    if s.ready {
+                        s.type_with_images(text, images, cx);
+                    } else {
+                        s.queued.push((text, images));
+                    }
+                    cx.notify();
+                },
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -1938,10 +1971,18 @@ impl AgentSession {
             self.chat.apply(Event::UserImages(images.clone()));
         }
         self.watch_turn(cx);
-        let sent = if images.is_empty() { self.agent.send(text) } else { self.agent.send_with_images(text, &images) };
-        if let Err(e) = sent {
-            self.chat.push_error(format!("Could not send to {}: {e}", self.backend.name()));
-        }
+        let (turn, text) = (self.chat.turn_start(), self.with_undo_note(text, "\n\n"));
+        self.before_turn(
+            turn,
+            move |s, cx| {
+                let sent = if images.is_empty() { s.agent.send(&text) } else { s.agent.send_with_images(&text, &images) };
+                if let Err(e) = sent {
+                    s.chat.push_error(format!("Could not send to {}: {e}", s.backend.name()));
+                }
+                cx.notify();
+            },
+            cx,
+        );
         cx.notify();
     }
 

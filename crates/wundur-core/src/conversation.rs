@@ -503,6 +503,27 @@ impl Conversation {
         out
     }
 
+    /// Take the last turn out of the chat (undone): its items from the person's message on,
+    /// and the subagents it started. The person's message, to put back in the message box.
+    /// Not while a turn runs.
+    pub fn drop_last_turn(&mut self) -> Option<String> {
+        if self.busy {
+            return None;
+        }
+        let from = self.items.iter().rposition(|i| matches!(i, Item::User(_)))?;
+        // Images sent with the message sit just before it.
+        let from = if from > 0 && matches!(self.items[from - 1], Item::Images(_)) { from - 1 } else { from };
+        let text = self.items[from..].iter().find_map(|i| if let Item::User(t) = i { Some(t.clone()) } else { None });
+        self.items.truncate(from);
+        self.agents.truncate(self.turn_agents_from.min(self.agents.len()));
+        self.streaming = None;
+        self.preview = false;
+        self.status = None;
+        self.delivery = None;
+        self.revision += 1;
+        text
+    }
+
     /// Where the current (or last) turn starts: the person's last message.
     pub fn turn_start(&self) -> usize {
         self.items.iter().rposition(|i| matches!(i, Item::User(_))).unwrap_or(0)

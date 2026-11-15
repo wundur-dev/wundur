@@ -248,6 +248,18 @@ pub struct StartOptions {
     pub env: Vec<(String, String)>,
     /// Instructions added to the agent's own (parent mode's), for an agent that takes them.
     pub instructions: Option<String>,
+    /// With `resume` and `fork`: continue a copy that ends before the last turn (undoing it),
+    /// from [`Backend::rewind_point`].
+    pub rewind: Option<Rewind>,
+}
+
+/// Where to cut a conversation to undo its last turn: the agent's ids for its messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rewind {
+    /// The last message kept (the reply before the turn).
+    pub at: String,
+    /// The person's message that began the turn, dropped with everything after it.
+    pub drops: String,
 }
 
 /// A running conversation with an agent.
@@ -435,6 +447,12 @@ pub trait Backend: Send + Sync {
     /// been idle since then no longer knows the whole conversation. When it cannot tell: yes.
     fn session_moved_on(&self, _host: &dyn Host, _project: &Path, _id: &str, _since: u64) -> bool {
         true
+    }
+    /// Where to cut session `id` to undo its last turn, for an agent that can continue a
+    /// conversation without it ([`StartOptions::rewind`]). `Ok(None)`: the turn is the first,
+    /// so nothing is kept. `Err`: this agent can't forget a turn.
+    fn rewind_point(&self, _host: &dyn Host, _project: &Path, _id: &str) -> Result<Option<Rewind>, String> {
+        Err("this agent can't forget a turn".into())
     }
     /// The items of an [`crate::conversation::Item::Earlier`] part of session `id`.
     fn load_segment(&self, _host: &dyn Host, _project: &Path, _id: &str, _from: u64, _to: u64) -> std::io::Result<Vec<crate::conversation::Item>> {

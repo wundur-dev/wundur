@@ -56,6 +56,7 @@ pub mod settings;
 pub mod skill_install;
 pub mod skills;
 pub mod slash;
+pub mod snapshots;
 pub mod spelling;
 pub mod handoff;
 pub mod parent;
