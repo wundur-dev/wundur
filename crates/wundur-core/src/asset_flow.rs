@@ -16,6 +16,26 @@ use serde_json::{Value, json};
 
 use crate::account::{self, Auth, Error};
 
+/// A count as the service may send it: a whole number, a decimal (`30.0`) or a numeric string;
+/// anything else reads as 0, so one odd field never fails the whole answer.
+fn count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Number(n) => n.as_f64().map_or(0, |f| f.max(0.0).round() as u32),
+        Value::String(s) => s.trim().parse::<f64>().map_or(0, |f| f.max(0.0).round() as u32),
+        _ => 0,
+    })
+}
+
+/// [`count`], for a field that may be missing or null.
+fn maybe_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Null => None,
+        Value::Number(n) => n.as_f64().map(|f| f.max(0.0).round() as u32),
+        Value::String(s) => s.trim().parse::<f64>().ok().map(|f| f.max(0.0).round() as u32),
+        _ => None,
+    })
+}
+
 // ----- the catalog -----
 
 /// What the service offers, from `GET /v1/catalog`.
@@ -40,6 +60,7 @@ pub struct Kind {
     pub fields: Vec<Field>,
     /// How many views it usually gets, for placeholders while they're made (the real number
     /// is whatever the set holds).
+    #[serde(deserialize_with = "count")]
     pub views: u32,
     pub supports_3d: bool,
     /// The engines that can make it, by id.
@@ -83,10 +104,12 @@ pub struct Engine {
     pub id: String,
     pub label: String,
     /// Model credits Import spends.
+    #[serde(deserialize_with = "count")]
     pub credits: u32,
     /// The plans that may use it.
     pub plans: Vec<String>,
     /// About how long a model takes.
+    #[serde(deserialize_with = "count")]
     pub seconds: u32,
     pub best_for: Vec<String>,
     pub help: String,
@@ -99,9 +122,11 @@ pub struct Engine {
 pub struct Rigger {
     pub id: String,
     pub label: String,
+    #[serde(deserialize_with = "count")]
     pub credits: u32,
     /// The kinds it rigs.
     pub kinds: Vec<String>,
+    #[serde(deserialize_with = "count")]
     pub seconds: u32,
     pub help: String,
     pub license: License,
@@ -113,6 +138,7 @@ pub struct Rigger {
 pub struct SoundEngine {
     pub id: String,
     pub label: String,
+    #[serde(deserialize_with = "count")]
     pub max_seconds: u32,
     pub license: License,
 }
@@ -172,6 +198,7 @@ pub struct Set {
     pub approved: bool,
     /// Model attempts still allowed from it (four in all, failures not counted). Older answers
     /// called it `rerolls_left`.
+    #[serde(default, deserialize_with = "maybe_count")]
     #[serde(alias = "rerolls_left")]
     pub attempts_left: Option<u32>,
     pub error: Option<ApiErr>,
@@ -195,7 +222,9 @@ pub struct ViewImage {
     pub image_id: String,
     /// Short-lived: every `GET` of the asset gives a fresh one.
     pub url: String,
+    #[serde(deserialize_with = "count")]
     pub width: u32,
+    #[serde(deserialize_with = "count")]
     pub height: u32,
 }
 
@@ -212,6 +241,7 @@ pub struct Model {
     pub progress: Option<f64>,
     pub preview: Option<Preview>,
     pub imported: bool,
+    #[serde(default, deserialize_with = "maybe_count")]
     #[serde(alias = "rerolls_left")]
     pub attempts_left: Option<u32>,
     pub created_at: String,
@@ -238,6 +268,7 @@ pub struct PreviewMesh {
 #[serde(default)]
 pub struct Turntable {
     pub url: String,
+    #[serde(deserialize_with = "count")]
     pub frames: u32,
 }
 
@@ -251,6 +282,7 @@ pub struct Delivered {
     pub progress: Option<f64>,
     pub files: Vec<DeliveredFile>,
     pub animations: Vec<String>,
+    #[serde(default, deserialize_with = "maybe_count")]
     pub model_credits_left: Option<u32>,
     pub error: Option<ApiErr>,
 }
@@ -488,7 +520,7 @@ pub fn explain(e: &Error) -> (String, bool) {
         "image_allowance_used" => "This month's images are used up.",
         "sound_seconds_used" => "This month's sound effects are used up.",
         "engine_not_on_plan" => "That engine is on the Monthly plan.",
-        "rerolls_used" => "That's all the tries for these views: change the views to try again.",
+        "attempts_used" | "rerolls_used" => "That's all the tries for these views: change the views to try again.",
         "hourly_limit" => "That's the most for this hour; try again in a while.",
         "generation_limit" => "That's a lot of tries this month; try again tomorrow, or contact us.",
         "job_in_progress" => "A model is already being made: wait for it to finish.",
@@ -579,6 +611,18 @@ mod tests {
     }
 
     #[test]
+    fn numbers_read_whole_decimal_or_text() {
+        let e: Engine = serde_json::from_str(r#"{ "id": "x", "credits": 2.0, "seconds": "60" }"#).unwrap();
+        assert_eq!((e.credits, e.seconds), (2, 60));
+        let s: SoundEngine = serde_json::from_str(r#"{ "id": "sfx", "max_seconds": 30.0 }"#).unwrap();
+        assert_eq!(s.max_seconds, 30);
+        let set: Set = serde_json::from_str(r#"{ "id": "s", "attempts_left": null }"#).unwrap();
+        assert_eq!(set.attempts_left, None);
+        let set: Set = serde_json::from_str(r#"{ "id": "s", "rerolls_left": 3.0 }"#).unwrap();
+        assert_eq!(set.attempts_left, Some(3));
+    }
+
+    #[test]
     fn errors_say_what_to_do() {
         let api = |status: u16, code: &str| Error::Api(ApiError { status, code: code.into(), message: format!("{code} said") });
         let (text, upgrade) = explain(&api(402, "model_credits_used"));
@@ -605,6 +649,25 @@ mod tests {
         assert_eq!(file_name("", "glb"), "file.glb");
         assert!(download("file:///etc/passwd", &dir.join("x")).is_err(), "only web links");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The live catalog and account, read with this machine's key (read-only, nothing spent):
+    /// `cargo test -p wundur-core live_catalog -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn the_live_catalog_and_account_read() {
+        let c = catalog().unwrap();
+        eprintln!("catalog {}: kinds {:?}", c.version, c.kinds.iter().map(|k| (&k.id, k.views, k.supports_3d, &k.engines, k.fields.len())).collect::<Vec<_>>());
+        eprintln!("engines {:?}", c.engines.iter().map(|e| (&e.id, e.credits, &e.plans, e.seconds)).collect::<Vec<_>>());
+        eprintln!("sounds {:?}, riggers {}", c.sounds.iter().map(|s| (&s.id, s.max_seconds)).collect::<Vec<_>>(), c.riggers.len());
+        assert!(!c.kinds.is_empty() && !c.engines.is_empty());
+        for k in c.kinds.iter().filter(|k| k.supports_3d) {
+            assert!(k.engines.iter().all(|e| c.engine(e).is_some()), "{}'s engines are in the catalog", k.id);
+            assert!(c.engine(&k.default_engine).is_some(), "{}'s default engine", k.id);
+        }
+        let me = crate::account::shared().me_with(Auth::Key).unwrap();
+        eprintln!("plan {} model_credits {:?} sound_seconds {:?} images {:?}", me.plan, me.allowance.model_credits.map(|u| u.left), me.allowance.sound_seconds.map(|u| u.left), me.allowance.images.left);
+        assert!(me.allowance.model_credits.is_some(), "the credit buckets are live");
     }
 
     #[test]
