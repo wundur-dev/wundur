@@ -69,6 +69,46 @@ pub fn split_line(handle: &gpui_kit::base::ResizeHandleContext, cx: &App) -> Any
     .into_any_element()
 }
 
+/// [`split_line`] with a grip in its middle (three dots on a small pill), for a divider worth
+/// pointing out: the one between the Projects list and the panels under it.
+pub fn split_line_with_grip(handle: &gpui_kit::base::ResizeHandleContext, cx: &App) -> AnyElement {
+    use gpui_kit::base::ResizeHandleState;
+    let lit = handle.state() != ResizeHandleState::Idle;
+    let theme = cx.theme();
+    let (line, dots) = if lit { (theme.ring, theme.ring) } else { (theme.border, theme.muted_foreground.opacity(0.8)) };
+    let dot = || div().flex_none().size(px(3.)).rounded_full().bg(dots);
+    // The pill is taller than the line, so it overhangs it, offset by hand (centring an item
+    // that overflows is not to be trusted); along the line it is centred.
+    let grip = div()
+        .flex_none()
+        .mt(px(-3.))
+        .h(px(7.))
+        .px(px(5.))
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .rounded_full()
+        .bg(crate::theme::tool_ground(cx))
+        .border_1()
+        .border_color(line)
+        .child(dot())
+        .child(dot())
+        .child(dot());
+    match handle.axis() {
+        gpui_kit::Axis::Vertical => div()
+            .flex_none()
+            .w_full()
+            .flex()
+            .items_start()
+            .justify_center()
+            .bg(line)
+            .when_else(lit, |d| d.h(px(3.)).mt(px(-1.)), |d| d.h(px(1.)))
+            .child(grip.when(lit, |d| d.mt(px(-2.))))
+            .into_any_element(),
+        gpui_kit::Axis::Horizontal => split_line(handle, cx),
+    }
+}
+
 pub struct WundurSkin {
     inner: Rc<DockSkin>,
 }

@@ -68,6 +68,8 @@ icon_assets!(
         Inbox,
         // The toolbar's Tasks.
         ListChecks,
+        // A session in the Projects list.
+        MessageCircle,
     ]
 );
 
