@@ -314,6 +314,13 @@ impl Workspace {
                     ws.open_terminal_link(line, *column, *browser, window, cx)
                 }
                 SessionEvent::ShowPage(path) => ws.open_web(wundur_core::web::file_url(path), window, cx),
+                // The undone message goes back in the box, to change and send again.
+                SessionEvent::Undone(text) => {
+                    ws.files.update(cx, |t, cx| t.refresh(cx));
+                    if let Some(text) = text {
+                        ws.claude.update(cx, |p, cx| p.take_handoff(text, window, cx));
+                    }
+                }
             },
         ));
         // The session tab's dot and name follow the conversation.
@@ -1506,6 +1513,28 @@ impl Workspace {
                 let paths: Vec<PathBuf> = arg.split('|').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
                 self.claude.update(cx, |p, cx| p.test_take_files(paths, window, cx));
                 return "ok".into();
+            }
+            "undo" => {
+                // Tests: `undo state|plan|confirm|keep|cancel`, as the Undo turn button and
+                // its panel do; `state` says whether it can, and the plan when one shows.
+                return self.session.update(cx, |s, cx| {
+                    match arg {
+                        "plan" => s.plan_undo(cx),
+                        "confirm" => s.undo_turn(false, cx),
+                        "keep" => s.undo_turn(true, cx),
+                        "cancel" => s.cancel_undo(cx),
+                        _ => {}
+                    }
+                    match s.undo_plan() {
+                        Some(p) => format!(
+                            "plan: files={:?} conflicts={:?} forgets={}",
+                            p.files.iter().map(|c| format!("{:?} {}", c.kind, c.path.display())).collect::<Vec<_>>(),
+                            p.conflicts,
+                            p.forgets
+                        ),
+                        None => format!("can_undo={} working={} session={:?}", s.can_undo(), s.undo_working(), s.chat.session_id),
+                    }
+                });
             }
             "composer" => {
                 // Tests: the message box's text (a token as its marker), and what it would send.

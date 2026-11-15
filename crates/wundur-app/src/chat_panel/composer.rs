@@ -625,6 +625,8 @@ impl ChatPanel {
         let name = session.backend.name();
         let chips = self.render_chips(cx);
         let waiting = self.render_waiting(cx);
+        let undo_plan = self.render_undo_plan(cx);
+        let undo = self.render_undo_button(cx);
         let attach = self.render_attach(cx);
         let dictate = self.render_dictate(cx);
         let model_control = self.render_model_control(cx);
@@ -646,6 +648,8 @@ impl ChatPanel {
             .children(slash.map(|s| div().w_full().max_w(px(COLUMN)).child(s)))
             // Messages waiting for the agent to be free: a panel on top of the box.
             .children(waiting)
+            // Undoing the last turn, to confirm: a panel on top of the box too.
+            .children(undo_plan)
             .child(
                 div()
                     .id("composer")
@@ -741,6 +745,7 @@ impl ChatPanel {
                             .children(effort_control.map(|e| div().flex_none().child(e)))
                             .children(mode_button.map(|m| div().flex_none().child(m)))
                             .child(div().flex_1())
+                            .children(undo.map(|u| div().flex_none().child(u)))
                             .child(div().flex_none().child(send)),
                     ),
             )

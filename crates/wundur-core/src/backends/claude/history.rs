@@ -1046,9 +1046,73 @@ fn macos_cwd(pid: u32) -> Option<PathBuf> {
     (end > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&path[..end])))
 }
 
+/// Where to cut a session file's conversation to undo its last turn (see
+/// [`crate::agent::Backend::rewind_point`]): the person's last message (not a tool result,
+/// not a subagent's) and the last reply before it. `Some(None)`: the turn is the first, so
+/// nothing is kept. `None`: no message from the person.
+pub fn rewind_point(text: &str) -> Option<Option<crate::agent::Rewind>> {
+    let mut last_reply: Option<String> = None;
+    let mut found: Option<(String, Option<String>)> = None;
+    for line in text.lines() {
+        if !line.contains("\"type\":\"user\"") && !line.contains("\"type\":\"assistant\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) || v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(uuid) = v.get("uuid").and_then(Value::as_str) else { continue };
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => last_reply = Some(uuid.to_string()),
+            Some("user") => {
+                let content = v.pointer("/message/content");
+                let typed = match content {
+                    Some(Value::String(_)) => true,
+                    Some(Value::Array(blocks)) => {
+                        !blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                            && blocks.iter().any(|b| matches!(b.get("type").and_then(Value::as_str), Some("text" | "image")))
+                    }
+                    _ => false,
+                };
+                if typed {
+                    found = Some((uuid.to_string(), last_reply.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let (drops, at) = found?;
+    Some(at.map(|at| crate::agent::Rewind { at, drops }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_turn_is_cut_before_the_persons_last_message() {
+        let line = |ty: &str, uuid: &str, content: &str| {
+            format!(r#"{{"type":"{ty}","uuid":"{uuid}","parentUuid":"p","message":{{"role":"{ty}","content":{content}}}}}"#)
+        };
+        let file = [
+            r#"{"type":"queue-operation"}"#.to_string(),
+            line("user", "u1", r#""Remember APPLE""#),
+            r#"{"type":"attachment","uuid":"x1"}"#.to_string(),
+            line("assistant", "a1", r#"[{"type":"text","text":"OK"}]"#),
+            line("user", "u2", r#"[{"type":"text","text":"Remember BANANA"}]"#),
+            line("assistant", "a2", r#"[{"type":"tool_use","id":"t","name":"Bash","input":{}}]"#),
+            line("user", "r2", r#"[{"type":"tool_result","tool_use_id":"t","content":"done"}]"#),
+            r#"{"type":"assistant","uuid":"s1","isSidechain":true,"message":{"content":[]}}"#.to_string(),
+            line("assistant", "a3", r#"[{"type":"text","text":"OK"}]"#),
+        ]
+        .join("\n");
+        let cut = rewind_point(&file).unwrap().unwrap();
+        assert_eq!((cut.at.as_str(), cut.drops.as_str()), ("a1", "u2"));
+        // The first turn: nothing to keep.
+        let first = [line("user", "u1", r#""hi""#), line("assistant", "a1", r#"[]"#)].join("\n");
+        assert_eq!(rewind_point(&first), Some(None));
+        assert_eq!(rewind_point(r#"{"type":"summary"}"#), None);
+    }
     use crate::conversation::Item;
 
     fn fixture(name: &str) -> String {

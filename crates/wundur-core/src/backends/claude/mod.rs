@@ -189,6 +189,20 @@ impl Backend for ClaudeBackend {
         host.len(&history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"))).ok()
     }
 
+    fn rewind_point(&self, host: &dyn Host, project: &Path, id: &str) -> Result<Option<crate::agent::Rewind>, String> {
+        let home = skills::claude_home(host).ok_or("Claude Code's folder was not found")?;
+        let file = |folder: &Path| history::project_sessions_dir(&home, folder).join(format!("{id}.jsonl"));
+        // Claude Code files a session under the folder's real path (`/tmp` is `/private/tmp`).
+        let text = host.read_to_string(&file(project)).or_else(|e| {
+            match (host.is_remote(), project.canonicalize()) {
+                (false, Ok(real)) if real != project => host.read_to_string(&file(&real)),
+                _ => Err(e),
+            }
+        });
+        let text = text.map_err(|e| format!("could not read the conversation: {e}"))?;
+        history::rewind_point(&text).ok_or_else(|| "no message to undo in the conversation".into())
+    }
+
     fn session_moved_on(&self, host: &dyn Host, project: &Path, id: &str, since: u64) -> bool {
         let Some(home) = skills::claude_home(host) else { return true };
         let path = history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"));
@@ -445,6 +459,7 @@ impl Agent for ClaudeCode {
                 mcp_config: options.mcp_config.clone(),
                 env: options.env.clone(),
                 instructions: options.instructions.clone(),
+                rewind: options.rewind.clone(),
             }
             .program_spec(),
         );

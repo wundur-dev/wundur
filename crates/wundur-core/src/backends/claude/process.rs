@@ -32,6 +32,9 @@ pub struct Options {
     pub env: Vec<(String, String)>,
     /// `--append-system-prompt`: instructions added to Claude's own.
     pub instructions: Option<String>,
+    /// With `resume`: continue without the last turn (`--resume-session-at`, checked by
+    /// `--resume-drops-turn`; print mode only).
+    pub rewind: Option<crate::agent::Rewind>,
 }
 
 impl Options {
@@ -88,6 +91,9 @@ impl Options {
             args.extend(["--resume".into(), id.clone()]);
             if self.fork {
                 args.push("--fork-session".into());
+            }
+            if let Some(r) = &self.rewind {
+                args.extend(["--resume-session-at".into(), r.at.clone(), "--resume-drops-turn".into(), r.drops.clone()]);
             }
         }
         args
