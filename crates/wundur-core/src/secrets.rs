@@ -79,17 +79,34 @@ fn read_in(service: &str, account: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// `text` as one argument of a `security -i` command: in double quotes, with `"` and `\\`
+/// escaped (a newline would end the command, so it cannot be kept).
+fn quoted(text: &str) -> String {
+    let escaped: String = text.chars().filter(|c| *c != '\n' && *c != '\r').flat_map(|c| if c == '"' || c == '\\' { vec!['\\', c] } else { vec![c] }).collect();
+    format!("\"{escaped}\"")
+}
+
 /// Keep `value` as the secret named `account` (replacing one there).
 pub fn set(account: &str, value: &str) -> io::Result<()> {
     supported().map_err(io::Error::other)?;
     let status = if cfg!(target_os = "macos") {
-        // -U: update it if it is there. The value goes on the command line, as `security` takes
-        // it; it is this user's own process, gone at once.
-        crate::platform::command("security")
-            .args(["add-generic-password", "-U", "-s", SERVICE, "-a", account, "-w", value])
+        // `security -i` reads its command on standard input, so the value is never on a command
+        // line (where any process listing would show it). -U: update it if it is there.
+        let line = format!("add-generic-password -U -s {} -a {} -w {}\n", quoted(SERVICE), quoted(account), quoted(value));
+        let mut child = crate::platform::command("security")
+            .arg("-i")
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?
+            .stderr(Stdio::piped())
+            .spawn()?;
+        use std::io::Write;
+        child.stdin.take().map(|mut i| i.write_all(line.as_bytes())).transpose()?;
+        let out = child.wait_with_output()?;
+        // In this mode it exits well whatever happened: a failed command says so on stderr.
+        if !out.stderr.is_empty() {
+            return Err(io::Error::other(format!("the Keychain refused the key: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        out.status
     } else {
         // secret-tool reads the value on its standard input.
         let mut child = crate::platform::command("secret-tool")
@@ -130,6 +147,13 @@ mod tests {
 
     /// Uses this Mac's Keychain (a throwaway entry), so not run by default:
     /// `cargo test -p wundur-core secrets -- --ignored`.
+    #[test]
+    fn a_value_is_quoted_for_security_s_own_parser() {
+        assert_eq!(quoted("kel_abc"), "\"kel_abc\"");
+        assert_eq!(quoted("a\"b\\c d"), "\"a\\\"b\\\\c d\"");
+        assert_eq!(quoted("one\ntwo"), "\"onetwo\"");
+    }
+
     #[test]
     #[ignore]
     #[cfg(target_os = "macos")]
