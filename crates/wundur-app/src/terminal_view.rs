@@ -166,6 +166,11 @@ pub struct TerminalView {
     hover_block: Option<u64>,
     hover_part: Option<Part>,
     hover_fold: bool,
+    /// The pointer is over it (its Blocks / Raw switch shows).
+    hovered: bool,
+    /// Raw: as the program printed it, without headers, folds, buttons or colouring (the
+    /// commands are still followed, for switching back).
+    raw: bool,
     /// A click that began on a part of a command line: put on the prompt when the button comes
     /// up without a drag.
     pending_part: Option<Part>,
@@ -529,6 +534,8 @@ impl TerminalView {
             hover_block: None,
             hover_part: None,
             hover_fold: false,
+            hovered: false,
+            raw: false,
             pending_part: None,
             copied: None,
         }
@@ -936,9 +943,22 @@ impl TerminalView {
     /// The shell's commands now on the grid.
     fn blocks(&self) -> Rc<Vec<BlockView>> {
         match &self.pty {
-            Some(pty) => cached_blocks(&self.blocks, pty, self.generation),
-            None => Rc::default(),
+            Some(pty) if !self.raw => cached_blocks(&self.blocks, pty, self.generation),
+            _ => Rc::default(),
         }
+    }
+
+    /// Blocks or Raw.
+    fn set_raw(&mut self, raw: bool, cx: &mut Context<Self>) {
+        if self.raw == raw {
+            return;
+        }
+        self.raw = raw;
+        self.hover_block = None;
+        self.hover_part = None;
+        self.hover_fold = false;
+        self.shown.borrow_mut().clear();
+        cx.notify();
     }
 
     /// Scroll by `n` rows as drawn (up when positive): a fold is one row.
@@ -1062,6 +1082,14 @@ impl TerminalView {
         let Some(id) = self.blocks().iter().rev().find(|b| b.info.exit.is_some()).map(|b| b.id()) else { return "none".into() };
         self.send_block(id, cx);
         id.to_string()
+    }
+
+    /// Tests: Blocks or Raw, as its switch does (the switch showing, as under the pointer).
+    pub fn test_view(&mut self, raw: bool, cx: &mut Context<Self>) -> String {
+        self.hovered = true;
+        self.set_raw(raw, cx);
+        cx.notify();
+        if raw { "raw".into() } else { "blocks".into() }
     }
 
     /// Tests: Cmd+Up or Cmd+Down; the top row's line after.
@@ -1555,9 +1583,37 @@ impl Render for TerminalView {
         let shown = self.shown.clone();
         let buttons = self.block_bars(cx);
         let color_output = crate::prefs(cx).color_output;
-        let integrated = self.integrated;
+        let raw = self.raw;
+        let integrated = self.integrated && !raw;
+        // Blocks or Raw, while the pointer is over a shell's terminal.
+        let switch = (self.integrated && self.hovered).then(|| {
+            let segment = |key: &'static str, label: &'static str, on: bool, raw: bool| {
+                Button::new(key)
+                    .label(label)
+                    .xsmall()
+                    .when(on, |b| b.primary())
+                    .when(!on, |b| b.ghost())
+                    .on_click(cx.listener(move |v, _, _, cx| v.set_raw(raw, cx)))
+            };
+            div()
+                .id("blocks-raw")
+                .absolute()
+                .top(px(4.))
+                .right(px(18.))
+                .flex()
+                .gap(px(2.))
+                .p(px(2.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(hsla(palette::dim()).opacity(0.35))
+                .bg(hsla(palette::background()))
+                .shadow_sm()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(segment("view-blocks", "Blocks", !self.raw, false))
+                .child(segment("view-raw", "Raw", self.raw, true))
+        });
         // Scrolled up: a way back down.
-        let scrolled_up = self.integrated && self.pty.as_ref().is_some_and(|p| p.term.lock().grid().display_offset() > 0);
+        let scrolled_up = integrated && self.pty.as_ref().is_some_and(|p| p.term.lock().grid().display_offset() > 0);
         let base = div()
             .id("terminal")
             .size_full()
@@ -1575,10 +1631,13 @@ impl Render for TerminalView {
             .on_mouse_move(cx.listener(Self::mouse_move))
             // The pointer left: no command's buttons, no underline.
             .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
-                if !*hovered && (v.hover_block.is_some() || v.hover_part.is_some()) {
+                v.hovered = *hovered;
+                if !*hovered {
                     v.hover_block = None;
                     v.hover_part = None;
                     v.hover_fold = false;
+                }
+                if v.integrated {
                     cx.notify();
                 }
             }))
@@ -1656,7 +1715,7 @@ impl Render for TerminalView {
                 Some(_) => col.with_animation("placeholder-fade", Animation::new(PLACEHOLDER_FADE), |d, t| d.opacity(1. - t)).into_any_element(),
                 None => col.into_any_element(),
             });
-        let gutter = if self.integrated { px(GUTTER) } else { px(4.) };
+        let gutter = if self.integrated && !self.raw { px(GUTTER) } else { px(4.) };
         base.pl(gutter).pr_1().relative().child(
             canvas(
                 move |bounds, window, cx| {
@@ -1692,7 +1751,7 @@ impl Render for TerminalView {
                         return;
                     }
                     let start = std::time::Instant::now();
-                    let blocks = cached_blocks(&blocks_cache, pty, generation);
+                    let blocks = if raw { Rc::default() } else { cached_blocks(&blocks_cache, pty, generation) };
                     let rows = fold_rows(pty, &blocks, &folds.borrow());
                     *shown.borrow_mut() = rows.clone().unwrap_or_default();
                     let heads = headers(&blocks, &folds.borrow());
@@ -1709,6 +1768,7 @@ impl Render for TerminalView {
         )
         .children(placeholder)
         .children(buttons)
+        .children(switch)
         .when(scrolled_up, |d| {
             d.child(
                 div().absolute().bottom(px(10.)).right(px(18.)).child(
