@@ -374,7 +374,8 @@ impl ChatPanel {
             .flex()
             .items_center()
             .gap_2()
-            .child(div().flex_1().text_xs().text_color(danger).child(text))
+            // Wraps: a long message stays inside the card.
+            .child(div().flex_1().min_w_0().text_xs().text_color(danger).child(text))
             .when(upgrade && resets.is_none(), |d| {
                 d.child(Button::new(SharedString::from(format!("{id}-upgrade"))).xsmall().outline().label("Upgrade").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
             })

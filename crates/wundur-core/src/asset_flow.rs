@@ -26,6 +26,12 @@ fn count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     })
 }
 
+/// A list as the service may send it: `null` reads as empty (an older record without the
+/// field), so one such field never fails the whole answer.
+fn list<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
+}
+
 /// [`count`], for a field that may be missing or null.
 fn maybe_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
     Ok(match Value::deserialize(d)? {
@@ -43,9 +49,13 @@ fn maybe_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D:
 #[serde(default)]
 pub struct Catalog {
     pub version: String,
+    #[serde(deserialize_with = "list")]
     pub kinds: Vec<Kind>,
+    #[serde(deserialize_with = "list")]
     pub engines: Vec<Engine>,
+    #[serde(deserialize_with = "list")]
     pub riggers: Vec<Rigger>,
+    #[serde(deserialize_with = "list")]
     pub sounds: Vec<SoundEngine>,
 }
 
@@ -57,6 +67,7 @@ pub struct Kind {
     pub label: String,
     pub description: String,
     /// The form the person fills in, in order.
+    #[serde(deserialize_with = "list")]
     pub fields: Vec<Field>,
     /// How many views it usually gets, for placeholders while they're made (the real number
     /// is whatever the set holds).
@@ -64,9 +75,11 @@ pub struct Kind {
     pub views: u32,
     pub supports_3d: bool,
     /// The engines that can make it, by id.
+    #[serde(deserialize_with = "list")]
     pub engines: Vec<String>,
     pub default_engine: String,
     /// What's offered instead of a model when it has none (`concept_art`).
+    #[serde(deserialize_with = "list")]
     pub offers: Vec<String>,
 }
 
@@ -79,6 +92,7 @@ pub struct Field {
     /// `text`, `enum`, `number` or `bool`.
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(deserialize_with = "list")]
     pub options: Vec<String>,
     pub default: Option<Value>,
     pub required: bool,
@@ -107,10 +121,12 @@ pub struct Engine {
     #[serde(deserialize_with = "count")]
     pub credits: u32,
     /// The plans that may use it.
+    #[serde(deserialize_with = "list")]
     pub plans: Vec<String>,
     /// About how long a model takes.
     #[serde(deserialize_with = "count")]
     pub seconds: u32,
+    #[serde(deserialize_with = "list")]
     pub best_for: Vec<String>,
     pub help: String,
     pub license: License,
@@ -127,6 +143,7 @@ pub struct Rigger {
     #[serde(deserialize_with = "count")]
     pub credits: u32,
     /// The kinds it rigs.
+    #[serde(deserialize_with = "list")]
     pub kinds: Vec<String>,
     #[serde(deserialize_with = "count")]
     pub seconds: u32,
@@ -184,9 +201,12 @@ pub struct Asset {
     pub description: String,
     pub fields: BTreeMap<String, Value>,
     pub created_at: String,
+    #[serde(deserialize_with = "list")]
     pub sets: Vec<Set>,
+    #[serde(deserialize_with = "list")]
     pub models: Vec<Model>,
     /// The pictures it was described with (fixed at creation).
+    #[serde(deserialize_with = "list")]
     pub references: Vec<Reference>,
 }
 
@@ -207,6 +227,7 @@ pub struct Set {
     /// `generating`, `ready` or `failed`.
     pub status: String,
     pub made_from: MadeFrom,
+    #[serde(deserialize_with = "list")]
     pub views: Vec<ViewImage>,
     pub approved: bool,
     /// Model attempts still allowed from it (four in all, failures not counted). Older answers
@@ -267,6 +288,7 @@ pub struct Model {
     /// The importable file, once imported.
     pub glb_url: Option<String>,
     /// The views it was made from (image ids of the set's views), in the order they went.
+    #[serde(deserialize_with = "list")]
     pub input_image_ids: Vec<String>,
     /// Model credits Import spends, and what it did spend.
     #[serde(default, deserialize_with = "maybe_count")]
@@ -281,6 +303,7 @@ pub struct Model {
 pub struct Preview {
     pub mesh: Option<PreviewMesh>,
     pub turntable: Option<Turntable>,
+    #[serde(deserialize_with = "list")]
     pub stills: Vec<String>,
 }
 
@@ -307,7 +330,9 @@ pub struct Delivered {
     pub imported: bool,
     pub status: String,
     pub progress: Option<f64>,
+    #[serde(deserialize_with = "list")]
     pub files: Vec<DeliveredFile>,
+    #[serde(deserialize_with = "list")]
     pub animations: Vec<String>,
     #[serde(default, deserialize_with = "maybe_count")]
     pub model_credits_left: Option<u32>,
@@ -412,11 +437,14 @@ pub struct Record {
     pub views: BTreeMap<String, Vec<String>>,
     /// The model attempt imported, and the files it brought.
     pub imported: Option<String>,
+    #[serde(deserialize_with = "list")]
     pub files: Vec<String>,
     /// A rig being made (its id), and the rigged files once done.
     pub rig: Option<String>,
+    #[serde(deserialize_with = "list")]
     pub rigged: Vec<String>,
     /// The reference pictures it was described with: files in the folder.
+    #[serde(deserialize_with = "list")]
     pub references: Vec<String>,
 }
 
@@ -479,6 +507,10 @@ pub fn download(url: &str, path: &std::path::Path) -> Result<(), String> {
 /// 90 seconds before it answers `busy`), so slow answers are normal.
 const WAIT: Duration = Duration::from_secs(200);
 
+/// What an answer the client couldn't read is called (the server answered: not a network
+/// failure, and worded as such).
+const UNREADABLE: &str = "an answer that couldn't be read";
+
 /// A fresh key for a call that spends (see [`account::Account::request`]).
 pub fn idempotency_key() -> String {
     let mut bytes = [0u8; 16];
@@ -489,7 +521,7 @@ pub fn idempotency_key() -> String {
 fn call<T: serde::de::DeserializeOwned>(method: &str, path: &str, body: Option<&Value>, spends: bool) -> Result<T, Error> {
     let key = spends.then(idempotency_key);
     let text = account::shared().request(Auth::Key, method, path, body, WAIT, key.as_deref())?;
-    serde_json::from_str(&text).map_err(|e| Error::Network(format!("an answer that couldn't be read ({e})")))
+    serde_json::from_str(&text).map_err(|e| Error::Network(format!("{UNREADABLE} ({e})")))
 }
 
 /// `GET /v1/catalog`.
@@ -586,6 +618,10 @@ pub fn explain(e: &Error) -> (String, bool) {
     let Error::Api(a) = e else {
         return match e {
             Error::SignedOut => ("Sign in to your Wundur account (Settings > Account).".into(), false),
+            Error::Network(why) if why.starts_with(UNREADABLE) => (
+                format!("Wundur's server sent an answer this version can't read{}. Updating Wundur Studio usually fixes it.", why.strip_prefix(UNREADABLE).unwrap_or_default()),
+                false,
+            ),
             other => (format!("Couldn't reach Wundur's server: {other}"), false),
         };
     };
@@ -683,6 +719,8 @@ mod tests {
         assert_eq!((a.models[1].set.as_str(), a.models[1].asset.as_str()), ("set_1", "as_1"), "the live API's set_id and asset_id");
         assert_eq!(a.models[1].preview_link(), Some("https://x/p.glb"));
         assert_eq!(a.models[1].input_image_ids, ["img_f", "img_s", "img_b"]);
+        let older: Model = serde_json::from_str(r#"{ "id": "job_1", "input_image_ids": null, "error": null, "glb_url": null }"#).unwrap();
+        assert!(older.input_image_ids.is_empty(), "an older model's null list reads as empty");
         let mut newest_first = a.clone();
         newest_first.models[0].created_at = "2026-11-16T13:22:06+00:00".into();
         newest_first.models[1].created_at = "2026-11-16T12:57:07+00:00".into();
