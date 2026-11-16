@@ -462,6 +462,11 @@ impl ChatPanel {
         let text = paste::expand(&typed, &std::mem::take(&mut self.pastes), true);
         self.toggled.retain(|k| !k.starts_with("tray-paste:"));
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        // Sent: nothing left to keep.
+        self.draft_save = None;
+        if let Some(number) = self.draft {
+            wundur_core::drafts::set(number, "");
+        }
         // Sending goes back to the end and follows it.
         self.list.set_follow_mode(FollowMode::Tail);
         self.session.update(cx, |s, cx| s.send_with(&text, images, cx));
