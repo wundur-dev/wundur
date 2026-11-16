@@ -2993,9 +2993,9 @@ impl Shell {
     /// agents' notices, with how many are unread), and Settings at the bottom.
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (muted, hover, sel, accent, bg) = (theme.muted_foreground, theme.secondary_hover, theme.secondary, theme.ring, theme.sidebar);
+        let (muted, fg, hover, sel, accent, bg) = (theme.muted_foreground, theme.foreground, theme.secondary_hover, theme.secondary, theme.ring, theme.sidebar);
         let unread = self.inbox_count(cx);
-        // Each button is a view, and one is lit: what's in front (Settings, then the Inbox or
+        // Each button is a view, and one is lit (in the text colour, on a tint): what's in front (Settings, then the Inbox or
         // Tasks laid over the window), else Projects while the sessions show. New session
         // isn't one of them.
         let view = if self.settings.is_some() {
@@ -3019,7 +3019,7 @@ impl Shell {
                 .justify_center()
                 .rounded(px(10.))
                 .cursor_pointer()
-                .text_color(if on { accent } else { muted })
+                .text_color(if on { fg } else { muted })
                 .when(on, |d| d.bg(sel))
                 .when(!on, |d| d.hover(|d| d.bg(hover)))
                 .child(icon.size(px(20.)))
@@ -3038,7 +3038,7 @@ impl Shell {
             .pb_2()
             .bg(bg)
             .child(
-                item("tb-projects", Icon::new(gpui_kit::assets::IconName::Folder), "Projects", view == "projects")
+                item("tb-projects", Icon::new(gpui_kit::assets::IconName::House), "Projects", view == "projects")
                     .on_click(cx.listener(|s, _, window, cx| s.projects_button(window, cx))),
             )
             .child(

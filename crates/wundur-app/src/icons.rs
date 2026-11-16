@@ -74,6 +74,8 @@ icon_assets!(
         MessageCircle,
         // A sound card's Play.
         Play,
+        // The toolbar's Projects.
+        House,
         // The hosted asset card: its versions, and the Rig step.
         Layers,
         Bone,
