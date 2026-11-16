@@ -12,7 +12,7 @@ use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::CursorShape;
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -1310,6 +1310,7 @@ impl Render for TerminalView {
         let folds = self.folds.clone();
         let shown = self.shown.clone();
         let buttons = self.block_buttons(cx);
+        let color_output = crate::prefs(cx).color_output;
         let base = div()
             .id("terminal")
             .size_full()
@@ -1447,7 +1448,8 @@ impl Render for TerminalView {
                     let rows = fold_rows(pty, &blocks, &folds.borrow());
                     *shown.borrow_mut() = rows.clone().unwrap_or_default();
                     let failed: Vec<_> = blocks.iter().filter(|b| b.failed()).map(|b| b.lines()).collect();
-                    paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &failed, window, cx);
+                    let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
+                    paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &failed, &tinted, window, cx);
                     crate::perf::record("terminal paint", start.elapsed());
                     crate::perf::terminal_painted();
                 },
@@ -1596,6 +1598,7 @@ fn paint_grid(
     underline: &[(i32, usize, usize)],
     shown: Option<&[DisplayRow]>,
     failed: &[std::ops::Range<i32>],
+    tinted: &[std::ops::Range<i32>],
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1628,6 +1631,18 @@ fn paint_grid(
                 paint_fold(hidden, point(bounds.origin.x, y), bounds.size.width, cell, font_size, &base_font, window, cx);
                 continue;
             }
+        };
+        // Command output: plain text gets light colouring (see `output_colors`).
+        let tones = if tinted.iter().any(|r| r.contains(&line.0)) {
+            let row_text: String = (0..cols)
+                .map(|c| {
+                    let cell = &grid[GridPoint::new(line, Column(c))];
+                    if cell.c == '\0' || cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) { ' ' } else { cell.c }
+                })
+                .collect();
+            wundur_core::output_colors::tones(&row_text)
+        } else {
+            Vec::new()
         };
         // A command that failed: a red mark down its left edge.
         if failed.iter().any(|r| r.contains(&line.0)) {
@@ -1664,6 +1679,30 @@ fn paint_grid(
             }
             let mut fg = palette::resolve(fg_color, colors, true);
             let mut bg = palette::resolve(bg_color, colors, false);
+            let mut tone_bold = false;
+            if let Some(Some(tone)) = tones.get(col)
+                && c.fg == AnsiColor::Named(NamedColor::Foreground)
+                && !c.flags.intersects(Flags::INVERSE | Flags::DIM | Flags::HIDDEN)
+            {
+                use wundur_core::output_colors::Tone;
+                match tone {
+                    Tone::Dim => fg = palette::dim(),
+                    Tone::Label => tone_bold = true,
+                    Tone::Bad => {
+                        fg = palette::indexed(1);
+                        tone_bold = true;
+                    }
+                    Tone::Warn => {
+                        fg = palette::indexed(3);
+                        tone_bold = true;
+                    }
+                    Tone::Good => fg = palette::indexed(2),
+                    Tone::Link => fg = palette::indexed(4),
+                    Tone::Path => fg = palette::indexed(6),
+                    Tone::Number => fg = palette::indexed(5),
+                    Tone::Hash => fg = palette::indexed(3),
+                }
+            }
             if selection.is_some_and(|s| s.contains(gp)) {
                 bg = palette::selection();
                 fg = palette::foreground();
@@ -1693,7 +1732,7 @@ fn paint_grid(
             }
             let len = text.len() - before;
             let mut f = base_font.clone();
-            if c.flags.contains(Flags::BOLD) {
+            if c.flags.contains(Flags::BOLD) || tone_bold {
                 f.weight = FontWeight::BOLD;
             }
             if c.flags.contains(Flags::ITALIC) {

@@ -47,6 +47,7 @@ pub mod links;
 pub mod markdown_marks;
 pub mod mcp;
 pub mod outbox;
+pub mod output_colors;
 pub mod packs;
 pub mod paste;
 pub mod platform;
