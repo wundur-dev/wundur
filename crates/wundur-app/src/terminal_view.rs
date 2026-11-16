@@ -21,7 +21,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::Sizable;
 use crate::pty::{GridSize, Pty, PtyEvent};
-use crate::term_blocks::{self, BlockView, DisplayRow, Fold, Part};
+use crate::term_blocks::{self, BlockView, DisplayRow, Fold, Part, Placed};
 
 /// The fixed-width font every system has: Menlo on macOS, Consolas on Windows.
 pub const FONT_FAMILY: &str = if cfg!(windows) { "Consolas" } else if cfg!(target_os = "linux") { "DejaVu Sans Mono" } else { "Menlo" };
@@ -163,7 +163,7 @@ pub struct TerminalView {
     _ticker: Option<Task<()>>,
     /// The rows drawn last, top to bottom, when a fold changes what shows (else empty: row
     /// `n` is grid line `n - offset`, as usual).
-    shown: Rc<std::cell::RefCell<Vec<DisplayRow>>>,
+    shown: Rc<std::cell::RefCell<Vec<Placed>>>,
     /// The command under the pointer (its buttons show), and the part of its command line.
     hover_block: Option<u64>,
     hover_part: Option<Part>,
@@ -296,16 +296,47 @@ fn cached_blocks(cache: &std::cell::RefCell<BlocksCache>, pty: &Pty, generation:
 }
 
 /// The rows to draw when a fold changes them (`None`: as usual, the grid's own).
-fn fold_rows(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>) -> Option<Vec<DisplayRow>> {
-    if !blocks.iter().any(|b| term_blocks::folded(b, folds)) {
+/// The space above each command's header, in pixels: commands read as separate, while the
+/// rows of output stay a line apart (aligned columns and box drawing need them so).
+const COMMAND_GAP: f32 = 10.;
+
+/// The gap above `row`, given the lines commands start on.
+fn gap_for(starts: &[i32]) -> impl Fn(DisplayRow) -> f32 + '_ {
+    move |row| match row {
+        DisplayRow::Line(l) if starts.binary_search(&l).is_ok() => COMMAND_GAP,
+        _ => 0.,
+    }
+}
+
+/// The lines commands start on (where a gap goes), in order.
+fn command_starts(blocks: &[BlockView]) -> Vec<i32> {
+    let mut v: Vec<i32> = blocks.iter().filter(|b| !b.block.command.is_empty()).map(|b| b.block.start).collect();
+    v.sort_unstable();
+    v
+}
+
+/// The rows to draw and where, in a shell's terminal with commands (`None`: as usual, the
+/// grid's own rows a line apart). At the bottom, the last row is the cursor's or the last
+/// with text, so blank rows below it don't push the commands off the top.
+fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, line_h: f32, avail: f32) -> Option<Vec<Placed>> {
+    if blocks.is_empty() {
         return None;
     }
     let term = pty.term.lock();
     let grid = term.grid();
     let screen = grid.screen_lines() as i32;
+    let offset = grid.display_offset() as i32;
     let all = term_blocks::display_rows(blocks, folds, -(grid.history_size() as i32), screen);
-    let bottom = screen - 1 - grid.display_offset() as i32;
-    Some(term_blocks::window(&all, bottom, screen as usize))
+    let bottom_line = if offset == 0 {
+        let cols = grid.columns();
+        let last_text = (0..screen).rev().find(|&l| (0..cols).any(|c| !matches!(grid[Line(l)][Column(c)].c, ' ' | '\0'))).unwrap_or(0);
+        last_text.max(grid.cursor.point.line.0)
+    } else {
+        screen - 1 - offset
+    };
+    let bottom = term_blocks::index_of(&all, bottom_line).unwrap_or(all.len().saturating_sub(1));
+    let starts = command_starts(blocks);
+    Some(term_blocks::place(&all, bottom, avail, line_h, &gap_for(&starts)))
 }
 
 /// Keeps a pasted image (its bytes and file extension); the file it is kept in.
@@ -952,9 +983,11 @@ impl TerminalView {
         let offset = term.grid().display_offset() as i32;
         let row = row.min(term.screen_lines().saturating_sub(1));
         let col = col.min(term.columns().saturating_sub(1));
-        let line = match self.shown.borrow().get(row) {
-            Some(r) => r.line(),
-            None => row as i32 - offset,
+        let line = match self.placed_at(position.y) {
+            Some(p) => p.row.line(),
+            None if self.shown.borrow().is_empty() => row as i32 - offset,
+            // Below the last row drawn: the last.
+            None => self.shown.borrow().last().map_or(row as i32 - offset, |p| p.row.line()),
         };
         (GridPoint::new(Line(line), Column(col)), side)
     }
@@ -967,13 +1000,19 @@ impl TerminalView {
             return None;
         }
         let row = (y / self.cell.get().height) as usize;
-        let shown = self.shown.borrow();
-        if !shown.is_empty() {
-            return shown.get(row).copied();
+        if !self.shown.borrow().is_empty() {
+            return self.placed_at(position.y).map(|p| p.row);
         }
         let pty = self.pty.as_ref()?;
         let term = pty.term.lock();
         (row < term.screen_lines()).then(|| DisplayRow::Line(row as i32 - term.grid().display_offset() as i32))
+    }
+
+    /// The row drawn at window height `y` (in a gap: the row below it), when rows are placed.
+    fn placed_at(&self, y: Pixels) -> Option<Placed> {
+        let y = f32::from(y - self.bounds.get().origin.y);
+        let shown = self.shown.borrow();
+        shown.iter().find(|p| y < p.top + p.height).copied().filter(|_| y >= 0.)
     }
 
     /// The shell's commands now on the grid.
@@ -1032,7 +1071,8 @@ impl TerminalView {
         let offset = grid.display_offset() as i32;
         let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen);
         let Some(at) = term_blocks::index_of(&all, line) else { return };
-        let to = (at + screen as usize - 1).min(all.len() - 1);
+        let starts = command_starts(&blocks);
+        let to = term_blocks::fit_from(&all, at, f32::from(self.bounds.get().size.height), f32::from(self.cell.get().height), &gap_for(&starts));
         let bottom = match all[to] {
             DisplayRow::Line(l) => l,
             DisplayRow::Fold { last, .. } => last,
@@ -1045,7 +1085,7 @@ impl TerminalView {
     fn jump_command(&mut self, up: bool, cx: &mut Context<Self>) {
         let Some(pty) = &self.pty else { return };
         let top = match self.shown.borrow().first() {
-            Some(r) => r.line(),
+            Some(p) => p.row.line(),
             None => -(pty.term.lock().grid().display_offset() as i32),
         };
         let heads: Vec<i32> = self.blocks().iter().filter(|b| !b.block.command.is_empty()).map(|b| b.block.command.start).collect();
@@ -1788,7 +1828,7 @@ impl Render for TerminalView {
                     }
                     let start = std::time::Instant::now();
                     let blocks = if raw { Rc::default() } else { cached_blocks(&blocks_cache, pty, generation) };
-                    let rows = fold_rows(pty, &blocks, &folds.borrow());
+                    let rows = layout(pty, &blocks, &folds.borrow(), f32::from(cell_paint.get().height), f32::from(bounds.size.height));
                     *shown.borrow_mut() = rows.clone().unwrap_or_default();
                     let heads = headers(&blocks, &folds.borrow());
                     let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
@@ -1863,17 +1903,17 @@ impl TerminalView {
         // Its header's row as drawn, else its first row in view.
         let first = if b.block.command.is_empty() { b.block.start } else { b.block.command.start };
         let shown = self.shown.borrow();
-        let (row, on_header) = if shown.is_empty() {
+        let cell = self.cell.get();
+        let (row_top, on_header) = if shown.is_empty() {
             let term = pty.term.lock();
             let offset = term.grid().display_offset() as i32;
             let screen = term.screen_lines() as i32;
             let row = (first.max(-offset)..b.lines().end).map(|l| l + offset).find(|r| (0..screen).contains(r))?;
-            (row, row - offset == first)
+            (cell.height * row as f32, row - offset == first)
         } else {
-            let row = shown.iter().position(|r| b.lines().contains(&r.line()))?;
-            (row as i32, shown[row] == DisplayRow::Line(first))
+            let p = shown.iter().find(|p| b.lines().contains(&p.row.line()))?;
+            (px(p.top), p.row == DisplayRow::Line(first))
         };
-        let cell = self.cell.get();
         // Left of its time and exit code, which stay readable.
         let meta_chars = if on_header {
             headers(std::slice::from_ref(b), &self.folds.borrow())
@@ -1893,7 +1933,7 @@ impl TerminalView {
             div()
                 .id(key("block-bar"))
                 .absolute()
-                .top(cell.height * row as f32)
+                .top(row_top)
                 .right(right)
                 .flex()
                 .items_center()
@@ -1982,7 +2022,7 @@ fn paint_grid(
     cell: Size<Pixels>,
     focused: bool,
     underline: &[(i32, usize, usize)],
-    shown: Option<&[DisplayRow]>,
+    shown: Option<&[Placed]>,
     headers: &[Header],
     tinted: &[std::ops::Range<i32>],
     window: &mut Window,
@@ -2000,18 +2040,19 @@ fn paint_grid(
     let base_font = font(crate::fonts::code(cx));
     let default_bg = palette::background();
     let grid = term.grid();
-    let plain: Vec<DisplayRow>;
+    let plain: Vec<Placed>;
     let shown = match shown {
         Some(s) => s,
         None => {
-            plain = (0..rows).map(|r| DisplayRow::Line(r as i32 - offset)).collect();
+            let h = f32::from(cell.height);
+            plain = (0..rows).map(|r| Placed { row: DisplayRow::Line(r as i32 - offset), top: h * r as f32, height: h }).collect();
             &plain
         }
     };
 
-    for (row, &drawn) in shown.iter().enumerate() {
-        let y = bounds.origin.y + cell.height * row as f32;
-        let line = match drawn {
+    for (row, placed) in shown.iter().enumerate() {
+        let y = bounds.origin.y + px(placed.top);
+        let line = match placed.row {
             DisplayRow::Line(l) => Line(l),
             DisplayRow::Fold { hidden, whole, .. } => {
                 paint_fold(hidden, whole, point(bounds.origin.x, y), bounds.size.width, cell, font_size, &base_font, window, cx);
@@ -2230,15 +2271,11 @@ fn paint_grid(
 
     // Cursor.
     let cursor = content.cursor;
-    if cursor.shape != CursorShape::Hidden {
-        let row = shown
-            .iter()
-            .position(|r| *r == DisplayRow::Line(cursor.point.line.0))
-            .map_or(-1, |r| r as i32);
-        if row >= 0 && (row as usize) < rows {
+    if cursor.shape != CursorShape::Hidden
+        && let Some(p) = shown.iter().find(|p| p.row == DisplayRow::Line(cursor.point.line.0)) {
             let origin = point(
                 bounds.origin.x + cell.width * cursor.point.column.0 as f32,
-                bounds.origin.y + cell.height * row as f32,
+                bounds.origin.y + px(p.top),
             );
             let color = hsla(palette::cursor());
             let block = Bounds::new(origin, cell);
@@ -2263,7 +2300,6 @@ fn paint_grid(
                 }
             }
         }
-    }
 }
 
 /// The row standing for a folded output: how many lines it hides, and that a click shows them.
