@@ -209,13 +209,67 @@ pub fn index_of(rows: &[DisplayRow], line: i32) -> Option<usize> {
     rows.get(i).filter(|r| r.contains(line)).map(|_| i)
 }
 
-/// The `count` rows ending with the one for grid line `bottom` (fewer at the top of all).
-pub fn window(rows: &[DisplayRow], bottom: i32, count: usize) -> Vec<DisplayRow> {
-    let Some(end) = index_of(rows, bottom).or_else(|| rows.len().checked_sub(1)) else {
-        return Vec::new();
-    };
-    let start = (end + 1).saturating_sub(count);
-    rows[start..=end].to_vec()
+/// A row as drawn, and where: its top and height in pixels from the top of the terminal (rows
+/// are a line tall, plus a gap above each command).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub row: DisplayRow,
+    pub top: f32,
+    pub height: f32,
+}
+
+/// The rows that fit in `avail` pixels, ending with `all[bottom]` (fewer at the top of all),
+/// placed from the top; `gap(row)` is the space above a row.
+pub fn place(all: &[DisplayRow], bottom: usize, avail: f32, line: f32, gap: &dyn Fn(DisplayRow) -> f32) -> Vec<Placed> {
+    let Some(bottom) = (!all.is_empty()).then(|| bottom.min(all.len() - 1)) else { return Vec::new() };
+    let mut used = 0.;
+    let mut first = bottom;
+    loop {
+        let h = line + gap(all[first]);
+        // At least the bottom row; a row's gap may be cut at the top.
+        if used + line > avail && first != bottom {
+            first += 1;
+            break;
+        }
+        used += h;
+        if first == 0 {
+            break;
+        }
+        first -= 1;
+    }
+    let mut top = 0.;
+    let mut out = Vec::with_capacity(bottom + 1 - first);
+    for (i, &row) in all[first..=bottom].iter().enumerate() {
+        // The first row's gap is left out: nothing above it to keep apart from.
+        let g = if i == 0 { 0. } else { gap(row) };
+        top += g;
+        out.push(Placed { row, top, height: line });
+        top += line;
+    }
+    // Ends below the bottom: drawn from the bottom up instead (it was a fit with gaps cut).
+    if top > avail {
+        let shift = top - avail;
+        out.retain_mut(|p| {
+            p.top -= shift;
+            p.top >= 0.
+        });
+    }
+    out
+}
+
+/// The last row that fits in `avail` pixels when `all[start]` is the top row drawn.
+pub fn fit_from(all: &[DisplayRow], start: usize, avail: f32, line: f32, gap: &dyn Fn(DisplayRow) -> f32) -> usize {
+    let mut used = line;
+    let mut i = start;
+    while i + 1 < all.len() {
+        let h = line + gap(all[i + 1]);
+        if used + h > avail {
+            break;
+        }
+        used += h;
+        i += 1;
+    }
+    i
 }
 
 /// The text of grid lines `lines`, as typed: a line the terminal wrapped is joined to the
@@ -382,13 +436,20 @@ mod tests {
     }
 
     #[test]
-    fn the_window_ends_at_the_bottom_line() {
-        let blocks = vec![block(1, 0, 1..101)];
-        let rows = display_rows(&blocks, &HashMap::new(), 0, 110);
-        let w = window(&rows, 109, 5);
-        assert_eq!(w.len(), 5);
-        assert_eq!(w[4], DisplayRow::Line(109));
-        // A bottom line inside the fold: the window ends at the fold.
-        assert_eq!(*window(&rows, 50, 2).last().unwrap(), rows[4]);
+    fn gaps_go_above_commands_and_fewer_rows_fit() {
+        let all: Vec<DisplayRow> = (0..10).map(DisplayRow::Line).collect();
+        // A gap of half a line above lines 4 and 8.
+        let gap = |r: DisplayRow| if matches!(r, DisplayRow::Line(4 | 8)) { 5. } else { 0. };
+        let placed = place(&all, 9, 60., 10., &gap);
+        // 60px: lines 5..=9 with the gap above 8 (55px), line 4's gap would not fit with it.
+        assert_eq!(placed.first().unwrap().row, DisplayRow::Line(5));
+        assert_eq!(placed.last().unwrap().row, DisplayRow::Line(9));
+        assert_eq!(placed[3].top, 35.);
+        // All of it fits: from the top, the first row without its gap.
+        let placed = place(&all, 9, 500., 10., &gap);
+        assert_eq!(placed[0].top, 0.);
+        assert_eq!(placed[4].top, 45.);
+        assert_eq!(fit_from(&all, 0, 60., 10., &gap), 4);
     }
+
 }
