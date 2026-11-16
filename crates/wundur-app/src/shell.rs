@@ -51,7 +51,7 @@ const PROJECT_PLUS: f32 = 20.;
 /// folder keeps its room.
 const FILES_HEADER_NARROW: f32 = 250.;
 /// The toolbar along the window's left edge (Projects, Inbox, Settings).
-const TOOLBAR_WIDTH: f32 = 44.;
+const TOOLBAR_WIDTH: f32 = 52.;
 /// The inbox's list, over the content beside the toolbar.
 const INBOX_WIDTH: f32 = 360.;
 /// The person's tasks, there too (a little wider, for commands).
@@ -1352,6 +1352,8 @@ impl Shell {
     /// close, a hidden list shows). It never hides the list: the title bar's panel button and
     /// Cmd+Shift+B do that.
     fn projects_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.inbox_open = false;
+        self.tasks_open = false;
         if self.settings.is_some() {
             self.close_settings(window, cx);
         }
@@ -1361,6 +1363,7 @@ impl Shell {
         if self.folded {
             self.toggle_folded(cx);
         }
+        cx.notify();
     }
 
     fn toggle_folded(&mut self, cx: &mut Context<Self>) {
@@ -2992,20 +2995,34 @@ impl Shell {
         let theme = cx.theme();
         let (muted, fg, hover, sel, accent, bg) = (theme.muted_foreground, theme.foreground, theme.secondary_hover, theme.secondary, theme.ring, theme.sidebar);
         let unread = self.inbox_count(cx);
+        // Each button is a view, and one is lit (in the text colour, on a tint): what's in front (Settings, then the Inbox or
+        // Tasks laid over the window), else Projects while the sessions show. New session
+        // isn't one of them.
+        let view = if self.settings.is_some() {
+            "settings"
+        } else if self.inbox_open {
+            "inbox"
+        } else if self.tasks_open {
+            "tasks"
+        } else if self.browser.is_none() && !self.tabs.is_empty() {
+            "projects"
+        } else {
+            ""
+        };
         let item = |id: &'static str, icon: Icon, tip: &'static str, on: bool| {
             div()
                 .id(id)
                 .relative()
-                .size(px(32.))
+                .size(px(36.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
+                .rounded(px(10.))
                 .cursor_pointer()
                 .text_color(if on { fg } else { muted })
                 .when(on, |d| d.bg(sel))
                 .when(!on, |d| d.hover(|d| d.bg(hover)))
-                .child(icon)
+                .child(icon.size(px(20.)))
                 .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
         };
         div()
@@ -3016,16 +3033,16 @@ impl Shell {
             .flex()
             .flex_col()
             .items_center()
-            .gap_1()
-            .pt_1()
+            .gap_1p5()
+            .pt_2()
             .pb_2()
             .bg(bg)
             .child(
-                item("tb-projects", Icon::new(gpui_kit::assets::IconName::Folder), "Projects", !self.folded && !self.tabs.is_empty() && self.settings.is_none() && self.browser.is_none())
+                item("tb-projects", Icon::new(gpui_kit::assets::IconName::House), "Projects", view == "projects")
                     .on_click(cx.listener(|s, _, window, cx| s.projects_button(window, cx))),
             )
             .child(
-                item("tb-inbox", Icon::new(gpui_kit::assets::IconName::Inbox), "Inbox: notices from your sessions' agents", self.inbox_open)
+                item("tb-inbox", Icon::new(gpui_kit::assets::IconName::Inbox), "Inbox: notices from your sessions' agents", view == "inbox")
                     .when(unread > 0, |d| {
                         d.child(
                             div()
@@ -3054,7 +3071,7 @@ impl Shell {
             )
             .child({
                 let open_tasks = crate::tasks::open_count(cx);
-                item("tb-tasks", Icon::new(gpui_kit::assets::IconName::ListChecks), "Tasks: what agents have handed you to do", self.tasks_open)
+                item("tb-tasks", Icon::new(gpui_kit::assets::IconName::ListChecks), "Tasks: what agents have handed you to do", view == "tasks")
                     .when(open_tasks > 0, |d| {
                         d.child(
                             div()
@@ -3083,7 +3100,7 @@ impl Shell {
             })
             .child(div().flex_1())
             .child(
-                item("tb-settings", Icon::new(IconName::Settings), "Settings (Cmd+,)", self.settings.is_some()).on_click(cx.listener(|s, _, window, cx| {
+                item("tb-settings", Icon::new(IconName::Settings), "Settings (Cmd+,)", view == "settings").on_click(cx.listener(|s, _, window, cx| {
                     if s.settings.is_some() {
                         s.close_settings(window, cx)
                     } else {
