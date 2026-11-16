@@ -184,6 +184,17 @@ pub struct Asset {
     pub created_at: String,
     pub sets: Vec<Set>,
     pub models: Vec<Model>,
+    /// The pictures it was described with (fixed at creation).
+    pub references: Vec<Reference>,
+}
+
+/// A reference picture, as the service keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reference {
+    pub image_id: String,
+    /// Short-lived, like a view's.
+    pub url: String,
 }
 
 /// One round of views: the first, a change, or a fresh start.
@@ -391,6 +402,29 @@ pub struct Record {
     /// A rig being made (its id), and the rigged files once done.
     pub rig: Option<String>,
     pub rigged: Vec<String>,
+    /// The reference pictures it was described with: files in the folder.
+    pub references: Vec<String>,
+}
+
+/// At most this many reference pictures go with a new asset, each at most [`REFERENCE_BYTES`].
+pub const REFERENCES: usize = 3;
+pub const REFERENCE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// A picture as a reference for a new asset: its bytes in base64, if it is a PNG, JPEG or WebP
+/// of at most 10 MB.
+pub fn reference(path: &std::path::Path) -> Result<String, String> {
+    use base64::Engine as _;
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+        return Err(format!("{name}: references are PNG, JPEG or WebP pictures."));
+    }
+    let size = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?.len();
+    if size > REFERENCE_BYTES {
+        return Err(format!("{name} is over 10 MB; use a smaller picture."));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// The record in `dir`, if it is a hosted asset's folder.
@@ -449,9 +483,14 @@ pub fn catalog() -> Result<Catalog, Error> {
     call("GET", "/v1/catalog", None, false)
 }
 
-/// `POST /v1/assets`: a new asset; its first set is being made (one image spent).
-pub fn create(kind: &str, name: &str, description: &str, fields: &BTreeMap<String, Value>) -> Result<Asset, Error> {
-    call("POST", "/v1/assets", Some(&json!({ "kind": kind, "name": name, "description": description, "fields": fields })), true)
+/// `POST /v1/assets`: a new asset, with up to three reference pictures (base64, see
+/// [`reference`]); its first set is being made (one image spent).
+pub fn create(kind: &str, name: &str, description: &str, fields: &BTreeMap<String, Value>, references: &[String]) -> Result<Asset, Error> {
+    let mut body = json!({ "kind": kind, "name": name, "description": description, "fields": fields });
+    if !references.is_empty() {
+        body["references"] = json!(references);
+    }
+    call("POST", "/v1/assets", Some(&body), true)
 }
 
 /// `GET /v1/assets/{id}`: its state now, with fresh links.
@@ -549,7 +588,9 @@ pub fn explain(e: &Error) -> (String, bool) {
         "content_blocked" => "That description was refused; try rewording it.",
         "provider_error" => "Something went wrong; it wasn't counted. Try again.",
         "busy" => "Busy right now; try again shortly.",
-        "invalid_field" | "missing_field" | "unknown_field" => "",
+        "invalid_field" | "missing_field" | "unknown_field" | "invalid_request" => "",
+        "bad_image" => "A reference picture couldn't be read: use a PNG, JPEG or WebP.",
+        "image_too_large" => "A reference picture is too large (10 MB at most).",
         "missing_key" | "invalid_key" | "invalid_token" => "Your Wundur account's key no longer works: sign in again in Settings > Account.",
         "not_found" => "This asset is gone from Wundur's server (they're kept 30 days); its files in the project stay.",
         _ => "",
@@ -665,6 +706,9 @@ mod tests {
         assert_eq!(explain(&busy).0, "Busy right now; try again in 34 s.");
         assert!(explain(&api(404, "http_404")).0.contains("nothing was spent"), "a route the server lacks");
         assert!(explain(&api(422, "content_blocked")).0.contains("rewording"));
+        assert!(explain(&api(400, "bad_image")).0.contains("PNG, JPEG or WebP"));
+        assert!(explain(&api(413, "image_too_large")).0.contains("10 MB"));
+        assert_eq!(explain(&api(422, "invalid_request")).0, "invalid_request said", "the server's own words for a bad request");
         assert!(explain(&api(403, "engine_not_on_plan")).1);
         assert_eq!(explain(&api(500, "weird")).0, "weird said");
         assert!(explain(&Error::SignedOut).0.contains("Sign in"));
@@ -702,6 +746,18 @@ mod tests {
         let me = crate::account::shared().me_with(Auth::Key).unwrap();
         eprintln!("plan {} model_credits {:?} sound_seconds {:?} images {:?}", me.plan, me.allowance.model_credits.map(|u| u.left), me.allowance.sound_seconds.map(|u| u.left), me.allowance.images.left);
         assert!(me.allowance.model_credits.is_some(), "the credit buckets are live");
+    }
+
+    #[test]
+    fn references_are_pictures_of_at_most_10_mb() {
+        let dir = std::env::temp_dir().join(format!("wundur-refs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("a.gif"), b"GIF89a").unwrap();
+        assert!(reference(&dir.join("a.png")).is_ok());
+        assert!(reference(&dir.join("a.gif")).unwrap_err().contains("PNG, JPEG or WebP"));
+        assert!(reference(&dir.join("missing.jpg")).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
