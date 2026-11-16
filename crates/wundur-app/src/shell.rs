@@ -4002,12 +4002,11 @@ impl Render for Shell {
         };
         // Hidden (the toolbar's Projects, or Cmd+Shift+S), the list goes entirely and the work
         // has the room.
-        // Settings and New session, while open, have the whole window under the title bar:
-        // each has its own list down its left (its pages, the folders), so neither the
-        // toolbar nor the session list shows beside it.
+        // Settings and New session, while open, have the window beside the toolbar: each has
+        // its own list down its left (its pages, the folders), so the session list doesn't show.
         let full = self.settings.is_some() || self.browser.is_some();
         let list = (!self.tabs.is_empty() && !self.folded && !full).then(|| self.render_list(cx));
-        let toolbar = (!full).then(|| self.render_toolbar(cx));
+        let toolbar = self.render_toolbar(cx);
         let inbox = self.inbox_open.then(|| self.render_inbox(cx));
         let tasks = self.tasks_open.then(|| self.render_tasks(cx));
         let list_shown = list.is_some();
@@ -4114,7 +4113,7 @@ impl Render for Shell {
                     .when(self.list_resizing, |d| {
                         d.cursor_col_resize().on_mouse_up(MouseButton::Left, cx.listener(|s, _, _, cx| s.end_list_resize(cx)))
                     })
-                    .children(toolbar)
+                    .child(toolbar)
                     .children(list)
                     .child(
                         div()
@@ -4125,7 +4124,7 @@ impl Render for Shell {
                             .child(main)
                             // With the list hidden, the work area is rounded at its top left
                             // beside the toolbar; beside the list, the list's corner is.
-                            .when(!list_shown && !full, |d| d.child(crate::dock_skin::corner_cap(true, true, bg))),
+                            .when(!list_shown, |d| d.child(crate::dock_skin::corner_cap(true, true, bg))),
                     )
                     .children(inbox)
                     .children(tasks),
