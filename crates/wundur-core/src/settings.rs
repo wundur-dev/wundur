@@ -135,6 +135,12 @@ pub struct Prefs {
     pub command_changes: bool,
     /// A terminal shows what it showed before Wundur last quit.
     pub keep_terminal_history: bool,
+    /// A shell in a terminal marks its commands (see [`crate::shell_integration`]): long
+    /// output folds, a command's output copies, the parts of a command line can be clicked.
+    pub shell_integration: bool,
+    /// Command output a program printed plain gets light colouring (see
+    /// [`crate::output_colors`]).
+    pub color_output: bool,
     /// The terminals' font size, in points.
     pub terminal_font_size: f32,
     /// The agents' own interfaces' font size (their Terminal view), in points: larger than
@@ -167,6 +173,8 @@ impl Default for Prefs {
             turn_card: true,
             command_changes: true,
             keep_terminal_history: true,
+            shell_integration: true,
+            color_output: true,
             terminal_font_size: TERMINAL_FONT_SIZE,
             agent_font_size: AGENT_FONT_SIZE,
             hybrid_views: false,

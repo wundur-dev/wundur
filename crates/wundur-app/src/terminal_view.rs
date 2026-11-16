@@ -12,12 +12,13 @@ use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::CursorShape;
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::palette;
 use crate::pty::{GridSize, Pty, PtyEvent};
+use crate::term_blocks::{self, BlockView, DisplayRow, Part};
 
 /// The fixed-width font every system has: Menlo on macOS, Consolas on Windows.
 pub const FONT_FAMILY: &str = if cfg!(windows) { "Consolas" } else if cfg!(target_os = "linux") { "DejaVu Sans Mono" } else { "Menlo" };
@@ -145,6 +146,68 @@ pub struct TerminalView {
     pub history: Option<String>,
     /// Writing what it shows, a moment after its output stops.
     save: Option<Task<()>>,
+    /// The shell's commands (see [`term_blocks`]): read from the grid at most once per batch
+    /// of output (`generation` counts the batches).
+    blocks: Rc<std::cell::RefCell<BlocksCache>>,
+    generation: u64,
+    /// Outputs the person folded (`true`) or opened (`false`); the rest fold when long.
+    folds: Rc<std::cell::RefCell<std::collections::HashMap<u64, bool>>>,
+    /// The rows drawn last, top to bottom, when a fold changes what shows (else empty: row
+    /// `n` is grid line `n - offset`, as usual).
+    shown: Rc<std::cell::RefCell<Vec<DisplayRow>>>,
+    /// The command under the pointer (its buttons show), and the part of its command line.
+    hover_block: Option<u64>,
+    hover_part: Option<Part>,
+    hover_fold: bool,
+    /// A click that began on a part of a command line: put on the prompt when the button comes
+    /// up without a drag.
+    pending_part: Option<Part>,
+    /// A command whose output was just copied, and when (its button says so for a moment).
+    copied: Option<(u64, std::time::Instant)>,
+}
+
+#[derive(Default)]
+struct BlocksCache {
+    key: (u64, usize, usize, usize),
+    list: Rc<Vec<BlockView>>,
+}
+
+/// Cmd on macOS, Ctrl elsewhere.
+fn secondary(m: &Modifiers) -> bool {
+    if cfg!(target_os = "macos") { m.platform } else { m.control }
+}
+
+/// The commands in `pty`'s grid, read again only when its output or size changed.
+///
+/// Locks the grid, then the marks: the order the PTY thread takes them in (it holds the grid
+/// while it reads, and the reading takes the marks).
+fn cached_blocks(cache: &std::cell::RefCell<BlocksCache>, pty: &Pty, generation: u64) -> Rc<Vec<BlockView>> {
+    let term = pty.term.lock();
+    let marks = match pty.marks.lock() {
+        Ok(m) if m.active() => m,
+        _ => return Rc::default(),
+    };
+    let grid = term.grid();
+    let key = (generation, grid.history_size(), grid.columns(), grid.screen_lines());
+    let mut cache = cache.borrow_mut();
+    if cache.key != key {
+        cache.key = key;
+        cache.list = Rc::new(term_blocks::scan(&term, &marks));
+    }
+    cache.list.clone()
+}
+
+/// The rows to draw when a fold changes them (`None`: as usual, the grid's own).
+fn fold_rows(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, bool>) -> Option<Vec<DisplayRow>> {
+    if !blocks.iter().any(|b| term_blocks::folded(b, folds)) {
+        return None;
+    }
+    let term = pty.term.lock();
+    let grid = term.grid();
+    let screen = grid.screen_lines() as i32;
+    let all = term_blocks::display_rows(blocks, folds, -(grid.history_size() as i32), screen);
+    let bottom = screen - 1 - grid.display_offset() as i32;
+    Some(term_blocks::window(&all, bottom, screen as usize))
 }
 
 /// Keeps a pasted image (its bytes and file extension); the file it is kept in.
@@ -256,6 +319,13 @@ impl TerminalView {
     fn start(spec: wundur_core::host::CommandSpec, history: Option<String>, cx: &mut Context<Self>) -> Self {
         // Settings: not kept, so neither shown again nor saved.
         let history = history.filter(|_| crate::prefs(cx).keep_terminal_history);
+        // A shell on this machine marks its commands (a remote one has no `cwd` here).
+        let spec = match crate::prefs(cx).shell_integration && spec.cwd.is_some() {
+            true => wundur_core::shell_integration::dir()
+                .and_then(|dir| wundur_core::shell_integration::integrate(&spec, &dir))
+                .unwrap_or(spec),
+            false => spec,
+        };
         let preface = history
             .as_deref()
             .and_then(wundur_core::term_history::path)
@@ -285,6 +355,7 @@ impl TerminalView {
                             for ev in batch {
                                 match ev {
                                     PtyEvent::Wakeup => {
+                                        view.generation += 1;
                                         crate::perf::pty_output();
                                         view.unseen = true;
                                         view.schedule_save(cx);
@@ -354,6 +425,15 @@ impl TerminalView {
             _events: events,
             history,
             save: None,
+            blocks: Rc::default(),
+            generation: 0,
+            folds: Rc::default(),
+            shown: Rc::default(),
+            hover_block: None,
+            hover_part: None,
+            hover_fold: false,
+            pending_part: None,
+            copied: None,
         }
     }
 
@@ -675,7 +755,7 @@ impl TerminalView {
             if let Some(pty) = &self.pty {
                 let rows = pty.size().rows as i32;
                 let delta = if ks.key == "pageup" { rows } else { -rows };
-                pty.term.lock().scroll_display(Scroll::Delta(delta));
+                self.scroll_rows(delta);
                 cx.notify();
             }
             cx.stop_propagation();
@@ -711,7 +791,163 @@ impl TerminalView {
         let offset = term.grid().display_offset() as i32;
         let row = row.min(term.screen_lines().saturating_sub(1));
         let col = col.min(term.columns().saturating_sub(1));
-        (GridPoint::new(Line(row as i32 - offset), Column(col)), side)
+        let line = match self.shown.borrow().get(row) {
+            Some(r) => r.line(),
+            None => row as i32 - offset,
+        };
+        (GridPoint::new(Line(line), Column(col)), side)
+    }
+
+    /// The row drawn under `position` (a grid line, or a fold).
+    fn row_at(&self, position: Point<Pixels>) -> Option<DisplayRow> {
+        let b = self.bounds.get();
+        let y = position.y - b.origin.y;
+        if y < px(0.) {
+            return None;
+        }
+        let row = (y / self.cell.get().height) as usize;
+        let shown = self.shown.borrow();
+        if !shown.is_empty() {
+            return shown.get(row).copied();
+        }
+        let pty = self.pty.as_ref()?;
+        let term = pty.term.lock();
+        (row < term.screen_lines()).then(|| DisplayRow::Line(row as i32 - term.grid().display_offset() as i32))
+    }
+
+    /// The shell's commands now on the grid.
+    fn blocks(&self) -> Rc<Vec<BlockView>> {
+        match &self.pty {
+            Some(pty) => cached_blocks(&self.blocks, pty, self.generation),
+            None => Rc::default(),
+        }
+    }
+
+    /// Scroll by `n` rows as drawn (up when positive): a fold is one row.
+    fn scroll_rows(&mut self, n: i32) {
+        let Some(pty) = &self.pty else { return };
+        let blocks = self.blocks();
+        let folds = self.folds.borrow();
+        if !blocks.iter().any(|b| term_blocks::folded(b, &folds)) {
+            pty.term.lock().scroll_display(Scroll::Delta(n));
+            return;
+        }
+        let mut term = pty.term.lock();
+        let grid = term.grid();
+        let screen = grid.screen_lines() as i32;
+        let offset = grid.display_offset() as i32;
+        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen);
+        let Some(at) = term_blocks::index_of(&all, screen - 1 - offset) else { return };
+        let lowest = (screen as usize - 1).min(all.len() - 1);
+        let to = (at as i64 - n as i64).clamp(lowest as i64, all.len() as i64 - 1) as usize;
+        let bottom = match all[to] {
+            DisplayRow::Line(l) => l,
+            DisplayRow::Fold { last, .. } => last,
+        };
+        term.scroll_display(Scroll::Delta(screen - 1 - bottom - offset));
+    }
+
+    /// Copy a command's output, or its command line and output.
+    fn copy_block(&mut self, id: u64, with_command: bool, cx: &mut Context<Self>) {
+        let Some(pty) = &self.pty else { return };
+        let Some(b) = self.blocks().iter().find(|b| b.id() == id).cloned() else { return };
+        let term = pty.term.lock();
+        let output = term_blocks::text(&term, b.output.clone());
+        let text = if with_command {
+            let command = b.info.command.clone().unwrap_or_else(|| term_blocks::text(&term, b.block.command.clone()));
+            format!("$ {command}\n{output}")
+        } else {
+            output
+        };
+        drop(term);
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some((id, std::time::Instant::now()));
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Tests: the commands, one per line: id, lines, exit, folded, command, parts.
+    pub fn describe_blocks(&self) -> String {
+        let Some(pty) = &self.pty else { return "no pty".into() };
+        let folds = self.folds.borrow();
+        let blocks = self.blocks();
+        let shell = pty.marks.lock().ok().and_then(|m| m.shell.clone()).unwrap_or_default();
+        let term = pty.term.lock();
+        let mut out = format!("shell={shell}");
+        for b in blocks.iter() {
+            let parts: Vec<String> = term_blocks::parts(&term, b).into_iter().map(|p| format!("{}@{:?}", p.text, p.spans)).collect();
+            out.push_str(&format!(
+                " || #{} lines={:?} out={:?} exit={:?} running={} folded={} cmd={:?} parts={:?}",
+                b.id(),
+                b.lines(),
+                b.output,
+                b.info.exit,
+                b.running,
+                term_blocks::folded(b, &folds),
+                b.info.command,
+                parts
+            ));
+        }
+        out
+    }
+
+    /// Tests: as if the pointer were over the last command with output (its buttons show).
+    pub fn hover_last(&mut self, cx: &mut Context<Self>) -> String {
+        self.hover_block = self.blocks().iter().rev().find(|b| !b.running && b.output_len() > 0).map(|b| b.id());
+        cx.notify();
+        format!("{:?}", self.hover_block)
+    }
+
+    /// Tests: part `n` (from 1) of the last command with parts, put on the prompt as a click
+    /// does (`run` after it: as Cmd+click does).
+    pub fn use_part(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mut words = arg.split_whitespace();
+        let n: usize = words.next().and_then(|w| w.parse().ok()).unwrap_or(1);
+        let run = words.next() == Some("run");
+        let Some(pty) = self.pty.clone() else { return "no pty".into() };
+        let blocks = self.blocks();
+        let part = {
+            let term = pty.term.lock();
+            blocks.iter().rev().map(|b| term_blocks::parts(&term, b)).find(|p| !p.is_empty()).and_then(|p| p.into_iter().nth(n.saturating_sub(1)))
+        };
+        let Some(part) = part else { return "no such part".into() };
+        self.put_on_prompt(&part.text, run, cx);
+        part.text
+    }
+
+    /// Fold or open a command's output.
+    fn toggle_fold(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(b) = self.blocks().iter().find(|b| b.id() == id).cloned() else { return };
+        let now = term_blocks::folded(&b, &self.folds.borrow());
+        self.folds.borrow_mut().insert(id, !now);
+        if now {
+            // Opened: the scroll position stays on what was there.
+            self.scroll_rows(0);
+        }
+        cx.notify();
+    }
+
+    /// Put `text` on the shell's prompt in place of what was typed there, and run it if `run`.
+    /// Nothing happens while a command runs: it would be typed into that program.
+    fn put_on_prompt(&mut self, text: &str, run: bool, cx: &mut Context<Self>) {
+        let Some(pty) = self.pty.clone() else { return };
+        if !pty.marks.lock().is_ok_and(|m| m.at_prompt()) {
+            return;
+        }
+        // Clear the line: PowerShell's Windows keys (Escape), else Ctrl+E then Ctrl+U.
+        let clear = if cfg!(windows) { "\x1b" } else { "\x05\x15" };
+        let mut keys = format!("{clear}{text}");
+        if run {
+            keys.push('\r');
+        }
+        self.scroll_to_bottom();
+        pty.term.lock().selection = None;
+        pty.write(keys.into_bytes());
+        cx.notify();
     }
 
     /// The text of a row of the grid (scrollback included), one character per cell.
@@ -728,8 +964,27 @@ impl TerminalView {
     }
 
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let was_focused = self.focus.is_focused(window);
         window.focus(&self.focus, cx);
+        if let Some(DisplayRow::Fold { id, .. }) = self.row_at(e.position) {
+            self.toggle_fold(id, cx);
+            return;
+        }
         let (point, side) = self.grid_point(e.position);
+        self.pending_part = None;
+        if e.click_count == 1
+            && let Some(part) = self.hover_part.clone().filter(|p| p.contains(point.line.0, point.column.0))
+        {
+            if secondary(&e.modifiers) {
+                // Cmd+click (Ctrl+click): run it now.
+                self.put_on_prompt(&part.text, true, cx);
+                return;
+            }
+            // A click that only focuses the terminal does nothing more.
+            if was_focused {
+                self.pending_part = Some(part);
+            }
+        }
         if e.modifiers.platform && e.click_count == 1 {
             let line = self.row_text(point.line);
             cx.emit(TerminalEvent::OpenLink { line, column: point.column.0, browser: true });
@@ -764,10 +1019,23 @@ impl TerminalView {
         if self.pty.is_some() {
             let (point, _) = self.grid_point(e.position);
             let line = self.row_text(point.line);
-            let hover = web_span_at(&line, point.column.0).map(|(a, b)| (point.line.0, a, b));
-            if hover != self.hover_link {
+            let (block, part, fold) = self.command_under(e.position, point);
+            let hover = match &part {
+                Some(_) => None,
+                None => web_span_at(&line, point.column.0).map(|(a, b)| (point.line.0, a, b)),
+            };
+            if hover != self.hover_link || block != self.hover_block || fold != self.hover_fold || part != self.hover_part {
                 self.hover_link = hover;
+                self.hover_block = block;
+                self.hover_part = part;
+                self.hover_fold = fold;
                 cx.notify();
+            }
+            if e.pressed_button == Some(MouseButton::Left)
+                && let Some(p) = &self.pending_part
+                && !p.contains(point.line.0, point.column.0)
+            {
+                self.pending_part = None;
             }
             // Dragged off the cell it began on: a selection, not a click on the link.
             if e.pressed_button == Some(MouseButton::Left)
@@ -801,8 +1069,38 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// The command under the pointer (`position`, grid point `point`): its id, the part of
+    /// its command line there (only at the prompt, when a click can use it), and whether
+    /// the row is a fold.
+    fn command_under(&self, position: Point<Pixels>, point: GridPoint) -> (Option<u64>, Option<Part>, bool) {
+        let Some(pty) = &self.pty else { return (None, None, false) };
+        if matches!(self.row_at(position), Some(DisplayRow::Fold { .. })) {
+            let id = self.blocks().iter().find(|b| b.lines().contains(&point.line.0)).map(|b| b.id());
+            return (id, None, true);
+        }
+        let blocks = self.blocks();
+        let Some(b) = blocks.iter().find(|b| b.lines().contains(&point.line.0)) else {
+            return (None, None, false);
+        };
+        let idle = pty.marks.lock().is_ok_and(|m| m.at_prompt());
+        let part = if idle && b.block.command.contains(&point.line.0) {
+            let term = pty.term.lock();
+            let parts = term_blocks::parts(&term, b);
+            parts.into_iter().find(|p| p.contains(point.line.0, point.column.0))
+        } else {
+            None
+        };
+        let id = (!b.running && (b.output_len() > 0 || part.is_some())).then(|| b.id());
+        (id, part, false)
+    }
+
     fn mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.selecting = false;
+        if let Some(part) = self.pending_part.take() {
+            self.pending_link = None;
+            self.put_on_prompt(&part.text, false, cx);
+            return;
+        }
         if let Some((line, column)) = self.pending_link.take() {
             if let Some(pty) = &self.pty {
                 pty.term.lock().selection = None;
@@ -833,7 +1131,7 @@ impl TerminalView {
         let col = cell.column.0 + 1;
         let row = (cell.line.0 + pty.term.lock().grid().display_offset() as i32).max(0) as usize + 1;
         match wheel_input(self.mode(), lines, col, row) {
-            Wheel::Scrollback(n) => pty.term.lock().scroll_display(Scroll::Delta(n)),
+            Wheel::Scrollback(n) => self.scroll_rows(n),
             Wheel::Send(bytes) => self.write_str(&bytes),
         }
         cx.notify();
@@ -993,7 +1291,11 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
-        let hover_link = self.hover_link;
+        // Underlined: the web address or the part of a command line under the pointer.
+        let underline: Vec<(i32, usize, usize)> = match &self.hover_part {
+            Some(p) => p.spans.iter().map(|(l, c)| (*l, c.start, c.end)).collect(),
+            None => self.hover_link.into_iter().collect(),
+        };
         let pty = self.pty.clone();
         let pty_paint = self.pty.clone();
         let on_screen = self.on_screen.clone();
@@ -1003,6 +1305,12 @@ impl Render for TerminalView {
         let bounds_cell = self.bounds.clone();
         let cell_cell = self.cell.clone();
         let cell_paint = self.cell.clone();
+        let blocks_cache = self.blocks.clone();
+        let generation = self.generation;
+        let folds = self.folds.clone();
+        let shown = self.shown.clone();
+        let buttons = self.block_buttons(cx);
+        let color_output = crate::prefs(cx).color_output;
         let base = div()
             .id("terminal")
             .size_full()
@@ -1018,9 +1326,18 @@ impl Render for TerminalView {
             // Files dropped in: as if pasted.
             .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| v.paste_files(paths.paths().to_vec(), cx)))
             .on_mouse_move(cx.listener(Self::mouse_move))
+            // The pointer left: no command's buttons, no underline.
+            .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
+                if !*hovered && (v.hover_block.is_some() || v.hover_part.is_some()) {
+                    v.hover_block = None;
+                    v.hover_part = None;
+                    v.hover_fold = false;
+                    cx.notify();
+                }
+            }))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll(cx.listener(Self::scroll))
-            .cursor(if self.hover_link.is_some() { CursorStyle::PointingHand } else { CursorStyle::IBeam });
+            .cursor(if self.hover_link.is_some() || self.hover_part.is_some() || self.hover_fold { CursorStyle::PointingHand } else { CursorStyle::IBeam });
         if let Some(err) = &self.error {
             return base.p_2().text_color(hsla(if palette::is_dark() { 0xcc6666 } else { 0xc0392b })).child(err.clone());
         }
@@ -1127,7 +1444,12 @@ impl Render for TerminalView {
                         return;
                     }
                     let start = std::time::Instant::now();
-                    paint_grid(text_size, pty, bounds, cell_paint.get(), focused, hover_link, window, cx);
+                    let blocks = cached_blocks(&blocks_cache, pty, generation);
+                    let rows = fold_rows(pty, &blocks, &folds.borrow());
+                    *shown.borrow_mut() = rows.clone().unwrap_or_default();
+                    let failed: Vec<_> = blocks.iter().filter(|b| b.failed()).map(|b| b.lines()).collect();
+                    let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
+                    paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &failed, &tinted, window, cx);
                     crate::perf::record("terminal paint", start.elapsed());
                     crate::perf::terminal_painted();
                 },
@@ -1135,6 +1457,7 @@ impl Render for TerminalView {
             .size_full(),
         )
         .children(placeholder)
+        .children(buttons)
         .children(self.hover_image.clone().map(|(path, at)| {
             let b = self.bounds.get();
             let (x, y) = (at.x - b.origin.x + px(12.), at.y - b.origin.y + px(16.));
@@ -1154,6 +1477,83 @@ impl Render for TerminalView {
 }
 
 impl TerminalView {
+    /// The buttons over the command under the pointer, at its first row drawn: copy its
+    /// output, copy it with its command line, fold or open it.
+    fn block_buttons(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let id = self.hover_block?;
+        let blocks = self.blocks();
+        let b = blocks.iter().find(|b| b.id() == id)?;
+        let pty = self.pty.as_ref()?;
+        let shown = self.shown.borrow();
+        let row = if shown.is_empty() {
+            let term = pty.term.lock();
+            let offset = term.grid().display_offset() as i32;
+            let screen = term.screen_lines() as i32;
+            (b.block.start.max(-offset)..b.lines().end).map(|l| l + offset).find(|r| (0..screen).contains(r))?
+        } else {
+            shown.iter().position(|r| b.lines().contains(&r.line()))? as i32
+        };
+        let cell = self.cell.get();
+        let copied = self.copied.is_some_and(|(c, t)| c == id && t.elapsed() < std::time::Duration::from_millis(1400));
+        let text_size = (self.text_size(cx) - 1.).max(9.);
+        let chip = |key: &'static str, label: String| {
+            div()
+                .id(key)
+                .px(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(hsla(palette::dim()).opacity(0.5))
+                .bg(hsla(palette::background()))
+                .text_size(px(text_size))
+                .text_color(hsla(palette::foreground()))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|d| d.bg(hsla(palette::dim()).opacity(0.25)))
+                .child(label)
+        };
+        let has_output = b.output_len() > 0;
+        let foldable = b.foldable();
+        let folded = term_blocks::folded(b, &self.folds.borrow());
+        let row_top = cell.height * row as f32;
+        Some(
+            div()
+                .absolute()
+                .top(row_top)
+                .right(px(10.))
+                .flex()
+                .gap(px(4.))
+                .when(has_output, |d| {
+                    d.child(
+                        chip("copy-output", if copied { "Copied".into() } else { "Copy output".into() })
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, _, cx| {
+                                cx.stop_propagation();
+                                v.copy_block(id, false, cx);
+                            })),
+                    )
+                    .child(
+                        chip("copy-all", "Copy with command".into()).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |v, _, _, cx| {
+                                cx.stop_propagation();
+                                v.copy_block(id, true, cx);
+                            }),
+                        ),
+                    )
+                })
+                .when(foldable, |d| {
+                    d.child(
+                        chip("fold", if folded { "Show all".into() } else { "Fold".into() }).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |v, _, _, cx| {
+                                cx.stop_propagation();
+                                v.toggle_fold(id, cx);
+                            }),
+                        ),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     /// The size its text is drawn at: Settings' size, zoomed.
     pub fn text_size(&self, cx: &App) -> f32 {
         let (min, max) = (*wundur_core::settings::TERMINAL_FONT_SIZES.start(), *wundur_core::settings::TERMINAL_FONT_SIZES.end());
@@ -1195,7 +1595,10 @@ fn paint_grid(
     bounds: Bounds<Pixels>,
     cell: Size<Pixels>,
     focused: bool,
-    hover_link: Option<(i32, usize, usize)>,
+    underline: &[(i32, usize, usize)],
+    shown: Option<&[DisplayRow]>,
+    failed: &[std::ops::Range<i32>],
+    tinted: &[std::ops::Range<i32>],
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1211,10 +1614,43 @@ fn paint_grid(
     let base_font = font(crate::fonts::code(cx));
     let default_bg = palette::background();
     let grid = term.grid();
+    let plain: Vec<DisplayRow>;
+    let shown = match shown {
+        Some(s) => s,
+        None => {
+            plain = (0..rows).map(|r| DisplayRow::Line(r as i32 - offset)).collect();
+            &plain
+        }
+    };
 
-    for row in 0..rows {
-        let line = Line(row as i32 - offset);
+    for (row, &drawn) in shown.iter().enumerate() {
         let y = bounds.origin.y + cell.height * row as f32;
+        let line = match drawn {
+            DisplayRow::Line(l) => Line(l),
+            DisplayRow::Fold { hidden, .. } => {
+                paint_fold(hidden, point(bounds.origin.x, y), bounds.size.width, cell, font_size, &base_font, window, cx);
+                continue;
+            }
+        };
+        // Command output: plain text gets light colouring (see `output_colors`).
+        let tones = if tinted.iter().any(|r| r.contains(&line.0)) {
+            let row_text: String = (0..cols)
+                .map(|c| {
+                    let cell = &grid[GridPoint::new(line, Column(c))];
+                    if cell.c == '\0' || cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) { ' ' } else { cell.c }
+                })
+                .collect();
+            wundur_core::output_colors::tones(&row_text)
+        } else {
+            Vec::new()
+        };
+        // A command that failed: a red mark down its left edge.
+        if failed.iter().any(|r| r.contains(&line.0)) {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x - px(3.), y), size(px(2.), cell.height)),
+                hsla(if palette::is_dark() { 0xd9534f } else { 0xc0392b }).opacity(0.8),
+            ));
+        }
         let mut text = String::with_capacity(cols);
         let mut runs: Vec<TextRun> = Vec::new();
         let mut bg_start: Option<(usize, u32)> = None;
@@ -1243,6 +1679,30 @@ fn paint_grid(
             }
             let mut fg = palette::resolve(fg_color, colors, true);
             let mut bg = palette::resolve(bg_color, colors, false);
+            let mut tone_bold = false;
+            if let Some(Some(tone)) = tones.get(col)
+                && c.fg == AnsiColor::Named(NamedColor::Foreground)
+                && !c.flags.intersects(Flags::INVERSE | Flags::DIM | Flags::HIDDEN)
+            {
+                use wundur_core::output_colors::Tone;
+                match tone {
+                    Tone::Dim => fg = palette::dim(),
+                    Tone::Label => tone_bold = true,
+                    Tone::Bad => {
+                        fg = palette::indexed(1);
+                        tone_bold = true;
+                    }
+                    Tone::Warn => {
+                        fg = palette::indexed(3);
+                        tone_bold = true;
+                    }
+                    Tone::Good => fg = palette::indexed(2),
+                    Tone::Link => fg = palette::indexed(4),
+                    Tone::Path => fg = palette::indexed(6),
+                    Tone::Number => fg = palette::indexed(5),
+                    Tone::Hash => fg = palette::indexed(3),
+                }
+            }
             if selection.is_some_and(|s| s.contains(gp)) {
                 bg = palette::selection();
                 fg = palette::foreground();
@@ -1272,7 +1732,7 @@ fn paint_grid(
             }
             let len = text.len() - before;
             let mut f = base_font.clone();
-            if c.flags.contains(Flags::BOLD) {
+            if c.flags.contains(Flags::BOLD) || tone_bold {
                 f.weight = FontWeight::BOLD;
             }
             if c.flags.contains(Flags::ITALIC) {
@@ -1345,9 +1805,7 @@ fn paint_grid(
             cx,
         );
         // The web address under the pointer, underlined.
-        if let Some((l, from, to)) = hover_link
-            && l == line.0
-        {
+        for &(_, from, to) in underline.iter().filter(|(l, ..)| *l == line.0) {
             window.paint_quad(fill(
                 Bounds::new(
                     point(bounds.origin.x + cell.width * from as f32, y + cell.height - px(2.)),
@@ -1361,7 +1819,10 @@ fn paint_grid(
     // Cursor.
     let cursor = content.cursor;
     if cursor.shape != CursorShape::Hidden {
-        let row = cursor.point.line.0 + offset;
+        let row = shown
+            .iter()
+            .position(|r| *r == DisplayRow::Line(cursor.point.line.0))
+            .map_or(-1, |r| r as i32);
         if row >= 0 && (row as usize) < rows {
             let origin = point(
                 bounds.origin.x + cell.width * cursor.point.column.0 as f32,
@@ -1393,9 +1854,59 @@ fn paint_grid(
     }
 }
 
+/// The row standing for a folded output: how many lines it hides, and that a click shows them.
+#[allow(clippy::too_many_arguments)]
+fn paint_fold(
+    hidden: usize,
+    at: Point<Pixels>,
+    width: Pixels,
+    cell: Size<Pixels>,
+    font_size: Pixels,
+    base_font: &Font,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let dim = palette::dim();
+    window.paint_quad(fill(
+        Bounds::new(point(at.x, at.y + px(2.)), size(width, cell.height - px(4.))),
+        hsla(dim).opacity(0.12),
+    ));
+    let label = format!("  ⋯ {} lines folded, click to show", group_digits(hidden));
+    let run = TextRun {
+        len: label.len(),
+        font: base_font.clone(),
+        color: hsla(dim),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window.text_system().shape_line(label.into(), font_size, &[run], Some(cell.width));
+    let _ = shaped.paint(at, cell.height, TextAlign::Left, None, window, cx);
+}
+
+/// 2340 → "2,340".
+fn group_digits(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn digits_are_grouped() {
+        assert_eq!(group_digits(7), "7");
+        assert_eq!(group_digits(2340), "2,340");
+        assert_eq!(group_digits(1234567), "1,234,567");
+    }
 
     #[::core::prelude::v1::test]
     fn finds_the_image_marker_under_the_pointer() {

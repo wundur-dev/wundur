@@ -361,6 +361,16 @@ fn terminals() -> SettingPage {
                 "A terminal shows what it showed before Wundur Studio quit. Kept 30 days.",
                 |p| &mut p.keep_terminal_history,
             ),
+            pref(
+                "Shell integration",
+                "Your shell marks each command, so long output folds, a command's output copies in one click and the parts of a command line can be clicked. zsh, bash, fish and PowerShell; for new terminals.",
+                |p| &mut p.shell_integration,
+            ),
+            pref(
+                "Colour command output",
+                "Plain output gets light colouring: labels, numbers, paths, links, hashes, and words like error, warning and done. Colours a program chose stay; copied text is unchanged. Needs shell integration.",
+                |p| &mut p.color_output,
+            ),
         ]),
     )
 }

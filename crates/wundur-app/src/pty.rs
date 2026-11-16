@@ -1,5 +1,7 @@
 //! A shell in a pseudo-terminal: alacritty_terminal keeps the screen (grid, scrollback, modes)
-//! and runs the PTY reader thread; the view only draws the grid and sends keys.
+//! and runs the PTY reader thread; the view only draws the grid and sends keys. What the
+//! program writes passes [`MarkFilter`] first, which turns the shell's command marks into
+//! something the grid keeps (see `wundur_core::term_marks`).
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -9,8 +11,11 @@ use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::tty;
+use alacritty_terminal::event::OnResize;
+use alacritty_terminal::tty::{self, ChildEvent, EventedPty, EventedReadWrite};
+use polling::{Event as PollEvent, PollMode, Poller};
 use wundur_core::host::CommandSpec;
+use wundur_core::term_marks::{MarkFilter, Marks};
 
 /// What the PTY thread tells the window.
 #[derive(Debug, Clone)]
@@ -101,8 +106,75 @@ impl GridSize {
     }
 }
 
+/// The system's PTY, read through [`MarkFilter`]: the event loop reads this as it would the PTY.
+struct MarkedPty {
+    pty: tty::Pty,
+    filter: MarkFilter,
+    /// Filtered output not yet read.
+    ready: Vec<u8>,
+    at: usize,
+    raw: Box<[u8]>,
+}
+
+impl std::io::Read for MarkedPty {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.at < self.ready.len() {
+                let n = buf.len().min(self.ready.len() - self.at);
+                buf[..n].copy_from_slice(&self.ready[self.at..self.at + n]);
+                self.at += n;
+                return Ok(n);
+            }
+            self.ready.clear();
+            self.at = 0;
+            // Nothing more to read (WouldBlock) or the end: as the PTY says.
+            let n = std::io::Read::read(self.pty.reader(), &mut self.raw)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            self.filter.feed(&self.raw[..n], &mut self.ready);
+        }
+    }
+}
+
+impl EventedReadWrite for MarkedPty {
+    type Reader = Self;
+    type Writer = <tty::Pty as EventedReadWrite>::Writer;
+
+    unsafe fn register(&mut self, poll: &Arc<Poller>, interest: PollEvent, mode: PollMode) -> std::io::Result<()> {
+        // SAFETY: as the caller promised for this one; the PTY lives as long as this.
+        unsafe { self.pty.register(poll, interest, mode) }
+    }
+    fn reregister(&mut self, poll: &Arc<Poller>, interest: PollEvent, mode: PollMode) -> std::io::Result<()> {
+        self.pty.reregister(poll, interest, mode)
+    }
+    fn deregister(&mut self, poll: &Arc<Poller>) -> std::io::Result<()> {
+        self.pty.deregister(poll)
+    }
+    fn reader(&mut self) -> &mut Self {
+        self
+    }
+    fn writer(&mut self) -> &mut Self::Writer {
+        self.pty.writer()
+    }
+}
+
+impl EventedPty for MarkedPty {
+    fn next_child_event(&mut self) -> Option<ChildEvent> {
+        self.pty.next_child_event()
+    }
+}
+
+impl OnResize for MarkedPty {
+    fn on_resize(&mut self, size: WindowSize) {
+        self.pty.on_resize(size)
+    }
+}
+
 pub struct Pty {
     pub term: Arc<FairMutex<Term<Listener>>>,
+    /// The commands the shell marked (none for a program that isn't an integrated shell).
+    pub marks: Arc<std::sync::Mutex<Marks>>,
     sender: EventLoopSender,
     size: std::cell::Cell<GridSize>,
     #[cfg(unix)]
@@ -158,6 +230,14 @@ impl Pty {
             use std::os::fd::AsRawFd;
             pty.file().as_raw_fd()
         };
+        let marks = Arc::new(std::sync::Mutex::new(Marks::default()));
+        let pty = MarkedPty {
+            pty,
+            filter: MarkFilter::new(marks.clone()),
+            ready: Vec::new(),
+            at: 0,
+            raw: vec![0; 64 * 1024].into_boxed_slice(),
+        };
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let sender = event_loop.channel();
         *writer.lock() = Some(sender.clone());
@@ -165,6 +245,7 @@ impl Pty {
         Ok((
             Self {
                 term,
+                marks,
                 sender,
                 size: std::cell::Cell::new(size),
                 #[cfg(unix)]

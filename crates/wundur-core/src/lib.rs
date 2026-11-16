@@ -47,6 +47,7 @@ pub mod links;
 pub mod markdown_marks;
 pub mod mcp;
 pub mod outbox;
+pub mod output_colors;
 pub mod packs;
 pub mod paste;
 pub mod platform;
@@ -65,7 +66,9 @@ pub mod summary;
 pub mod symbols;
 pub mod table;
 pub mod tabs;
+pub mod shell_integration;
 pub mod term_history;
+pub mod term_marks;
 pub mod web;
 pub mod workflow;
 
