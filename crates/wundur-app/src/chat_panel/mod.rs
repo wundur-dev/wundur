@@ -69,6 +69,10 @@ pub struct ChatPanel {
     pub session: Entity<AgentSession>,
     /// The session's number (saved with the layout).
     pub number: usize,
+    /// The session's number in the window's list, once known: what's typed in the message box
+    /// is kept under it (see `wundur_core::drafts`), and the pending save of it.
+    draft: Option<usize>,
+    draft_save: Option<Task<()>>,
     /// Set when this panel watches one subagent (its tool call id): it shows that subagent's
     /// items instead of the conversation, with no message box.
     pub agent: Option<String>,
@@ -224,6 +228,7 @@ impl ChatPanel {
                     InputEvent::Change => {
                         panel.mark_markdown(cx);
                         panel.check_spelling_soon(SPELL_PAUSE, window, cx);
+                        panel.keep_draft_soon(cx);
                     }
                     // Leaving the box: the word being typed is done.
                     InputEvent::Blur => panel.check_spelling_soon(std::time::Duration::ZERO, window, cx),
@@ -303,6 +308,8 @@ impl ChatPanel {
         let panel = Self {
             session,
             number: 0,
+            draft: None,
+            draft_save: None,
             agent: None,
             focus: cx.focus_handle(),
             input,
@@ -365,6 +372,31 @@ impl ChatPanel {
     }
 
     /// A panel that watches one subagent of the session.
+    /// Keep this chat's message box under session `number` from now on, and put back what was
+    /// typed there before a quit or restart (when the box is still empty).
+    pub fn keep_drafts(&mut self, number: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = Some(number);
+        if self.agent.is_none()
+            && self.input.read(cx).value().is_empty()
+            && let Some(text) = wundur_core::drafts::get(number)
+        {
+            self.input.update(cx, |s, cx| s.set_value(text, window, cx));
+        }
+    }
+
+    /// Save the message box's text as the draft once typing pauses.
+    fn keep_draft_soon(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.draft else { return };
+        self.draft_save = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+            let _ = this.update(cx, |p, cx| {
+                let text = p.input.read(cx).value().to_string();
+                wundur_core::drafts::set(number, &text);
+                p.draft_save = None;
+            });
+        }));
+    }
+
     pub fn new_for_agent(session: Entity<AgentSession>, tool_use_id: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut panel = Self::new(session, window, cx);
         panel.agent = Some(tool_use_id);

@@ -1176,6 +1176,8 @@ impl Shell {
         let row = Row::of(ws.read(cx), cx);
         let at = at.min(self.tabs.len());
         let changed = transcript_time(ws.read(cx), &row, cx);
+        let chat = ws.read(cx).claude.clone();
+        chat.update(cx, |p, cx| p.keep_drafts(number, window, cx));
         self.tabs.insert(at, Tab { number, ws, row, changed });
         if at <= self.active && self.tabs.len() > 1 {
             self.active += 1;
@@ -1219,6 +1221,8 @@ impl Shell {
             return;
         }
         let tab = self.tabs.remove(ix);
+        // Closed on purpose: its unsent text goes with it (a quit or restart keeps it).
+        wundur_core::drafts::forget(tab.number);
         tab.ws.update(cx, |w, cx| w.session.update(cx, |s, cx| s.stop(cx)));
         let key = tab.ws.read(cx).session.entity_id().as_u64();
         self.attention.forget(key);
