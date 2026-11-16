@@ -82,11 +82,29 @@ icon_assets!(
     ]
 );
 
-/// gpui-component's icons plus [`ExtraIcons`].
+/// Filled versions of the toolbar's icons, for the view that's lit (Lucide draws outlines
+/// only): our own, in Lucide's 24-point grid.
+const SOLID: [(&str, &[u8]); 4] = [
+    ("icons/solid/house.svg", include_bytes!("../assets/icons/solid/house.svg")),
+    ("icons/solid/inbox.svg", include_bytes!("../assets/icons/solid/inbox.svg")),
+    ("icons/solid/list-checks.svg", include_bytes!("../assets/icons/solid/list-checks.svg")),
+    ("icons/solid/settings.svg", include_bytes!("../assets/icons/solid/settings.svg")),
+];
+
+/// The filled toolbar icon's asset path for `name` (`house`, `inbox`, `list-checks`,
+/// `settings`).
+pub fn solid(name: &str) -> SharedString {
+    SharedString::from(format!("icons/solid/{name}.svg"))
+}
+
+/// gpui-component's icons plus [`ExtraIcons`] and the filled toolbar icons.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = SOLID.iter().find(|(p, _)| *p == path) {
+            return Ok(Some(Cow::Borrowed(*bytes)));
+        }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
@@ -96,6 +114,7 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        paths.extend(SOLID.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)));
         paths.sort();
         paths.dedup();
         Ok(paths)

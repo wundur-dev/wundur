@@ -3009,6 +3009,8 @@ impl Shell {
         } else {
             ""
         };
+        // The lit view's icon is the filled one.
+        let lit = |icon: Icon, solid: &str, on: bool| if on { icon.path(crate::icons::solid(solid)) } else { icon };
         let item = |id: &'static str, icon: Icon, tip: &'static str, on: bool| {
             div()
                 .id(id)
@@ -3038,11 +3040,11 @@ impl Shell {
             .pb_2()
             .bg(bg)
             .child(
-                item("tb-projects", Icon::new(gpui_kit::assets::IconName::House), "Projects", view == "projects")
+                item("tb-projects", lit(Icon::new(gpui_kit::assets::IconName::House), "house", view == "projects"), "Projects", view == "projects")
                     .on_click(cx.listener(|s, _, window, cx| s.projects_button(window, cx))),
             )
             .child(
-                item("tb-inbox", Icon::new(gpui_kit::assets::IconName::Inbox), "Inbox: notices from your sessions' agents", view == "inbox")
+                item("tb-inbox", lit(Icon::new(gpui_kit::assets::IconName::Inbox), "inbox", view == "inbox"), "Inbox: notices from your sessions' agents", view == "inbox")
                     .when(unread > 0, |d| {
                         d.child(
                             div()
@@ -3071,7 +3073,7 @@ impl Shell {
             )
             .child({
                 let open_tasks = crate::tasks::open_count(cx);
-                item("tb-tasks", Icon::new(gpui_kit::assets::IconName::ListChecks), "Tasks: what agents have handed you to do", view == "tasks")
+                item("tb-tasks", lit(Icon::new(gpui_kit::assets::IconName::ListChecks), "list-checks", view == "tasks"), "Tasks: what agents have handed you to do", view == "tasks")
                     .when(open_tasks > 0, |d| {
                         d.child(
                             div()
@@ -3100,7 +3102,7 @@ impl Shell {
             })
             .child(div().flex_1())
             .child(
-                item("tb-settings", Icon::new(IconName::Settings), "Settings (Cmd+,)", view == "settings").on_click(cx.listener(|s, _, window, cx| {
+                item("tb-settings", lit(Icon::new(IconName::Settings), "settings", view == "settings"), "Settings (Cmd+,)", view == "settings").on_click(cx.listener(|s, _, window, cx| {
                     if s.settings.is_some() {
                         s.close_settings(window, cx)
                     } else {
