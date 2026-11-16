@@ -178,12 +178,14 @@ pub fn pick_engine(dir: &Path, engine: &str, cx: &mut App) {
 
 /// A new asset in `project`: its folder (another name's if taken) and record, then the
 /// service makes its first set of views (one image spent).
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     project: &Path,
     kind: &str,
     name: &str,
     description: &str,
     fields: BTreeMap<String, Value>,
+    references: Vec<PathBuf>,
     origin: Option<wundur_core::assets::Origin>,
     cx: &mut App,
 ) -> Result<PathBuf, String> {
@@ -191,20 +193,50 @@ pub fn create(
     if name.is_empty() || description.is_empty() {
         return Err("Give it a name and say what it is.".into());
     }
+    if references.len() > flow::REFERENCES {
+        return Err(format!("At most {} reference pictures.", flow::REFERENCES));
+    }
+    // Each picture checked before anything is made (its bytes are read off the UI thread).
+    for r in &references {
+        let ext = r.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let shown = r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            return Err(format!("{shown}: references are PNG, JPEG or WebP pictures."));
+        }
+        match std::fs::metadata(r) {
+            Ok(m) if m.len() > flow::REFERENCE_BYTES => return Err(format!("{shown} is over 10 MB; use a smaller picture.")),
+            Ok(_) => {}
+            Err(e) => return Err(format!("{shown}: {e}")),
+        }
+    }
     let mut dir = wundur_core::assets::folder_for(project, kind, name);
     let mut n = 2;
     while dir.join(flow::RECORD).exists() || dir.join(wundur_core::assets::RECORD).exists() {
         dir = wundur_core::assets::folder_for(project, kind, &format!("{name} {n}"));
         n += 1;
     }
-    let record = Record { kind: kind.into(), name: name.into(), description: description.into(), fields: fields.clone(), origin, ..Default::default() };
+    // The pictures kept with the asset, in its folder (the card shows them from there).
+    let mut kept = Vec::new();
+    for (n, r) in references.iter().enumerate() {
+        let ext = r.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
+        let file = format!("references/reference-{}.{ext}", n + 1);
+        std::fs::create_dir_all(dir.join("references")).and_then(|_| std::fs::copy(r, dir.join(&file))).map_err(|e| format!("Couldn't keep a reference picture: {e}"))?;
+        kept.push(file);
+    }
+    let record = Record { kind: kind.into(), name: name.into(), description: description.into(), fields: fields.clone(), origin, references: kept.clone(), ..Default::default() };
     flow::save(&dir, &record).map_err(|e| format!("Couldn't save the asset: {e}"))?;
     let store = cx.default_global::<Store>();
     store.entries.insert(dir.clone(), Entry { record, project: project.to_path_buf(), working: Some("Starting"), polling: true, ..Default::default() });
     store.revision += 1;
     let (kind, name, description, folder) = (kind.to_string(), name.to_string(), description.to_string(), dir.clone());
+    let pictures: Vec<PathBuf> = kept.iter().map(|f| dir.join(f)).collect();
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let got = cx.background_spawn(async move { flow::create(&kind, &name, &description, &fields) }).await;
+        let got = cx
+            .background_spawn(async move {
+                let encoded = pictures.iter().map(|p| flow::reference(p)).collect::<Result<Vec<_>, _>>().map_err(|e| (e, false))?;
+                flow::create(&kind, &name, &description, &fields, &encoded).map_err(|e| flow::explain(&e))
+            })
+            .await;
         cx.update(|cx| {
             update(&folder, true, cx, |e| {
                 e.working = None;
@@ -215,7 +247,7 @@ pub fn create(
                         e.asset = Some(asset);
                         e.error = None;
                     }
-                    Err(err) => e.error = Some(flow::explain(&err)),
+                    Err(err) => e.error = Some(err),
                 }
             });
             poll(&folder, cx);
@@ -439,6 +471,16 @@ fn poll(dir: &Path, cx: &mut App) {
             let got = cx
                 .background_spawn(async move {
                     let asset = flow::get(&record.id)?;
+                    // Reference pictures this folder doesn't have yet (an asset started elsewhere).
+                    let mut references = Vec::new();
+                    if record.references.is_empty() {
+                        for (n, r) in asset.references.iter().enumerate() {
+                            let file = format!("references/reference-{}.png", n + 1);
+                            if flow::download(&r.url, &into.join(&file)).is_ok() {
+                                references.push(file);
+                            }
+                        }
+                    }
                     // Each finished set's views, saved once into the folder.
                     let mut saved: Vec<(String, Vec<String>)> = Vec::new();
                     for set in asset.sets.iter().filter(|s| s.is_ready() && !record.views.contains_key(&s.id)) {
@@ -453,14 +495,17 @@ fn poll(dir: &Path, cx: &mut App) {
                             saved.push((set.id.clone(), files));
                         }
                     }
-                    Ok::<_, Error>((asset, saved))
+                    Ok::<_, Error>((asset, saved, references))
                 })
                 .await;
             let busy = cx
                 .update(|cx| {
                     let mut busy = false;
                     update(&folder, true, cx, |e| match got {
-                        Ok((asset, saved)) => {
+                        Ok((asset, saved, references)) => {
+                            if !references.is_empty() {
+                                e.record.references = references;
+                            }
                             for (set, files) in saved {
                                 e.record.views.insert(set, files);
                             }

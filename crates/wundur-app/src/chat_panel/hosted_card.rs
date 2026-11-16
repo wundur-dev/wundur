@@ -31,6 +31,8 @@ pub(super) struct HostedForm {
     pub error: Option<String>,
     /// Whether "Style & generation options" (the kind's fields) is open.
     pub options_open: bool,
+    /// Pictures for the look, shape or style (at most three), sent with it.
+    pub references: Vec<PathBuf>,
 }
 
 /// A value for `field` as the form starts with it.
@@ -120,6 +122,7 @@ impl ChatPanel {
                 flags: HashMap::new(),
                 error: None,
                 options_open: false,
+                references: Vec::new(),
             });
             self.list.remeasure();
         }
@@ -483,6 +486,12 @@ impl ChatPanel {
         let three_d = kind.is_none_or(|k| k.supports_3d);
         let step = |icon: Lucide, text: &str| div().flex().items_center().gap_3().child(Icon::new(icon).small().text_color(muted)).child(div().text_sm().text_color(fg).child(text.to_string()));
         let right = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.hosted_form_references(form, cx))
+            .child(
+        div()
             .p_3()
             .rounded(px(10.))
             .border_1()
@@ -494,11 +503,104 @@ impl ChatPanel {
             .child(label("What happens next"))
             .child(step(Lucide::Image, "Make a set of views (one image)"))
             .child(step(Lucide::Eye, "Review them, refine or try again"))
-            .child(if three_d { step(Lucide::Box, "Build a model when you're ready") } else { step(Lucide::Box, "3D isn't available for this kind yet") })
+            .child(if three_d { step(Lucide::Box, "Build a model when you're ready") } else { step(Lucide::Box, "3D isn't available for this kind yet") }),
+            )
             .into_any_element();
         let error = form.error.clone().map(|e| div().text_xs().text_color(danger).child(e).into_any_element());
         let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make the views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
         self.hosted_frame(frame(left, Some(right), error, "You can rename it later", Some(primary), cancel), cx)
+    }
+
+    /// The form's reference pictures: each as a thumbnail (with a way to drop it), and a tile
+    /// to add more, up to three.
+    fn hosted_form_references(&self, form: &HostedForm, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, border, ground, bg) = (theme.foreground, theme.muted_foreground, theme.border, theme.secondary, theme.background);
+        let mut tiles = div().flex().flex_wrap().gap_2();
+        for (n, path) in form.references.iter().enumerate() {
+            tiles = tiles.child(
+                div()
+                    .size(px(76.))
+                    .relative()
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(border)
+                    .bg(ground)
+                    .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .child(
+                        div().absolute().top(px(3.)).right(px(3.)).rounded_full().bg(bg.opacity(0.9)).child(
+                            Button::new(SharedString::from(format!("hosted-ref-remove-{n}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Close)
+                                .tooltip("Remove")
+                                .on_click(cx.listener(move |p, _, _, cx| {
+                                    if let Some(f) = &mut p.hosted_form
+                                        && n < f.references.len()
+                                    {
+                                        f.references.remove(n);
+                                    }
+                                    p.list.remeasure();
+                                    cx.notify();
+                                })),
+                        ),
+                    ),
+            );
+        }
+        if form.references.len() < wundur_core::asset_flow::REFERENCES {
+            tiles = tiles.child(
+                div()
+                    .id("hosted-ref-add")
+                    .size(px(76.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(border)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(ground))
+                    .child(Icon::new(IconName::Plus).text_color(muted))
+                    .child(div().text_xs().text_color(muted).child("Add"))
+                    .on_click(cx.listener(|p, _, _, cx| p.pick_references(cx))),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Reference images"))
+            .child(div().text_xs().text_color(muted).child("Optional · up to 3 pictures for the look, shape or art style. They can't be changed later."))
+            .child(div().pt_1().child(tiles))
+            .into_any_element()
+    }
+
+    /// The system's picker for reference pictures; the ones chosen join the form's (three at most).
+    fn pick_references(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Add".into()) });
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let _ = this.update(cx, |p, cx| {
+                if let Some(f) = &mut p.hosted_form {
+                    for path in paths {
+                        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                            f.error = Some("References are PNG, JPEG or WebP pictures.".into());
+                            continue;
+                        }
+                        if f.references.len() < wundur_core::asset_flow::REFERENCES && !f.references.contains(&path) {
+                            f.references.push(path);
+                        }
+                    }
+                }
+                p.list.remeasure();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// One field of the form: its label and its control.
@@ -592,7 +694,8 @@ impl ChatPanel {
             let turn = chat.items.iter().rposition(|i| matches!(i, Item::User(_))).and_then(|from| wundur_core::summary::TurnText::key_at(chat, from));
             (s.cwd().to_path_buf(), chat.session_id.clone().map(|session| wundur_core::assets::Origin { session, turn }))
         };
-        match hosted_store::create(&project, &kind.id, &name, &description, fields, origin, cx) {
+        let references = form.references.clone();
+        match hosted_store::create(&project, &kind.id, &name, &description, fields, references, origin, cx) {
             Ok(dir) => {
                 self.hosted_form = None;
                 self.close_asset_form(cx, Some(dir));
@@ -743,6 +846,24 @@ impl ChatPanel {
             .child(div().h(px(1.)).bg(border).my_1())
             .child(self.hosted_heading("Asset brief", cx))
             .child(div().text_sm().text_color(fg).child(e.record.description.clone()))
+            .when(!e.record.references.is_empty(), |d| {
+                let mut row = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child("References"));
+                for f in &e.record.references {
+                    let (path, full) = (dir.join(f), dir.join(f));
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("hosted-ref-{}", path.display())))
+                            .size(px(40.))
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .bg(ground)
+                            .cursor_pointer()
+                            .child(img(path).size_full().object_fit(ObjectFit::Cover))
+                            .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
+                    );
+                }
+                d.child(row)
+            })
             .when(!e.record.fields.is_empty(), |d| {
                 let summary = e.record.fields.iter().map(|(k, v)| format!("{k}: {}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" · ");
                 d.child(div().text_xs().text_color(muted).child(summary))
@@ -1053,7 +1174,7 @@ impl ChatPanel {
 
     /// Test commands for this chat's latest hosted asset: `new <kind>|<name>|<description>`,
     /// `approve`, `change <text>`, `retry`, `engine <id>`, `model`, `reroll`, `import`, `state`; and
-    /// `form` (the empty form), `open <dir>` (a card for an asset folder), `step <n>` (show a step).
+    /// `form` (the empty form), `ref <path>` (a reference picture on it), `open <dir>` (a card for an asset folder), `step <n>` (show a step).
     pub fn hosted_command(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) -> String {
         let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
         if cmd == "form" {
@@ -1061,6 +1182,14 @@ impl ChatPanel {
             self.ensure_hosted_form(window, cx);
             let items = self.session.read(cx).chat.items.len();
             return format!("form open: {items} items, form {}, signed in {}, flow {}", self.hosted_form.is_some(), hosted_store::signed_in(), hosted_store::flow_on());
+        }
+        if cmd == "ref" {
+            if let Some(f) = &mut self.hosted_form {
+                f.references.push(PathBuf::from(arg));
+            }
+            self.list.remeasure();
+            cx.notify();
+            return format!("{} references", self.hosted_form.as_ref().map_or(0, |f| f.references.len()));
         }
         if cmd == "open" {
             let dir = PathBuf::from(arg);

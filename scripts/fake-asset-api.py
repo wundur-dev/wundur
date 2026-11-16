@@ -62,7 +62,13 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.strip("/").split("/"); b = self.body()
         if p == ["v1", "assets"]:
-            a = {"id": f"as_{next(ids)}", "kind": b["kind"], "name": b["name"], "description": b["description"], "fields": b.get("fields", {}), "sets": [], "models": []}
+            refs = b.get("references", [])
+            if len(refs) > 3: return self.send(422, {"error": {"code": "invalid_request", "message": "At most 3 references."}})
+            for n, r in enumerate(refs):
+                try: FILES[f"ref-{n}.png"] = __import__("base64").b64decode(r.split(",")[-1])
+                except Exception: return self.send(400, {"error": {"code": "bad_image", "message": "Unreadable."}})
+            a = {"id": f"as_{next(ids)}", "kind": b["kind"], "name": b["name"], "description": b["description"], "fields": b.get("fields", {}), "sets": [], "models": [],
+                 "references": [{"image_id": f"img_ref{n}", "url": f"{BASE}/files/ref-{n}.png"} for n in range(len(refs))]}
             assets[a["id"]] = a; new_set(a, {"kind": "new"}); return self.send(202, asset_view(a))
         if p[:2] == ["v1", "assets"] and len(p) >= 4:
             a = assets[p[2]]
