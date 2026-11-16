@@ -114,6 +114,8 @@ pub struct Engine {
     pub best_for: Vec<String>,
     pub help: String,
     pub license: License,
+    /// Whether it's given every view of the approved set (else only the front).
+    pub multiview: bool,
 }
 
 /// A rigger, for an imported model.
@@ -264,6 +266,8 @@ pub struct Model {
     pub preview_url: Option<String>,
     /// The importable file, once imported.
     pub glb_url: Option<String>,
+    /// The views it was made from (image ids of the set's views), in the order they went.
+    pub input_image_ids: Vec<String>,
     /// Model credits Import spends, and what it did spend.
     #[serde(default, deserialize_with = "maybe_count")]
     pub credits: Option<u32>,
@@ -633,8 +637,8 @@ mod tests {
         { "id": "place", "label": "Place", "fields": [], "views": 1, "supports_3d": false, "engines": [], "offers": ["concept_art"] }
       ],
       "engines": [
-        { "id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "comp", "monthly"], "seconds": 60, "best_for": ["props"], "help": "Fast.", "license": { "commercial": true, "label": "" } },
-        { "id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "help": "Finer.", "license": { "commercial": true, "label": "" } }
+        { "id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "comp", "monthly"], "seconds": 60, "best_for": ["props"], "help": "Fast.", "license": { "commercial": true, "label": "" }, "multiview": false },
+        { "id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "help": "Finer.", "license": { "commercial": true, "label": "" }, "multiview": true }
       ],
       "riggers": [ { "id": "auto", "label": "Automatic rig", "credits": 1, "kinds": ["humanoid"], "seconds": 240 } ],
       "sounds": [ { "id": "sfx", "label": "Sound effect", "max_seconds": 30, "license": { "commercial": true, "label": "" } } ],
@@ -650,6 +654,7 @@ mod tests {
         assert_eq!(engines, ["trellis2", "tripo_hd"]);
         assert!(!c.engine("tripo_hd").unwrap().on_plan("free"));
         assert!(c.engine("trellis2").unwrap().on_plan("free"));
+        assert!(c.engine("tripo_hd").unwrap().multiview && !c.engine("trellis2").unwrap().multiview);
         let place = c.kind("place").unwrap();
         assert!(!place.supports_3d && c.engines_for(place).is_empty() && place.offers == ["concept_art"]);
         assert_eq!(c.riggers_for("humanoid").len(), 1);
@@ -667,7 +672,7 @@ mod tests {
                    { "id": "set_2", "status": "generating", "made_from": { "kind": "change", "from": "set_1", "instruction": "darker" } }
                  ],
                  "models": [ { "id": "md_1", "set": "set_1", "engine": "trellis2", "status": "running", "progress": 0.4 },
-                             { "id": "job_2", "set_id": "set_1", "asset_id": "as_1", "engine": "tripo", "status": "succeeded", "preview_url": "https://x/p.glb" } ] }"#,
+                             { "id": "job_2", "set_id": "set_1", "asset_id": "as_1", "engine": "tripo", "status": "succeeded", "preview_url": "https://x/p.glb", "input_image_ids": ["img_f", "img_s", "img_b"] } ] }"#,
         )
         .unwrap();
         assert_eq!(a.sets[0].attempts_left, Some(4), "the review's name still reads");
@@ -677,6 +682,7 @@ mod tests {
         assert!(a.approved_set().is_none());
         assert_eq!((a.models[1].set.as_str(), a.models[1].asset.as_str()), ("set_1", "as_1"), "the live API's set_id and asset_id");
         assert_eq!(a.models[1].preview_link(), Some("https://x/p.glb"));
+        assert_eq!(a.models[1].input_image_ids, ["img_f", "img_s", "img_b"]);
         let mut newest_first = a.clone();
         newest_first.models[0].created_at = "2026-11-16T13:22:06+00:00".into();
         newest_first.models[1].created_at = "2026-11-16T12:57:07+00:00".into();

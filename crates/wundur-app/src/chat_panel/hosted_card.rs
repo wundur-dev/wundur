@@ -1089,9 +1089,39 @@ impl ChatPanel {
             _ => stage.child(self.hosted_view_row(dir, &files, &labels, 120., cx)).child(div().text_xs().text_color(muted).child("These views go to the engine; pick one and build.")),
         };
         // Built from, and the attempts so far.
-        let mut thumbs = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child(format!("Built from Views v{v}")));
-        for f in files.iter().take(4) {
-            thumbs = thumbs.child(div().size(px(40.)).rounded(px(6.)).overflow_hidden().bg(ground).child(img(dir.join(f)).size_full().object_fit(ObjectFit::Cover)));
+        // The views the latest attempt was made from (the service says which), else the set's.
+        let used: Vec<(String, String)> = match attempt.as_ref().filter(|m| !m.input_image_ids.is_empty()) {
+            Some(m) => m
+                .input_image_ids
+                .iter()
+                .filter_map(|id| set.views.iter().position(|v| &v.image_id == id))
+                .filter_map(|n| Some((files.get(n)?.clone(), set.views[n].label.clone())))
+                .collect(),
+            None => files.iter().cloned().zip(labels.iter().cloned()).collect(),
+        };
+        let from = if attempt.as_ref().is_some_and(|m| !m.input_image_ids.is_empty()) && !used.is_empty() {
+            format!("Built from {} (v{v})", used.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(", "))
+        } else {
+            format!("Built from Views v{v}")
+        };
+        let mut thumbs = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child(from));
+        for (f, label) in used.iter().take(4) {
+            let full = dir.join(f);
+            thumbs = thumbs.child(
+                div()
+                    .id(SharedString::from(format!("hosted-used-{}", full.display())))
+                    .size(px(40.))
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .bg(ground)
+                    .cursor_pointer()
+                    .tooltip({
+                        let label = label.clone();
+                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label.clone()).build(window, cx)
+                    })
+                    .child(img(full.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
+            );
         }
         let history = (attempts.len() > 1).then(|| {
             let line = attempts
@@ -1145,7 +1175,17 @@ impl ChatPanel {
                     .gap_2()
                     .when(allowed && !building, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
                     .when(!allowed, |d| d.opacity(0.55))
-                    .child(div().text_sm().text_color(fg).child(en.label.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().text_color(fg).child(en.label.clone()))
+                            .child(div().text_xs().text_color(muted).child(match (en.multiview, set.views.len()) {
+                                (_, 0 | 1) => "Uses its view".to_string(),
+                                (true, n) => format!("Uses all {n} views"),
+                                (false, _) => "Uses the front view".to_string(),
+                            })),
+                    )
                     .children((!en.license.label.is_empty()).then(|| div().text_xs().text_color(yellow).child(en.license.label.clone())))
                     .child(div().flex_1())
                     .child(div().text_xs().text_color(muted).child(if allowed { credits(en.credits) } else { format!("{} · Monthly plan", credits(en.credits)) })),

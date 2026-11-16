@@ -1348,6 +1348,21 @@ impl Shell {
         cx.notify();
     }
 
+    /// The toolbar's Projects: the Projects view, from wherever (Settings and New session
+    /// close, a hidden list shows). It never hides the list: the title bar's panel button and
+    /// Cmd+Shift+B do that.
+    fn projects_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_some() {
+            self.close_settings(window, cx);
+        }
+        if self.browser.is_some() {
+            self.close_browser(window, cx);
+        }
+        if self.folded {
+            self.toggle_folded(cx);
+        }
+    }
+
     fn toggle_folded(&mut self, cx: &mut Context<Self>) {
         self.folded = !self.folded;
         let settings = cx.global::<AppSettings>().0.clone();
@@ -3006,18 +3021,8 @@ impl Shell {
             .pb_2()
             .bg(bg)
             .child(
-                item("tb-projects", Icon::new(gpui_kit::assets::IconName::Folder), "Projects (Cmd+Shift+B)", !self.folded && !self.tabs.is_empty() && self.settings.is_none())
-                    // From Settings: back to the sessions, with the list shown.
-                    .on_click(cx.listener(|s, _, window, cx| {
-                        if s.settings.is_some() {
-                            s.close_settings(window, cx);
-                            if s.folded {
-                                s.toggle_folded(cx);
-                            }
-                        } else {
-                            s.toggle_folded(cx);
-                        }
-                    })),
+                item("tb-projects", Icon::new(gpui_kit::assets::IconName::Folder), "Projects", !self.folded && !self.tabs.is_empty() && self.settings.is_none() && self.browser.is_none())
+                    .on_click(cx.listener(|s, _, window, cx| s.projects_button(window, cx))),
             )
             .child(
                 item("tb-inbox", Icon::new(gpui_kit::assets::IconName::Inbox), "Inbox: notices from your sessions' agents", self.inbox_open)
