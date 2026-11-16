@@ -188,6 +188,7 @@ impl Pty {
         spec: &CommandSpec,
         size: GridSize,
         preface: Option<&[u8]>,
+        saved: Option<wundur_core::term_marks::SavedMarks>,
     ) -> anyhow::Result<(Self, async_channel::Receiver<PtyEvent>)> {
         let (tx, rx) = async_channel::unbounded();
         let writer = Arc::new(FairMutex::new(None));
@@ -230,7 +231,7 @@ impl Pty {
             use std::os::fd::AsRawFd;
             pty.file().as_raw_fd()
         };
-        let marks = Arc::new(std::sync::Mutex::new(Marks::default()));
+        let marks = Arc::new(std::sync::Mutex::new(saved.map(Marks::restored).unwrap_or_default()));
         let pty = MarkedPty {
             pty,
             filter: MarkFilter::new(marks.clone()),

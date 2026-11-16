@@ -28,6 +28,9 @@ pub struct Style {
     pub italic: bool,
     pub underline: bool,
     pub inverse: bool,
+    /// The command mark the cell carries (see `term_marks`): kept so a restored terminal
+    /// still knows its commands.
+    pub mark: Option<(crate::term_marks::Kind, u64)>,
 }
 
 impl Style {
@@ -63,13 +66,27 @@ pub fn to_ansi(rows: impl IntoIterator<Item = (Vec<(char, Style)>, bool)>) -> St
         let mut line = String::new();
         let mut current = Style::default();
         for (c, style) in &cells[..end] {
-            if *style != current {
-                line.push_str(&style.sgr());
-                current = *style;
+            if style.mark != current.mark {
+                match style.mark {
+                    Some((kind, id)) => {
+                        let _ = write!(line, "\x1b]8;id=wundur{id};{}\x1b\\", crate::term_marks::mark_uri(kind, id));
+                    }
+                    None => line.push_str("\x1b]8;;\x1b\\"),
+                }
             }
+            let (mut a, mut b) = (*style, current);
+            a.mark = None;
+            b.mark = None;
+            if a != b {
+                line.push_str(&style.sgr());
+            }
+            current = *style;
             line.push(*c);
         }
-        if current != Style::default() {
+        if current.mark.is_some() {
+            line.push_str("\x1b]8;;\x1b\\");
+        }
+        if (Style { mark: None, ..current }) != Style::default() {
             line.push_str("\x1b[0m");
         }
         lines.push((line, wrapped));
@@ -110,6 +127,11 @@ pub fn root() -> Option<PathBuf> {
 pub fn path(id: &str) -> Option<PathBuf> {
     let name: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
     (!name.is_empty()).then(|| root().map(|r| r.join(format!("{name}.ansi")))).flatten()
+}
+
+/// The file for terminal `id`'s commands (see `term_marks::SavedMarks`).
+pub fn marks_path(id: &str) -> Option<PathBuf> {
+    path(id).map(|p| p.with_extension("marks.json"))
 }
 
 /// A new terminal's id.
@@ -160,6 +182,15 @@ mod tests {
         assert_eq!(to_ansi(vec![(row("x", rgb), false)]), "\x1b[0;38;2;1;2;3;48;5;200mx\x1b[0m\r\n");
         let bright = Style { fg: Ink::Named(9), ..Style::default() };
         assert_eq!(to_ansi(vec![(row("e", bright), false)]), "\x1b[0;91me\x1b[0m\r\n");
+    }
+
+    #[test]
+    fn command_marks_are_kept_as_links() {
+        use crate::term_marks::Kind;
+        let marked = Style { mark: Some((Kind::Prompt, 4)), ..Style::default() };
+        let mut cells = row("$ ", marked);
+        cells.extend(row("x", Style::default()));
+        assert_eq!(to_ansi(vec![(cells, false)]), "\x1b]8;id=wundur4;wundur-mark:p:4\x1b\\$ \x1b]8;;\x1b\\x\r\n");
     }
 
     #[test]

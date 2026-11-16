@@ -1442,7 +1442,7 @@ impl Workspace {
                     pty.write(text.into_bytes());
                 }
             }
-            "term-blocks" | "term-part" | "term-hover" => {
+            "term-blocks" | "term-part" | "term-hover" | "term-collapse" => {
                 // Tests: the shell terminal's commands, or use part N of its last command as
                 // a click does (`term-part 1`, `term-part 1 run`).
                 let Some(t) = self.current_terminal(window, cx).or_else(|| self.terminals.borrow().last().cloned()) else {
@@ -1451,6 +1451,7 @@ impl Workspace {
                 return t.update(cx, |t, cx| match cmd {
                     "term-blocks" => t.describe_blocks(),
                     "term-hover" => t.hover_last(cx),
+                    "term-collapse" => t.collapse_first(cx),
                     _ => t.use_part(arg, cx),
                 });
             }
