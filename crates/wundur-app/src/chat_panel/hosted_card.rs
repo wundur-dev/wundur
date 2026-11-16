@@ -102,6 +102,8 @@ struct Frame {
     back: Option<AnyElement>,
     status: String,
     primary: Option<AnyElement>,
+    /// Laid over the whole card (a model being made): it greys the card and takes its clicks.
+    overlay: Option<AnyElement>,
 }
 
 /// Where the asset has got: 2 views, 3 model, 4 imported.
@@ -247,8 +249,10 @@ impl ChatPanel {
             .when_some(f.back, |d, b| d.child(b).child(div().w(px(1.)).h(px(18.)).bg(border)))
             .child(div().flex_1().min_w_0().text_xs().text_color(muted).child(f.status))
             .children(f.primary);
+        let overlay = f.overlay;
         div()
             .id(f.id.clone())
+            .relative()
             .flex()
             .flex_col()
             .rounded(px(14.))
@@ -272,6 +276,36 @@ impl ChatPanel {
                     .children(f.error),
             )
             .child(foot)
+            .children(overlay)
+            .into_any_element()
+    }
+
+    /// What's laid over a card while its model is being made: the card greyed, the app's
+    /// spinner and what's happening in the middle; scrolling the chat still works.
+    fn hosted_busy_overlay(&self, title: String, detail: String, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, bg) = (theme.foreground, theme.muted_foreground, theme.background);
+        let spinner = if crate::native_spinner::NativeSpinner::available() {
+            let native = self.card_spinner.clone();
+            div().size(px(24.)).child(canvas(|_, _, _| {}, move |b, _, window, _| native.paint(b, muted, window)).size_full()).into_any_element()
+        } else {
+            Icon::new(IconName::LoaderCircle).text_color(muted).into_any_element()
+        };
+        div()
+            .id("hosted-busy")
+            .absolute()
+            .inset_0()
+            .rounded(px(14.))
+            .bg(bg.opacity(0.8))
+            .block_mouse_except_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(spinner)
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title))
+            .child(div().text_xs().text_color(muted).child(detail))
             .into_any_element()
     }
 
@@ -410,6 +444,7 @@ impl ChatPanel {
             back: Some(cancel),
             status: status.into(),
             primary,
+            overlay: None,
         };
         if !hosted_store::signed_in() {
             let left = div()
@@ -803,6 +838,7 @@ impl ChatPanel {
             back: None,
             status: String::new(),
             primary: None,
+            overlay: None,
         };
         match shown {
             4 => self.hosted_rig(dir, &e, &kind_label, &id, &mut frame, cx),
@@ -1021,29 +1057,19 @@ impl ChatPanel {
         // The stage: what's being built, or the finished attempt and its preview.
         let stage = div().min_h(px(240.)).rounded(px(12.)).bg(ground).flex().flex_col().items_center().justify_center().gap_2().p_4();
         let stage = match &attempt {
-            // Being made: the views it's made from, dimmed, under what's happening.
+            // Being made: the views it's made from (the card's overlay says what's happening).
             _ if building => {
                 let running = attempt.as_ref().filter(|m| m.is_running());
                 let engine = running.map_or(picked.clone(), |m| m.engine.clone());
                 let seconds = catalog.and_then(|c| c.engine(&engine)).map_or(60, |en| en.seconds);
                 let about = if seconds >= 120 { format!("usually about {} minutes", seconds / 60) } else { "usually about a minute".to_string() };
                 let progress = running.and_then(|m| m.progress).map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
-                let bg = cx.theme().background;
-                stage.relative().child(div().opacity(0.3).child(self.hosted_view_row(dir, &files, &labels, 120., cx))).child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded(px(12.))
-                        .bg(bg.opacity(0.75))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .child(gpui_kit::component::spinner::Spinner::new().large().color(fg))
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("Building the model{progress}")))
-                        .child(div().text_xs().text_color(muted).child(format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }))),
-                )
+                frame.overlay = Some(self.hosted_busy_overlay(
+                    format!("Building the model{progress}"),
+                    format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }),
+                    cx,
+                ));
+                stage.child(self.hosted_view_row(dir, &files, &labels, 120., cx))
             }
             Some(m) if m.succeeded() => {
                 let (d1, mid) = (dir.to_path_buf(), m.id.clone());
@@ -1172,7 +1198,7 @@ impl ChatPanel {
                 right = right.child(div().flex().child(Button::new(id("discard")).xsmall().ghost().label("Discard this one").disabled(busy).on_click(move |_, _, cx| hosted_store::reject(&d, &mid, cx))));
             }
         }
-        frame.right = Some(if building { div().opacity(0.45).child(right).into_any_element() } else { right.into_any_element() });
+        frame.right = Some(right.into_any_element());
         let d = dir.to_path_buf();
         frame.back = Some(Button::new(id("to-views")).small().ghost().label("Back to views").on_click(move |_, _, cx| hosted_store::show_step(&d, Some(2), cx)).into_any_element());
         frame.status = "Free to build; Import spends credits.".into();
