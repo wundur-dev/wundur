@@ -1002,7 +1002,9 @@ impl ChatPanel {
         let attempts: Vec<Model> = asset.models.iter().filter(|m| m.set == set.id).cloned().collect();
         let attempt = attempts.last().cloned();
         let attempts_left = set.attempts_left.or_else(|| attempt.as_ref().and_then(|m| m.attempts_left));
-        let busy = e.working.is_some() || attempt.as_ref().is_some_and(Model::is_running);
+        // Being made: asked for (and not listed yet), or listed as queued or running.
+        let building = e.building.is_some() || matches!(e.working, Some("Starting the model" | "Rebuilding")) || attempt.as_ref().is_some_and(Model::is_running);
+        let busy = e.working.is_some() || building;
         let imported = e.record.imported.clone();
         frame.intro = "Inspect the model before importing it into your project.".into();
         frame.subtitle = match &attempt {
@@ -1019,11 +1021,29 @@ impl ChatPanel {
         // The stage: what's being built, or the finished attempt and its preview.
         let stage = div().min_h(px(240.)).rounded(px(12.)).bg(ground).flex().flex_col().items_center().justify_center().gap_2().p_4();
         let stage = match &attempt {
-            Some(m) if m.is_running() => {
-                let seconds = catalog.and_then(|c| c.engine(&m.engine)).map_or(60, |en| en.seconds);
+            // Being made: the views it's made from, dimmed, under what's happening.
+            _ if building => {
+                let running = attempt.as_ref().filter(|m| m.is_running());
+                let engine = running.map_or(picked.clone(), |m| m.engine.clone());
+                let seconds = catalog.and_then(|c| c.engine(&engine)).map_or(60, |en| en.seconds);
                 let about = if seconds >= 120 { format!("usually about {} minutes", seconds / 60) } else { "usually about a minute".to_string() };
-                let progress = m.progress.map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
-                stage.child(gpui_kit::component::spinner::Spinner::new().color(muted)).child(div().text_sm().text_color(fg).child(format!("Building the model, {about}{progress}")))
+                let progress = running.and_then(|m| m.progress).map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
+                let bg = cx.theme().background;
+                stage.relative().child(div().opacity(0.3).child(self.hosted_view_row(dir, &files, &labels, 120., cx))).child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(12.))
+                        .bg(bg.opacity(0.75))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(gpui_kit::component::spinner::Spinner::new().large().color(fg))
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("Building the model{progress}")))
+                        .child(div().text_xs().text_color(muted).child(format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }))),
+                )
             }
             Some(m) if m.succeeded() => {
                 let (d1, mid) = (dir.to_path_buf(), m.id.clone());
@@ -1097,7 +1117,7 @@ impl ChatPanel {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .when(allowed, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
+                    .when(allowed && !building, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
                     .when(!allowed, |d| d.opacity(0.55))
                     .child(div().text_sm().text_color(fg).child(en.label.clone()))
                     .children((!en.license.label.is_empty()).then(|| div().text_xs().text_color(yellow).child(en.license.label.clone())))
@@ -1152,7 +1172,7 @@ impl ChatPanel {
                 right = right.child(div().flex().child(Button::new(id("discard")).xsmall().ghost().label("Discard this one").disabled(busy).on_click(move |_, _, cx| hosted_store::reject(&d, &mid, cx))));
             }
         }
-        frame.right = Some(right.into_any_element());
+        frame.right = Some(if building { div().opacity(0.45).child(right).into_any_element() } else { right.into_any_element() });
         let d = dir.to_path_buf();
         frame.back = Some(Button::new(id("to-views")).small().ghost().label("Back to views").on_click(move |_, _, cx| hosted_store::show_step(&d, Some(2), cx)).into_any_element());
         frame.status = "Free to build; Import spends credits.".into();
@@ -1165,12 +1185,13 @@ impl ChatPanel {
             return;
         }
         frame.primary = Some(match &attempt {
+            // A rebuild on its way: the earlier attempt isn't the one to import now.
+            _ if building => Button::new(id("building")).small().primary().label("Building…").loading(true).disabled(true).into_any_element(),
             Some(m) if m.succeeded() => {
                 let cost = m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1);
                 let (d, mid) = (dir.to_path_buf(), m.id.clone());
                 Button::new(id("import")).small().primary().icon(Lucide::FolderOpen).label(format!("Import · {} →", credits(cost))).disabled(busy).on_click(move |_, _, cx| hosted_store::import(&d, &mid, cx)).into_any_element()
             }
-            Some(m) if m.is_running() => Button::new(id("building")).small().primary().label("Building…").loading(true).disabled(true).into_any_element(),
             _ => {
                 let d = dir.to_path_buf();
                 let blocked = picked_engine.as_ref().is_some_and(|en| !en.on_plan(plan));

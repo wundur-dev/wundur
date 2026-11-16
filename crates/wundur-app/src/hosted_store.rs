@@ -39,6 +39,9 @@ pub struct Entry {
     /// the set of views picked from the versions (else the latest).
     pub step: Option<u8>,
     pub shown_set: Option<String>,
+    /// A model was asked for and the service hasn't listed it yet: the models it had then,
+    /// and when (the card shows it building meanwhile, and the store keeps asking).
+    pub building: Option<(usize, std::time::Instant)>,
     polling: bool,
 }
 
@@ -326,10 +329,12 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
     if asset.approved_set().is_none() {
         return;
     }
+    let before = asset.models.len();
     update(dir, false, cx, |e| {
         e.working = Some(if reroll_of.is_some() { "Rebuilding" } else { "Starting the model" });
         e.error = None;
         e.step = None;
+        e.building = Some((before, std::time::Instant::now()));
     });
     let (id, folder) = (asset.id.clone(), dir.to_path_buf());
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -343,7 +348,13 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
                 e.working = None;
                 match got {
                     Ok(asset) => e.asset = Some(asset),
-                    Err(err) => e.error = Some(flow::explain(&err)),
+                    // One is already being made (an earlier click the card lost track of):
+                    // that's the one to wait for, not an error.
+                    Err(Error::Api(a)) if a.code == "job_in_progress" => {}
+                    Err(err) => {
+                        e.building = None;
+                        e.error = Some(flow::explain(&err));
+                    }
                 }
             });
             poll(&folder, cx);
@@ -509,7 +520,13 @@ fn poll(dir: &Path, cx: &mut App) {
                             for (set, files) in saved {
                                 e.record.views.insert(set, files);
                             }
-                            busy = asset.busy() || asset.sets.iter().any(|s| s.is_ready() && !e.record.views.contains_key(&s.id));
+                            // A model asked for shows up (or ten minutes pass): no longer waiting on it.
+                            if let Some((before, since)) = e.building
+                                && (asset.models.len() > before || asset.models.iter().any(flow::Model::is_running) || since.elapsed() > Duration::from_secs(600))
+                            {
+                                e.building = None;
+                            }
+                            busy = asset.busy() || e.building.is_some() || asset.sets.iter().any(|s| s.is_ready() && !e.record.views.contains_key(&s.id));
                             e.asset = Some(asset);
                         }
                         Err(err) => e.error = Some(flow::explain(&err)),
