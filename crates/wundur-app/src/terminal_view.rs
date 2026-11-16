@@ -149,6 +149,8 @@ pub struct TerminalView {
     pub history: Option<String>,
     /// Writing what it shows, a moment after its output stops.
     save: Option<Task<()>>,
+    /// Writes it as Wundur quits.
+    _on_quit: Option<Subscription>,
     /// The shell's commands (see [`term_blocks`]): read from the grid at most once per batch
     /// of output (`generation` counts the batches).
     blocks: Rc<std::cell::RefCell<BlocksCache>>,
@@ -247,6 +249,25 @@ fn headers(blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>) -
 struct BlocksCache {
     key: (u64, usize, usize, usize),
     list: Rc<Vec<BlockView>>,
+}
+
+/// A terminal's text and commands, to write where they're kept.
+struct Kept {
+    path: std::path::PathBuf,
+    text: String,
+    marks: Option<(std::path::PathBuf, String)>,
+}
+
+impl Kept {
+    fn write(self) {
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&self.path, self.text);
+        if let Some((path, json)) = self.marks {
+            let _ = std::fs::write(path, json);
+        }
+    }
 }
 
 /// Cmd on macOS, Ctrl elsewhere.
@@ -509,6 +530,12 @@ impl TerminalView {
             folder: std::path::PathBuf::new(),
             branch: None,
             _events: events,
+            _on_quit: history.is_some().then(|| {
+                cx.on_app_quit(|view: &mut Self, cx| {
+                    view.save_now(cx);
+                    async {}
+                })
+            }),
             history,
             save: None,
             blocks: Rc::default(),
@@ -583,30 +610,39 @@ impl TerminalView {
         }
         self.save = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
-            let Ok(Some((path, text, marks))) = this.update(cx, |view, _| {
+            let Ok(Some(kept)) = this.update(cx, |view, _| {
                 view.save = None;
-                let id = view.history.as_deref()?;
-                let path = wundur_core::term_history::path(id)?;
-                let marks = view.pty.as_ref().and_then(|p| {
-                    let m = p.marks.lock().ok()?;
-                    m.active().then(|| (wundur_core::term_history::marks_path(id), serde_json::to_string(&m.saved()).ok()))
-                });
-                Some((path, view.kept_text()?, marks))
+                view.to_keep()
             }) else {
                 return;
             };
             // Detached: this task's handle was just let go, which would cancel an await here.
-            cx.background_spawn(async move {
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                let _ = std::fs::write(path, text);
-                if let Some((Some(marks_path), Some(json))) = marks {
-                    let _ = std::fs::write(marks_path, json);
-                }
-            })
-            .detach();
+            cx.background_spawn(async move { kept.write() }).detach();
         }));
+    }
+
+    /// Kept now, as Wundur quits: what came in the last two seconds would otherwise be lost
+    /// (a `./scripts/restart` quits the moment its build ends).
+    fn save_now(&mut self, cx: &mut Context<Self>) {
+        if self.history.is_none() || !crate::prefs(cx).keep_terminal_history {
+            return;
+        }
+        self.save = None;
+        if let Some(kept) = self.to_keep() {
+            kept.write();
+        }
+    }
+
+    /// What to keep of it now: its text and its commands.
+    fn to_keep(&self) -> Option<Kept> {
+        let id = self.history.as_deref()?;
+        let path = wundur_core::term_history::path(id)?;
+        let marks = self.pty.as_ref().and_then(|p| {
+            let m = p.marks.lock().ok()?;
+            m.active().then_some(())?;
+            Some((wundur_core::term_history::marks_path(id)?, serde_json::to_string(&m.saved()).ok()?))
+        });
+        Some(Kept { path, text: self.kept_text()?, marks })
     }
 
     /// The scrollback (its last 3,000 lines) and screen as text with colour codes; `None`
