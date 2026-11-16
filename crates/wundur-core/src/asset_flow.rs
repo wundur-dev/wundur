@@ -362,6 +362,13 @@ impl Model {
 }
 
 impl Asset {
+    /// Its models oldest first, whatever order the service lists them in (the live API lists
+    /// the newest first): the last is the latest attempt.
+    pub fn in_order(mut self) -> Self {
+        self.models.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        self
+    }
+
     /// The set models are made from, if one is approved.
     pub fn approved_set(&self) -> Option<&Set> {
         self.sets.iter().find(|s| s.approved)
@@ -493,12 +500,12 @@ pub fn create(kind: &str, name: &str, description: &str, fields: &BTreeMap<Strin
     if !references.is_empty() {
         body["references"] = json!(references);
     }
-    call("POST", "/v1/assets", Some(&body), true)
+    call::<Asset>("POST", "/v1/assets", Some(&body), true).map(Asset::in_order)
 }
 
 /// `GET /v1/assets/{id}`: its state now, with fresh links.
 pub fn get(id: &str) -> Result<Asset, Error> {
-    call("GET", &format!("/v1/assets/{id}"), None, false)
+    call::<Asset>("GET", &format!("/v1/assets/{id}"), None, false).map(Asset::in_order)
 }
 
 /// `PATCH /v1/assets/{id}`: a new name, description or fields, used from the next set.
@@ -513,7 +520,7 @@ pub fn edit(id: &str, name: Option<&str>, description: Option<&str>, fields: Opt
     if let Some(f) = fields {
         body.insert("fields".into(), json!(f));
     }
-    call("PATCH", &format!("/v1/assets/{id}"), Some(&Value::Object(body)), false)
+    call::<Asset>("PATCH", &format!("/v1/assets/{id}"), Some(&Value::Object(body)), false).map(Asset::in_order)
 }
 
 /// `POST /v1/assets/{id}/sets`: a new set from `from`, changed by `instruction` (the whole set
@@ -523,12 +530,12 @@ pub fn new_set(id: &str, from: &str, instruction: Option<&str>) -> Result<Asset,
         Some(i) => json!({ "from": from, "instruction": i }),
         None => json!({ "from": from, "retry": true }),
     };
-    call("POST", &format!("/v1/assets/{id}/sets"), Some(&body), true)
+    call::<Asset>("POST", &format!("/v1/assets/{id}/sets"), Some(&body), true).map(Asset::in_order)
 }
 
 /// `POST /v1/assets/{id}/sets/{set}/approve`: the set models are made from.
 pub fn approve(id: &str, set: &str) -> Result<Asset, Error> {
-    call("POST", &format!("/v1/assets/{id}/sets/{set}/approve"), None, false)
+    call::<Asset>("POST", &format!("/v1/assets/{id}/sets/{set}/approve"), None, false).map(Asset::in_order)
 }
 
 /// `POST /v1/assets/{id}/models`: a model attempt from the approved set (the server picks the
@@ -670,6 +677,10 @@ mod tests {
         assert!(a.approved_set().is_none());
         assert_eq!((a.models[1].set.as_str(), a.models[1].asset.as_str()), ("set_1", "as_1"), "the live API's set_id and asset_id");
         assert_eq!(a.models[1].preview_link(), Some("https://x/p.glb"));
+        let mut newest_first = a.clone();
+        newest_first.models[0].created_at = "2026-11-16T13:22:06+00:00".into();
+        newest_first.models[1].created_at = "2026-11-16T12:57:07+00:00".into();
+        assert_eq!(newest_first.in_order().models.last().map(|m| m.id.as_str()), Some("md_1"), "the latest attempt is last");
     }
 
     #[test]
