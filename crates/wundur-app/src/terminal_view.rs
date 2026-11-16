@@ -374,6 +374,8 @@ pub enum TerminalEvent {
     /// the project's files to open the file or page named there. A click on a web address,
     /// or Cmd+click on anything (`browser`: a web address then goes to the browser).
     OpenLink { line: String, column: usize, browser: bool },
+    /// A command and its output, for the session's message box (`label`: the pill's name).
+    SendToChat { text: String, label: String },
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1006,6 +1008,22 @@ impl TerminalView {
         format!("{:?}", self.hover_block)
     }
 
+    /// Tests: send the newest finished command to the chat, as its button does.
+    pub fn send_last(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(id) = self.blocks().iter().rev().find(|b| b.info.exit.is_some()).map(|b| b.id()) else { return "none".into() };
+        self.send_block(id, cx);
+        id.to_string()
+    }
+
+    /// Tests: Stop on the running command, as its button does.
+    pub fn stop_running(&mut self, cx: &mut Context<Self>) -> String {
+        if !self.blocks().iter().any(|b| b.running) {
+            return "nothing running".into();
+        }
+        self.interrupt(cx);
+        "stopped".into()
+    }
+
     /// Tests: collapse the first command with output, as its chevron does.
     pub fn collapse_first(&mut self, cx: &mut Context<Self>) -> String {
         let Some(id) = self.blocks().iter().find(|b| b.output_len() > 0).map(|b| b.id()) else { return "none".into() };
@@ -1028,6 +1046,38 @@ impl TerminalView {
         let Some(part) = part else { return "no such part".into() };
         self.put_on_prompt(&part.text, run, cx);
         part.text
+    }
+
+    /// Ctrl+C to what runs.
+    fn interrupt(&mut self, cx: &mut Context<Self>) {
+        if let Some(pty) = &self.pty {
+            pty.write(b"\x03".to_vec());
+        }
+        cx.notify();
+    }
+
+    /// The command, its output and how it ended, to the session's message box.
+    fn send_block(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(pty) = &self.pty else { return };
+        let Some(b) = self.blocks().iter().find(|b| b.id() == id).cloned() else { return };
+        let term = pty.term.lock();
+        let output = term_blocks::text(&term, b.output.clone());
+        let command = b.info.command.clone().unwrap_or_else(|| term_blocks::text(&term, b.block.command.clone()));
+        drop(term);
+        let ended = match b.info.exit {
+            Some(0) => "succeeded (exit 0)".to_string(),
+            // 128 + SIGINT: Ctrl+C.
+            Some(130) => "was stopped with Ctrl+C (exit 130)".to_string(),
+            Some(n) => format!("failed (exit {n})"),
+            None => "ran".to_string(),
+        };
+        let text = format!("A command in my terminal {ended}:\n\n```\n$ {command}\n{output}\n```");
+        let short: String = command.chars().take(40).collect();
+        let label = match b.info.exit {
+            Some(n) if n != 0 => format!("{short} (exit {n})"),
+            _ => short,
+        };
+        cx.emit(TerminalEvent::SendToChat { text, label });
     }
 
     /// Fold a command's long output in the middle, or open it.
@@ -1447,7 +1497,7 @@ impl Render for TerminalView {
         let generation = self.generation;
         let folds = self.folds.clone();
         let shown = self.shown.clone();
-        let buttons = self.block_buttons(cx);
+        let buttons = self.block_bars(cx);
         let color_output = crate::prefs(cx).color_output;
         let base = div()
             .id("terminal")
@@ -1616,38 +1666,62 @@ impl Render for TerminalView {
 }
 
 impl TerminalView {
-    /// The buttons over the command under the pointer, at its first row drawn: copy its
-    /// output, copy it with its command line, fold or open it.
-    fn block_buttons(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let id = self.hover_block?;
+    /// The bars of buttons on commands' headers: on the one under the pointer; on a running
+    /// command (Stop); and on the newest command when it failed (its output to copy or send).
+    fn block_bars(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let blocks = self.blocks();
+        let mut ids: Vec<u64> = Vec::new();
+        ids.extend(blocks.iter().filter(|b| b.running).map(|b| b.id()));
+        if let Some(last) = blocks.iter().rev().find(|b| b.info.exit.is_some())
+            && last.info.exit != Some(0)
+            && !blocks.iter().any(|b| b.block.start > last.block.start && b.info.exit.is_some())
+        {
+            ids.push(last.id());
+        }
+        ids.extend(self.hover_block);
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter().filter_map(|id| self.block_bar(&blocks, id, cx)).collect()
+    }
+
+    fn block_bar(&self, blocks: &[BlockView], id: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
         let b = blocks.iter().find(|b| b.id() == id)?;
         let pty = self.pty.as_ref()?;
+        // Its header's row as drawn, else its first row in view.
+        let first = if b.block.command.is_empty() { b.block.start } else { b.block.command.start };
         let shown = self.shown.borrow();
-        let row = if shown.is_empty() {
+        let (row, on_header) = if shown.is_empty() {
             let term = pty.term.lock();
             let offset = term.grid().display_offset() as i32;
             let screen = term.screen_lines() as i32;
-            (b.block.start.max(-offset)..b.lines().end).map(|l| l + offset).find(|r| (0..screen).contains(r))?
+            let row = (first.max(-offset)..b.lines().end).map(|l| l + offset).find(|r| (0..screen).contains(r))?;
+            (row, row - offset == first)
         } else {
-            shown.iter().position(|r| b.lines().contains(&r.line()))? as i32
+            let row = shown.iter().position(|r| b.lines().contains(&r.line()))?;
+            (row as i32, shown[row] == DisplayRow::Line(first))
         };
         let cell = self.cell.get();
-        // The copy just made, for a moment: its button shows a tick.
+        // Left of its time and exit code, which stay readable.
+        let meta_chars = if on_header {
+            headers(std::slice::from_ref(b), &self.folds.borrow())
+                .first()
+                .map_or(0, |h| h.meta.iter().map(|(t, _)| t.chars().count() + 2).sum::<usize>())
+        } else {
+            0
+        };
+        let right = px(8.) + cell.width * 0.9 * meta_chars as f32;
         let copied = self.copied.filter(|(c, _, t)| *c == id && t.elapsed() < std::time::Duration::from_millis(1400)).map(|(_, all, _)| all);
-        let has_output = b.output_len() > 0;
+        let has_output = b.output_len() > 0 && !b.running;
         let foldable = b.foldable();
         let folded = term_blocks::folded(b, &self.folds.borrow());
-        let row_top = cell.height * row as f32;
-        let button = |key: &'static str, icon: IconName, tip: &'static str| {
-            Button::new(key).icon(icon).xsmall().ghost().tooltip(tip)
-        };
+        let key = |name: &'static str| ElementId::NamedInteger(name.into(), id);
+        let button = |name: &'static str, icon: IconName, tip: &'static str| Button::new(key(name)).icon(icon).xsmall().ghost().tooltip(tip);
         Some(
             div()
-                .id("block-buttons")
+                .id(key("block-bar"))
                 .absolute()
-                .top(row_top)
-                .right(px(10.))
+                .top(cell.height * row as f32)
+                .right(right)
                 .flex()
                 .items_center()
                 .gap(px(2.))
@@ -1659,28 +1733,34 @@ impl TerminalView {
                 .shadow_sm()
                 // A press here is for the buttons, not a selection in the terminal.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(b.running, |d| {
+                    d.child(
+                        Button::new(key("stop"))
+                            .label("Stop")
+                            .xsmall()
+                            .ghost()
+                            .tooltip("Interrupt it (Ctrl+C)")
+                            .on_click(cx.listener(|v, _, _, cx| v.interrupt(cx))),
+                    )
+                })
                 .when(has_output, |d| {
                     d.child(
                         button("copy-output", if copied == Some(false) { IconName::Check } else { IconName::Copy }, "Copy output")
                             .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, false, cx))),
                     )
                     .child(
-                        button(
-                            "copy-all",
-                            if copied == Some(true) { IconName::Check } else { IconName::SquareTerminal },
-                            "Copy with command",
-                        )
-                        .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, true, cx))),
+                        button("copy-all", if copied == Some(true) { IconName::Check } else { IconName::SquareTerminal }, "Copy with command")
+                            .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, true, cx))),
+                    )
+                    .child(
+                        button("send", IconName::MessageSquareShare, "Send to chat (the command, its output and exit code)")
+                            .on_click(cx.listener(move |v, _, _, cx| v.send_block(id, cx))),
                     )
                 })
                 .when(foldable, |d| {
                     d.child(
-                        button(
-                            "fold",
-                            if folded { IconName::ChevronsUpDown } else { IconName::ChevronsDownUp },
-                            if folded { "Show all" } else { "Fold" },
-                        )
-                        .on_click(cx.listener(move |v, _, _, cx| v.toggle_fold(id, cx))),
+                        button("fold", if folded { IconName::ChevronsUpDown } else { IconName::ChevronsDownUp }, if folded { "Show all" } else { "Fold" })
+                            .on_click(cx.listener(move |v, _, _, cx| v.toggle_fold(id, cx))),
                     )
                 })
                 .into_any_element(),

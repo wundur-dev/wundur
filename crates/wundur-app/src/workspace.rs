@@ -1021,6 +1021,9 @@ impl Workspace {
                         cx.notify();
                     }
                     TerminalEvent::Output => {}
+                    TerminalEvent::SendToChat { text, label } => {
+                        ws.claude.update(cx, |p, cx| p.take_terminal(text, label, window, cx));
+                    }
                 },
             ),
             // The tab's title (the program, unseen output) is read from the terminal as the tab
@@ -1442,7 +1445,7 @@ impl Workspace {
                     pty.write(text.into_bytes());
                 }
             }
-            "term-blocks" | "term-part" | "term-hover" | "term-collapse" => {
+            "term-blocks" | "term-part" | "term-hover" | "term-collapse" | "term-send" | "term-stop" => {
                 // Tests: the shell terminal's commands, or use part N of its last command as
                 // a click does (`term-part 1`, `term-part 1 run`).
                 let Some(t) = self.current_terminal(window, cx).or_else(|| self.terminals.borrow().last().cloned()) else {
@@ -1452,6 +1455,8 @@ impl Workspace {
                     "term-blocks" => t.describe_blocks(),
                     "term-hover" => t.hover_last(cx),
                     "term-collapse" => t.collapse_first(cx),
+                    "term-send" => t.send_last(cx),
+                    "term-stop" => t.stop_running(cx),
                     _ => t.use_part(arg, cx),
                 });
             }
