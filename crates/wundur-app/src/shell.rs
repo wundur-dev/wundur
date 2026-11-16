@@ -51,7 +51,7 @@ const PROJECT_PLUS: f32 = 20.;
 /// folder keeps its room.
 const FILES_HEADER_NARROW: f32 = 250.;
 /// The toolbar along the window's left edge (Projects, Inbox, Settings).
-const TOOLBAR_WIDTH: f32 = 44.;
+const TOOLBAR_WIDTH: f32 = 52.;
 /// The inbox's list, over the content beside the toolbar.
 const INBOX_WIDTH: f32 = 360.;
 /// The person's tasks, there too (a little wider, for commands).
@@ -3013,16 +3013,16 @@ impl Shell {
             div()
                 .id(id)
                 .relative()
-                .size(px(32.))
+                .size(px(36.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
+                .rounded(px(10.))
                 .cursor_pointer()
                 .text_color(if on { accent } else { muted })
                 .when(on, |d| d.bg(sel))
                 .when(!on, |d| d.hover(|d| d.bg(hover)))
-                .child(icon)
+                .child(icon.size(px(20.)))
                 .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
         };
         div()
@@ -3033,8 +3033,8 @@ impl Shell {
             .flex()
             .flex_col()
             .items_center()
-            .gap_1()
-            .pt_1()
+            .gap_1p5()
+            .pt_2()
             .pb_2()
             .bg(bg)
             .child(
