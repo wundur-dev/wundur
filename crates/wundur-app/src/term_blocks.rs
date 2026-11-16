@@ -38,6 +38,16 @@ impl BlockView {
         self.block.start..self.block.output.end
     }
 
+    /// A command ran here (a prompt left empty, or one restored from before, did not).
+    pub fn ran(&self) -> bool {
+        self.running || self.info.command.is_some() || self.info.exit.is_some()
+    }
+
+    /// Drawn as a command: its prompt row a header, with a gap above.
+    pub fn headed(&self) -> bool {
+        self.ran() && !self.block.command.is_empty()
+    }
+
     pub fn output_len(&self) -> usize {
         (self.output.end - self.output.start).max(0) as usize
     }

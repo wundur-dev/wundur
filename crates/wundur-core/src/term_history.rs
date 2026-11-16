@@ -110,12 +110,47 @@ pub fn preface(kept: &str) -> Option<Vec<u8>> {
     if kept.lines().filter(|l| !l.trim().is_empty()).count() < 2 {
         return None;
     }
-    let mut out = String::from(kept);
+    // Earlier restores' lines go: one says it, at the end.
+    let mut out: String = kept.split_inclusive('\n').filter(|l| visible(l).trim() != RESTORED).collect();
     if !out.ends_with("\r\n") {
         out.push_str("\r\n");
     }
-    let _ = write!(out, "\x1b[0;2m── restored ──\x1b[0m\r\n");
+    let _ = write!(out, "\x1b[0;2m{RESTORED}\x1b[0m\r\n");
     Some(out.into_bytes())
+}
+
+const RESTORED: &str = "── restored ──";
+
+/// A line's text without its escape sequences (colours, links).
+fn visible(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: up to its final letter.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ESC \.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The folder of kept terminals in the cache (`WUNDUR_CACHE_DIR` when set, for tests).
@@ -197,6 +232,15 @@ mod tests {
     fn a_wrapped_row_runs_on() {
         let rows = vec![(row("abc", Style::default()), true), (row("de ", Style::default()), false)];
         assert_eq!(to_ansi(rows), "abcde\r\n");
+    }
+
+    #[test]
+    fn earlier_restore_lines_are_not_kept_twice() {
+        let kept = "$ ls\r\na b\r\n\x1b[0;2m── restored ──\x1b[0m\r\n$ pwd\r\n/x\r\n";
+        let p = String::from_utf8(preface(kept).unwrap()).unwrap();
+        assert_eq!(p.matches("restored").count(), 1, "{p}");
+        assert!(p.contains("$ pwd\r\n/x\r\n"));
+        assert_eq!(visible("\x1b]8;id=w;wundur-mark:p:1\x1b\\$ \x1b[1mx\x1b[0m"), "$ x");
     }
 
     #[test]
