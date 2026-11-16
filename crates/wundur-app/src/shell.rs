@@ -3981,6 +3981,15 @@ impl Render for Shell {
                             ),
                     )
                 })
+                // Settings covers the window (the toolbar's gear with it): its way back.
+                .when(showing_settings, |d| {
+                    d.child(
+                        div().flex_none().occlude().child(
+                            button("t-close-settings", Icon::new(IconName::Close), "Close settings (Esc)")
+                                .on_click(cx.listener(|s, _, window, cx| s.close_settings(window, cx))),
+                        ),
+                    )
+                })
                 .child(div().flex_none().pr_1().occlude().child(menu_button)),
         );
         let main = match (&self.settings, &self.browser) {
@@ -3993,9 +4002,12 @@ impl Render for Shell {
         };
         // Hidden (the toolbar's Projects, or Cmd+Shift+S), the list goes entirely and the work
         // has the room.
-        // Settings, while open, has the whole window beside the toolbar.
-        let list = (!self.tabs.is_empty() && !self.folded && self.settings.is_none()).then(|| self.render_list(cx));
-        let toolbar = self.render_toolbar(cx);
+        // Settings and New session, while open, have the whole window under the title bar:
+        // each has its own list down its left (its pages, the folders), so neither the
+        // toolbar nor the session list shows beside it.
+        let full = self.settings.is_some() || self.browser.is_some();
+        let list = (!self.tabs.is_empty() && !self.folded && !full).then(|| self.render_list(cx));
+        let toolbar = (!full).then(|| self.render_toolbar(cx));
         let inbox = self.inbox_open.then(|| self.render_inbox(cx));
         let tasks = self.tasks_open.then(|| self.render_tasks(cx));
         let list_shown = list.is_some();
@@ -4028,6 +4040,13 @@ impl Render for Shell {
                     cx.stop_propagation();
                 } else if ev.keystroke.key == "escape" && crate::skill_installer::is_open(cx) {
                     crate::skill_installer::close(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            // Esc leaves Settings, unless something inside it (a menu, a field) took it first.
+            .on_key_down(cx.listener(|s, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "escape" && s.settings.is_some() {
+                    s.close_settings(window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -4095,7 +4114,7 @@ impl Render for Shell {
                     .when(self.list_resizing, |d| {
                         d.cursor_col_resize().on_mouse_up(MouseButton::Left, cx.listener(|s, _, _, cx| s.end_list_resize(cx)))
                     })
-                    .child(toolbar)
+                    .children(toolbar)
                     .children(list)
                     .child(
                         div()
@@ -4106,7 +4125,7 @@ impl Render for Shell {
                             .child(main)
                             // With the list hidden, the work area is rounded at its top left
                             // beside the toolbar; beside the list, the list's corner is.
-                            .when(!list_shown, |d| d.child(crate::dock_skin::corner_cap(true, true, bg))),
+                            .when(!list_shown && !full, |d| d.child(crate::dock_skin::corner_cap(true, true, bg))),
                     )
                     .children(inbox)
                     .children(tasks),
