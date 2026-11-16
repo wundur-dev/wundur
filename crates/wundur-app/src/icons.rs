@@ -79,6 +79,10 @@ icon_assets!(
         // The hosted asset card: its versions, and the Rig step.
         Layers,
         Bone,
+        // A terminal command's buttons.
+        SquareTerminal,
+        ChevronsDownUp,
+        ChevronsUpDown,
     ]
 );
 
