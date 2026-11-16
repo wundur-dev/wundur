@@ -64,11 +64,24 @@ pub enum Phase {
 }
 
 /// What a command's cells can't hold.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Info {
     /// The command as the shell read it.
     pub command: Option<String>,
     pub exit: Option<i32>,
+    /// How long it ran, once it finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub millis: Option<u64>,
+    /// When it started, while it runs (not kept across restarts).
+    #[serde(skip)]
+    pub started: Option<std::time::Instant>,
+}
+
+/// What [`Marks`] keeps across a restart, with the terminal's text (see `term_history`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SavedMarks {
+    pub next: u64,
+    pub info: BTreeMap<u64, Info>,
 }
 
 /// The marks seen so far, shared by the reader thread and the window.
@@ -86,6 +99,16 @@ pub struct Marks {
 const KEPT: usize = 4096;
 
 impl Marks {
+    /// What to keep across a restart.
+    pub fn saved(&self) -> SavedMarks {
+        SavedMarks { next: self.next, info: self.info.clone() }
+    }
+
+    /// Commands kept from before a restart: all finished; new ones get new ids.
+    pub fn restored(saved: SavedMarks) -> Self {
+        Self { current: None, info: saved.info, shell: None, next: saved.next }
+    }
+
     /// The shell has marked anything at all: the terminal has commands.
     pub fn active(&self) -> bool {
         self.shell.is_some() || self.current.is_some()
@@ -223,6 +246,9 @@ impl MarkFilter {
                 "C" => {
                     let id = marks.prompting();
                     marks.current = Some((id, Phase::Running));
+                    if let Some(info) = marks.info.get_mut(&id) {
+                        info.started = Some(std::time::Instant::now());
+                    }
                     link(Kind::Output, id)
                 }
                 "D" => match marks.current {
@@ -230,6 +256,7 @@ impl MarkFilter {
                         let exit = params.next().and_then(|c| c.trim().parse().ok());
                         if let Some(info) = marks.info.get_mut(&id) {
                             info.exit = exit;
+                            info.millis = info.started.take().map(|t| t.elapsed().as_millis() as u64);
                         }
                         marks.current = Some((id, Phase::Done));
                         b"\x1b]8;;\x1b\\".to_vec()
@@ -432,7 +459,9 @@ mod tests {
             "\x1b]8;id=wundur1;wundur-mark:p:1\x1b\\$ \x1b]8;id=wundur1;wundur-mark:c:1\x1b\\ls\r\n\x1b]8;id=wundur1;wundur-mark:o:1\x1b\\a b\r\n\x1b]8;;\x1b\\"
         );
         let m = marks.lock().unwrap();
-        assert_eq!(m.info[&1], Info { command: Some("ls".into()), exit: Some(0) });
+        assert_eq!(m.info[&1].command.as_deref(), Some("ls"));
+        assert_eq!(m.info[&1].exit, Some(0));
+        assert!(m.info[&1].millis.is_some() && m.info[&1].started.is_none());
         assert_eq!(m.current, Some((1, Phase::Done)));
     }
 
@@ -470,6 +499,20 @@ mod tests {
         let (mut f, marks) = filter();
         assert_eq!(run(&mut f, b"\x1b]133;D;0\x07\x1b]133;A\x07"), "\x1b]8;id=wundur1;wundur-mark:p:1\x1b\\");
         assert_eq!(marks.lock().unwrap().info[&1].exit, None);
+    }
+
+    #[test]
+    fn restored_commands_keep_their_ids_clear() {
+        let (mut f, marks) = filter();
+        run(&mut f, b"\x1b]133;A\x07\x1b]633;E;ls\x07\x1b]133;C\x07\x1b]133;D;3\x07");
+        let saved = marks.lock().unwrap().saved();
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SavedMarks = serde_json::from_str(&json).unwrap();
+        let marks = Arc::new(Mutex::new(Marks::restored(back)));
+        assert_eq!(marks.lock().unwrap().info[&1].exit, Some(3));
+        let mut f = MarkFilter::new(marks.clone());
+        // The next command gets an id the restored one doesn't have.
+        assert!(run(&mut f, b"\x1b]133;A\x07").contains("wundur-mark:p:2"));
     }
 
     #[test]

@@ -760,6 +760,13 @@ impl ChatPanel {
         self.focus_input(window, cx);
     }
 
+    /// A command from a terminal, with its output and how it ended: into the message box as a
+    /// pill named `label`, to send with what the person writes.
+    pub fn take_terminal(&mut self, text: &str, label: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste_as(text.to_string(), &format!("Terminal: {label}"), window, cx);
+        self.focus_input(window, cx);
+    }
+
     /// A handoff from an earlier session (see `wundur_core::handoff`): into the message box as
     /// text to read and change before sending, the box focused.
     pub fn take_handoff(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {

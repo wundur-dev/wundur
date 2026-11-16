@@ -50,10 +50,6 @@ impl BlockView {
     pub fn hidden(&self) -> Range<i32> {
         self.output.start + FOLD_HEAD as i32..self.output.end - FOLD_TAIL as i32
     }
-
-    pub fn failed(&self) -> bool {
-        self.info.exit.is_some_and(|c| c != 0)
-    }
 }
 
 /// The commands in `term`'s grid (none on the full screen, where a program draws as it likes).
@@ -112,11 +108,23 @@ pub fn scan<T>(term: &Term<T>, marks: &Marks) -> Vec<BlockView> {
         .collect()
 }
 
-/// A row as drawn: a line of the grid, or the line standing for a fold.
+/// How much of a command's output shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fold {
+    /// All of it.
+    Open,
+    /// Its first and last lines (long output, once finished).
+    Middle,
+    /// None: the command's header alone (the person collapsed it).
+    All,
+}
+
+/// A row as drawn: a line of the grid, or the line standing for a fold (`whole`: the
+/// command's whole output).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayRow {
     Line(i32),
-    Fold { id: u64, hidden: usize, first: i32, last: i32 },
+    Fold { id: u64, hidden: usize, first: i32, last: i32, whole: bool },
 }
 
 impl DisplayRow {
@@ -136,33 +144,52 @@ impl DisplayRow {
     }
 }
 
-/// Whether a command's output is folded: as the person set it, else when long.
-pub fn folded(b: &BlockView, folds: &HashMap<u64, bool>) -> bool {
-    b.foldable() && folds.get(&b.id()).copied().unwrap_or(true)
+/// How a command's output shows: as the person set it, else folded in the middle when long.
+pub fn fold_of(b: &BlockView, folds: &HashMap<u64, Fold>) -> Fold {
+    match folds.get(&b.id()) {
+        Some(Fold::Middle) if !b.foldable() => Fold::Open,
+        Some(Fold::All) if b.output_len() == 0 => Fold::Open,
+        Some(f) => *f,
+        None if b.foldable() => Fold::Middle,
+        None => Fold::Open,
+    }
+}
+
+/// Whether any of the output is hidden.
+pub fn folded(b: &BlockView, folds: &HashMap<u64, Fold>) -> bool {
+    fold_of(b, folds) != Fold::Open
+}
+
+/// The lines hidden, and whether that's the whole output.
+fn hidden_lines(b: &BlockView, folds: &HashMap<u64, Fold>) -> Option<(Range<i32>, bool)> {
+    match fold_of(b, folds) {
+        Fold::Open => None,
+        Fold::Middle => Some((b.hidden(), false)),
+        Fold::All => Some((b.output.clone(), true)),
+    }
 }
 
 /// Every row as drawn, top to bottom, from grid line `top` to `bottom` (exclusive).
-pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, bool>, top: i32, bottom: i32) -> Vec<DisplayRow> {
-    let mut hidden: Vec<(Range<i32>, u64)> = blocks
+pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, Fold>, top: i32, bottom: i32) -> Vec<DisplayRow> {
+    let mut hidden: Vec<(Range<i32>, u64, bool)> = blocks
         .iter()
-        .filter(|b| folded(b, folds))
-        .map(|b| (b.hidden(), b.id()))
-        .filter(|(r, _)| r.start < r.end)
+        .filter_map(|b| hidden_lines(b, folds).map(|(r, whole)| (r, b.id(), whole)))
+        .filter(|(r, ..)| r.start < r.end)
         .collect();
-    hidden.sort_by_key(|(r, _)| r.start);
+    hidden.sort_by_key(|(r, ..)| r.start);
     let mut rows = Vec::with_capacity((bottom - top).max(0) as usize);
     let mut l = top;
     let mut next = hidden.into_iter().peekable();
     while l < bottom {
         // Folds that start above (their start scrolled out of the history) begin here.
-        while next.peek().is_some_and(|(r, _)| r.end <= l) {
+        while next.peek().is_some_and(|(r, ..)| r.end <= l) {
             next.next();
         }
-        if let Some((r, id)) = next.peek().cloned()
+        if let Some((r, id, whole)) = next.peek().cloned()
             && r.start <= l
         {
             let last = r.end.min(bottom) - 1;
-            rows.push(DisplayRow::Fold { id, hidden: (last - l + 1) as usize, first: l, last });
+            rows.push(DisplayRow::Fold { id, hidden: (last - l + 1) as usize, first: l, last, whole });
             l = last + 1;
             next.next();
             continue;
@@ -329,7 +356,7 @@ mod tests {
         // Prompt, 3 head lines, the fold, 5 tail lines, then the next command.
         assert_eq!(rows[0], DisplayRow::Line(0));
         assert_eq!(rows[3], DisplayRow::Line(3));
-        assert_eq!(rows[4], DisplayRow::Fold { id: 1, hidden: 92, first: 4, last: 95 });
+        assert_eq!(rows[4], DisplayRow::Fold { id: 1, hidden: 92, first: 4, last: 95, whole: false });
         assert_eq!(rows[5], DisplayRow::Line(96));
         assert_eq!(rows.len(), 104 - 92 + 1);
         assert_eq!(index_of(&rows, 50), Some(4));
@@ -341,8 +368,17 @@ mod tests {
         let mut running = block(1, 0, 1..101);
         running.running = true;
         assert!(display_rows(&[running], &HashMap::new(), 0, 101).iter().all(|r| matches!(r, DisplayRow::Line(_))));
-        let opened = HashMap::from([(1, false)]);
+        let opened = HashMap::from([(1, Fold::Open)]);
         assert_eq!(display_rows(&[block(1, 0, 1..101)], &opened, 0, 101).len(), 101);
+    }
+
+    #[test]
+    fn a_collapsed_command_shows_its_header_alone() {
+        let blocks = vec![block(1, 0, 1..4), block(2, 4, 5..6)];
+        let rows = display_rows(&blocks, &HashMap::from([(1, Fold::All)]), 0, 6);
+        assert_eq!(rows, [DisplayRow::Line(0), DisplayRow::Fold { id: 1, hidden: 3, first: 1, last: 3, whole: true }, DisplayRow::Line(4), DisplayRow::Line(5)]);
+        // Short output is not folded in the middle, even if asked.
+        assert_eq!(fold_of(&blocks[1], &HashMap::from([(2, Fold::Middle)])), Fold::Open);
     }
 
     #[test]

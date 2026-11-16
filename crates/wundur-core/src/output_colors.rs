@@ -46,7 +46,12 @@ pub fn tones(line: &str) -> Vec<Option<Tone>> {
 
     // `Label words: the rest`: a short label of words, at the start.
     if let Some(colon) = (body..chars.len()).find(|&i| chars[i] == ':') {
-        let label = &chars[body..colon];
+        // A code after the label (`error[E0308]:`) is part of it.
+        let label_end = match chars[body..colon].iter().position(|c| *c == '[') {
+            Some(b) if chars[colon - 1] == ']' => body + b,
+            _ => colon,
+        };
+        let label = &chars[body..label_end];
         let after_ok = chars.get(colon + 1).is_none_or(|c| c.is_whitespace());
         let wordy = !label.is_empty()
             && label.len() <= 32
@@ -306,6 +311,8 @@ mod tests {
     fn failures_stand_out() {
         assert_eq!(spans("fatal: not a git repository"), [("fatal: not a git repository".into(), Tone::Bad)]);
         assert_eq!(spans("warning: unused import"), [("warning:".into(), Tone::Warn)]);
+        assert_eq!(spans("error[E0308]: mismatched types"), [("error[E0308]: mismatched types".into(), Tone::Bad)]);
+        assert_eq!(spans("warning[W1]: x"), [("warning[W1]:".into(), Tone::Warn)]);
         assert_eq!(
             spans("test result: FAILED. 3 passed; 1 failed"),
             [
