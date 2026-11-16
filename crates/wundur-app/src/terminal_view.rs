@@ -17,6 +17,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::palette;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::Sizable;
 use crate::pty::{GridSize, Pty, PtyEvent};
 use crate::term_blocks::{self, BlockView, DisplayRow, Part};
 
@@ -163,7 +166,7 @@ pub struct TerminalView {
     /// up without a drag.
     pending_part: Option<Part>,
     /// A command whose output was just copied, and when (its button says so for a moment).
-    copied: Option<(u64, std::time::Instant)>,
+    copied: Option<(u64, bool, std::time::Instant)>,
 }
 
 #[derive(Default)]
@@ -861,7 +864,7 @@ impl TerminalView {
         };
         drop(term);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.copied = Some((id, std::time::Instant::now()));
+        self.copied = Some((id, with_command, std::time::Instant::now()));
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
             let _ = this.update(cx, |_, cx| cx.notify());
@@ -1494,60 +1497,54 @@ impl TerminalView {
             shown.iter().position(|r| b.lines().contains(&r.line()))? as i32
         };
         let cell = self.cell.get();
-        let copied = self.copied.is_some_and(|(c, t)| c == id && t.elapsed() < std::time::Duration::from_millis(1400));
-        let text_size = (self.text_size(cx) - 1.).max(9.);
-        let chip = |key: &'static str, label: String| {
-            div()
-                .id(key)
-                .px(px(6.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(hsla(palette::dim()).opacity(0.5))
-                .bg(hsla(palette::background()))
-                .text_size(px(text_size))
-                .text_color(hsla(palette::foreground()))
-                .cursor(CursorStyle::PointingHand)
-                .hover(|d| d.bg(hsla(palette::dim()).opacity(0.25)))
-                .child(label)
-        };
+        // The copy just made, for a moment: its button shows a tick.
+        let copied = self.copied.filter(|(c, _, t)| *c == id && t.elapsed() < std::time::Duration::from_millis(1400)).map(|(_, all, _)| all);
         let has_output = b.output_len() > 0;
         let foldable = b.foldable();
         let folded = term_blocks::folded(b, &self.folds.borrow());
         let row_top = cell.height * row as f32;
+        let button = |key: &'static str, icon: IconName, tip: &'static str| {
+            Button::new(key).icon(icon).xsmall().ghost().tooltip(tip)
+        };
         Some(
             div()
+                .id("block-buttons")
                 .absolute()
                 .top(row_top)
                 .right(px(10.))
                 .flex()
-                .gap(px(4.))
+                .items_center()
+                .gap(px(2.))
+                .px(px(2.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(hsla(palette::dim()).opacity(0.35))
+                .bg(hsla(palette::background()))
+                .shadow_sm()
+                // A press here is for the buttons, not a selection in the terminal.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(has_output, |d| {
                     d.child(
-                        chip("copy-output", if copied { "Copied".into() } else { "Copy output".into() })
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, _, cx| {
-                                cx.stop_propagation();
-                                v.copy_block(id, false, cx);
-                            })),
+                        button("copy-output", if copied == Some(false) { IconName::Check } else { IconName::Copy }, "Copy output")
+                            .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, false, cx))),
                     )
                     .child(
-                        chip("copy-all", "Copy with command".into()).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |v, _, _, cx| {
-                                cx.stop_propagation();
-                                v.copy_block(id, true, cx);
-                            }),
-                        ),
+                        button(
+                            "copy-all",
+                            if copied == Some(true) { IconName::Check } else { IconName::SquareTerminal },
+                            "Copy with command",
+                        )
+                        .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, true, cx))),
                     )
                 })
                 .when(foldable, |d| {
                     d.child(
-                        chip("fold", if folded { "Show all".into() } else { "Fold".into() }).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |v, _, _, cx| {
-                                cx.stop_propagation();
-                                v.toggle_fold(id, cx);
-                            }),
-                        ),
+                        button(
+                            "fold",
+                            if folded { IconName::ChevronsUpDown } else { IconName::ChevronsDownUp },
+                            if folded { "Show all" } else { "Fold" },
+                        )
+                        .on_click(cx.listener(move |v, _, _, cx| v.toggle_fold(id, cx))),
                     )
                 })
                 .into_any_element(),
