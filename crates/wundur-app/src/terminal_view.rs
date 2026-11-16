@@ -829,6 +829,18 @@ impl TerminalView {
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = ks.modifiers;
+        // Cmd+Up/Down (Ctrl elsewhere): the previous or next command, in a shell's terminal.
+        if self.integrated
+            && secondary(&m)
+            && !m.shift
+            && !m.alt
+            && matches!(ks.key.as_str(), "up" | "down")
+            && !self.mode().contains(TermMode::ALT_SCREEN)
+        {
+            self.jump_command(ks.key == "up", cx);
+            cx.stop_propagation();
+            return;
+        }
         if m.platform {
             match ks.key.as_str() {
                 "c" => {
@@ -953,6 +965,43 @@ impl TerminalView {
         term.scroll_display(Scroll::Delta(screen - 1 - bottom - offset));
     }
 
+    /// Scroll so grid line `line` is the top row drawn (as near as the history allows).
+    fn scroll_to_top(&mut self, line: i32) {
+        let Some(pty) = &self.pty else { return };
+        let blocks = self.blocks();
+        let folds = self.folds.borrow();
+        let mut term = pty.term.lock();
+        let grid = term.grid();
+        let screen = grid.screen_lines() as i32;
+        let offset = grid.display_offset() as i32;
+        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen);
+        let Some(at) = term_blocks::index_of(&all, line) else { return };
+        let to = (at + screen as usize - 1).min(all.len() - 1);
+        let bottom = match all[to] {
+            DisplayRow::Line(l) => l,
+            DisplayRow::Fold { last, .. } => last,
+        };
+        term.scroll_display(Scroll::Delta(screen - 1 - bottom - offset));
+    }
+
+    /// Jump to the command before (`up`) or after the one at the top of the view: its header
+    /// at the top. Past the last, to the bottom.
+    fn jump_command(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(pty) = &self.pty else { return };
+        let top = match self.shown.borrow().first() {
+            Some(r) => r.line(),
+            None => -(pty.term.lock().grid().display_offset() as i32),
+        };
+        let heads: Vec<i32> = self.blocks().iter().filter(|b| !b.block.command.is_empty()).map(|b| b.block.command.start).collect();
+        let target = if up { heads.iter().rev().find(|&&l| l < top) } else { heads.iter().find(|&&l| l > top) };
+        match target {
+            Some(&l) => self.scroll_to_top(l),
+            None if !up => self.scroll_to_bottom(),
+            None => {}
+        }
+        cx.notify();
+    }
+
     /// Copy a command's output, or its command line and output.
     fn copy_block(&mut self, id: u64, with_command: bool, cx: &mut Context<Self>) {
         let Some(pty) = &self.pty else { return };
@@ -1013,6 +1062,13 @@ impl TerminalView {
         let Some(id) = self.blocks().iter().rev().find(|b| b.info.exit.is_some()).map(|b| b.id()) else { return "none".into() };
         self.send_block(id, cx);
         id.to_string()
+    }
+
+    /// Tests: Cmd+Up or Cmd+Down; the top row's line after.
+    pub fn test_jump(&mut self, up: bool, cx: &mut Context<Self>) -> String {
+        self.jump_command(up, cx);
+        let offset = self.pty.as_ref().map_or(0, |p| p.term.lock().grid().display_offset());
+        format!("offset {offset}")
     }
 
     /// Tests: Stop on the running command, as its button does.
@@ -1499,6 +1555,9 @@ impl Render for TerminalView {
         let shown = self.shown.clone();
         let buttons = self.block_bars(cx);
         let color_output = crate::prefs(cx).color_output;
+        let integrated = self.integrated;
+        // Scrolled up: a way back down.
+        let scrolled_up = self.integrated && self.pty.as_ref().is_some_and(|p| p.term.lock().grid().display_offset() > 0);
         let base = div()
             .id("terminal")
             .size_full()
@@ -1639,6 +1698,9 @@ impl Render for TerminalView {
                     let heads = headers(&blocks, &folds.borrow());
                     let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
                     paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &heads, &tinted, window, cx);
+                    if integrated {
+                        paint_marks(pty, &blocks, &folds.borrow(), bounds, window);
+                    }
                     crate::perf::record("terminal paint", start.elapsed());
                     crate::perf::terminal_painted();
                 },
@@ -1647,6 +1709,21 @@ impl Render for TerminalView {
         )
         .children(placeholder)
         .children(buttons)
+        .when(scrolled_up, |d| {
+            d.child(
+                div().absolute().bottom(px(10.)).right(px(18.)).child(
+                    Button::new("jump-bottom")
+                        .icon(IconName::ArrowDown)
+                        .label("Jump to bottom")
+                        .xsmall()
+                        .outline()
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.scroll_to_bottom();
+                            cx.notify();
+                        })),
+                ),
+            )
+        })
         .children(self.hover_image.clone().map(|(path, at)| {
             let b = self.bounds.get();
             let (x, y) = (at.x - b.origin.x + px(12.), at.y - b.origin.y + px(16.));
@@ -2126,6 +2203,42 @@ fn paint_fold(
     };
     let shaped = window.text_system().shape_line(label.into(), font_size, &[run], Some(cell.width));
     let _ = shaped.paint(at, cell.height, TextAlign::Left, None, window, cx);
+}
+
+/// Marks down the right edge where each command starts, over the whole history: grey when
+/// it ran, red when it failed, blue while it runs; and the part in view, faintly.
+fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, bounds: Bounds<Pixels>, window: &mut Window) {
+    let (top, screen, offset) = {
+        let term = pty.term.lock();
+        let grid = term.grid();
+        (-(grid.history_size() as i32), grid.screen_lines() as i32, grid.display_offset() as i32)
+    };
+    if top == 0 || blocks.is_empty() {
+        return;
+    }
+    let all = term_blocks::display_rows(blocks, folds, top, screen);
+    let total = all.len().max(1) as f32;
+    let x = bounds.origin.x + bounds.size.width + px(1.);
+    let h = bounds.size.height;
+    let at = |i: usize| bounds.origin.y + h * (i as f32 / total);
+    // The view.
+    if let Some(end) = term_blocks::index_of(&all, screen - 1 - offset) {
+        let start = (end + 1).saturating_sub(screen as usize);
+        let y = at(start);
+        window.paint_quad(fill(Bounds::new(point(x, y), size(px(3.), (at(end + 1) - y).max(px(6.)))), hsla(palette::dim()).opacity(0.18)));
+    }
+    let dark = palette::is_dark();
+    for b in blocks.iter().filter(|b| !b.block.command.is_empty()) {
+        let Some(i) = term_blocks::index_of(&all, b.block.command.start) else { continue };
+        let color = if b.running {
+            hsla(if dark { 0x6aa6ff } else { 0x2f6fde })
+        } else if b.info.exit.is_some_and(|c| c != 0) {
+            hsla(if dark { 0xe06c6c } else { 0xc0392b })
+        } else {
+            hsla(palette::dim()).opacity(0.6)
+        };
+        window.paint_quad(fill(Bounds::new(point(x, at(i)), size(px(3.), px(2.))), color));
+    }
 }
 
 /// A header's chevron (open or collapsed) and status (done, failed, running) in the gutter.

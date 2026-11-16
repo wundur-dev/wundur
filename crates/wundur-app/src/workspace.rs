@@ -1445,7 +1445,7 @@ impl Workspace {
                     pty.write(text.into_bytes());
                 }
             }
-            "term-blocks" | "term-part" | "term-hover" | "term-collapse" | "term-send" | "term-stop" => {
+            "term-blocks" | "term-part" | "term-hover" | "term-collapse" | "term-send" | "term-stop" | "term-jump" => {
                 // Tests: the shell terminal's commands, or use part N of its last command as
                 // a click does (`term-part 1`, `term-part 1 run`).
                 let Some(t) = self.current_terminal(window, cx).or_else(|| self.terminals.borrow().last().cloned()) else {
@@ -1457,6 +1457,7 @@ impl Workspace {
                     "term-collapse" => t.collapse_first(cx),
                     "term-send" => t.send_last(cx),
                     "term-stop" => t.stop_running(cx),
+                    "term-jump" => t.test_jump(arg == "up", cx),
                     _ => t.use_part(arg, cx),
                 });
             }
