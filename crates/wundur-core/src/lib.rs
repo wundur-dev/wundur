@@ -65,7 +65,9 @@ pub mod summary;
 pub mod symbols;
 pub mod table;
 pub mod tabs;
+pub mod shell_integration;
 pub mod term_history;
+pub mod term_marks;
 pub mod web;
 pub mod workflow;
 

@@ -46,6 +46,8 @@ tree-sitter-c-sharp = "=0.23.5"
 tree-sitter-swift = "=0.7.4"
 tree-sitter-cmake = "=0.7.5"
 alacritty_terminal = "0.26.0"
+# The same version alacritty_terminal polls the PTY with (its traits name its types).
+polling = "3.8"
 async-channel = "2"
 libc = "0.2"
 lsp-types = { version = "0.97", features = ["proposed"] }

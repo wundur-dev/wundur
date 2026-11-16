@@ -71,6 +71,7 @@ mod shell;
 mod skills_panel;
 mod spelling;
 mod terminal_view;
+mod term_blocks;
 mod theme;
 mod tool_runs;
 mod voice;
