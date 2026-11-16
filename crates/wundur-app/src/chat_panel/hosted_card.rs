@@ -44,6 +44,43 @@ fn default_choice(field: &Field) -> String {
     }
 }
 
+/// A paste into the new-asset form's boxes: pictures (an image, or image files) become
+/// references; anything else is the box's as usual. True when it took the paste.
+fn reference_paste(item: &ClipboardItem, panel: &WeakEntity<ChatPanel>, window: &mut Window, cx: &mut App) -> bool {
+    let mut pictures: Vec<PathBuf> = Vec::new();
+    for entry in item.entries() {
+        match entry {
+            ClipboardEntry::Image(image) => {
+                let ext = match image.format {
+                    ImageFormat::Jpeg => "jpg",
+                    ImageFormat::Webp => "webp",
+                    ImageFormat::Png => "png",
+                    // The service takes PNG, JPEG and WebP only.
+                    _ => continue,
+                };
+                if let Some(dir) = wundur_core::images::session_dir(Some("references"))
+                    && let Ok(path) = wundur_core::images::store(&dir, &image.bytes, ext)
+                {
+                    pictures.push(path);
+                }
+            }
+            // Files: only pictures are references; other files stay the box's paste.
+            ClipboardEntry::ExternalPaths(paths) => pictures.extend(
+                paths.paths().iter().filter(|p| matches!(p.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref(), Some("png" | "jpg" | "jpeg" | "webp"))).cloned(),
+            ),
+            _ => {}
+        }
+    }
+    if pictures.is_empty() {
+        return false;
+    }
+    let panel = panel.clone();
+    window.defer(cx, move |_, cx| {
+        let _ = panel.update(cx, |p, cx| p.take_references(pictures, cx));
+    });
+    true
+}
+
 /// "1 credit", "3 credits".
 fn credits(n: u32) -> String {
     format!("{n} credit{}", if n == 1 { "" } else { "s" })
@@ -65,6 +102,8 @@ struct Frame {
     back: Option<AnyElement>,
     status: String,
     primary: Option<AnyElement>,
+    /// Laid over the whole card (a model being made): it greys the card and takes its clicks.
+    overlay: Option<AnyElement>,
 }
 
 /// Where the asset has got: 2 views, 3 model, 4 imported.
@@ -210,8 +249,10 @@ impl ChatPanel {
             .when_some(f.back, |d, b| d.child(b).child(div().w(px(1.)).h(px(18.)).bg(border)))
             .child(div().flex_1().min_w_0().text_xs().text_color(muted).child(f.status))
             .children(f.primary);
+        let overlay = f.overlay;
         div()
             .id(f.id.clone())
+            .relative()
             .flex()
             .flex_col()
             .rounded(px(14.))
@@ -235,6 +276,36 @@ impl ChatPanel {
                     .children(f.error),
             )
             .child(foot)
+            .children(overlay)
+            .into_any_element()
+    }
+
+    /// What's laid over a card while its model is being made: the card greyed, the app's
+    /// spinner and what's happening in the middle; scrolling the chat still works.
+    fn hosted_busy_overlay(&self, title: String, detail: String, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, bg) = (theme.foreground, theme.muted_foreground, theme.background);
+        let spinner = if crate::native_spinner::NativeSpinner::available() {
+            let native = self.card_spinner.clone();
+            div().size(px(24.)).child(canvas(|_, _, _| {}, move |b, _, window, _| native.paint(b, muted, window)).size_full()).into_any_element()
+        } else {
+            Icon::new(IconName::LoaderCircle).text_color(muted).into_any_element()
+        };
+        div()
+            .id("hosted-busy")
+            .absolute()
+            .inset_0()
+            .rounded(px(14.))
+            .bg(bg.opacity(0.8))
+            .block_mouse_except_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(spinner)
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title))
+            .child(div().text_xs().text_color(muted).child(detail))
             .into_any_element()
     }
 
@@ -373,6 +444,7 @@ impl ChatPanel {
             back: Some(cancel),
             status: status.into(),
             primary,
+            overlay: None,
         };
         if !hosted_store::signed_in() {
             let left = div()
@@ -401,6 +473,7 @@ impl ChatPanel {
             return self.hosted_frame(frame(left, None, None, "", None, cancel), cx);
         };
         let label = |t: &str| div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(t.to_string());
+        let me = cx.entity().downgrade();
         // The kinds, as one segmented control.
         let mut kinds = div().flex().rounded(px(8.)).border_1().border_color(border).overflow_hidden();
         for (n, k) in catalog.kinds.iter().enumerate() {
@@ -442,14 +515,20 @@ impl ChatPanel {
             .flex_col()
             .gap_2()
             .child(label("Name"))
-            .child(Input::new(&form.name))
+            .child(Input::new(&form.name).on_paste({
+                let me = me.clone();
+                move |item, window, cx| reference_paste(item, &me, window, cx)
+            }))
             .child(div().h(px(4.)))
             .child(label("Asset type"))
             .child(kinds)
             .children(kind.filter(|k| !k.description.is_empty()).map(|k| div().text_xs().text_color(muted).child(k.description.clone())))
             .child(div().h(px(4.)))
             .child(label("Describe your asset"))
-            .child(Textarea::new(&form.description))
+            .child(Textarea::new(&form.description).on_paste({
+                let me = me.clone();
+                move |item, window, cx| reference_paste(item, &me, window, cx)
+            }))
             .when(has_fields, |d| {
                 d.child(
                     div()
@@ -508,7 +587,17 @@ impl ChatPanel {
             .into_any_element();
         let error = form.error.clone().map(|e| div().text_xs().text_color(danger).child(e).into_any_element());
         let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make the views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
-        self.hosted_frame(frame(left, Some(right), error, "You can rename it later", Some(primary), cancel), cx)
+        let card = self.hosted_frame(frame(left, Some(right), error, "You can rename it later", Some(primary), cancel), cx);
+        // Pictures dropped anywhere on the form are references.
+        div()
+            .id("hosted-form-drop")
+            .rounded(px(14.))
+            .border_2()
+            .border_color(gpui_kit::transparent_black())
+            .drag_over::<ExternalPaths>(move |d, _, _, _| d.border_color(ring))
+            .on_drop(cx.listener(|p, paths: &ExternalPaths, _, cx| p.take_references(paths.paths().to_vec(), cx)))
+            .child(card)
+            .into_any_element()
     }
 
     /// The form's reference pictures: each as a thumbnail (with a way to drop it), and a tile
@@ -573,7 +662,7 @@ impl ChatPanel {
             .flex_col()
             .gap_1()
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Reference images"))
-            .child(div().text_xs().text_color(muted).child("Optional · up to 3 pictures for the look, shape or art style. They can't be changed later."))
+            .child(div().text_xs().text_color(muted).child("Optional · up to 3 pictures for the look, shape or art style. Drop them on the form or paste one into a box. They can't be changed later."))
             .child(div().pt_1().child(tiles))
             .into_any_element()
     }
@@ -583,24 +672,33 @@ impl ChatPanel {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Add".into()) });
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
-            let _ = this.update(cx, |p, cx| {
-                if let Some(f) = &mut p.hosted_form {
-                    for path in paths {
-                        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
-                            f.error = Some("References are PNG, JPEG or WebP pictures.".into());
-                            continue;
-                        }
-                        if f.references.len() < wundur_core::asset_flow::REFERENCES && !f.references.contains(&path) {
-                            f.references.push(path);
-                        }
-                    }
-                }
-                p.list.remeasure();
-                cx.notify();
-            });
+            let _ = this.update(cx, |p, cx| p.take_references(paths, cx));
         })
         .detach();
+    }
+
+    /// Pictures for the form's references, picked, dropped or pasted: PNG, JPEG and WebP join
+    /// (three at most); anything else says why it didn't.
+    pub(super) fn take_references(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.hosted_form else { return };
+        for path in paths {
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                f.error = Some("References are PNG, JPEG or WebP pictures.".into());
+                continue;
+            }
+            if f.references.contains(&path) {
+                continue;
+            }
+            if f.references.len() >= wundur_core::asset_flow::REFERENCES {
+                f.error = Some(format!("At most {} reference pictures.", wundur_core::asset_flow::REFERENCES));
+                break;
+            }
+            f.references.push(path);
+            f.error = None;
+        }
+        self.list.remeasure();
+        cx.notify();
     }
 
     /// One field of the form: its label and its control.
@@ -740,6 +838,7 @@ impl ChatPanel {
             back: None,
             status: String::new(),
             primary: None,
+            overlay: None,
         };
         match shown {
             4 => self.hosted_rig(dir, &e, &kind_label, &id, &mut frame, cx),
@@ -939,7 +1038,9 @@ impl ChatPanel {
         let attempts: Vec<Model> = asset.models.iter().filter(|m| m.set == set.id).cloned().collect();
         let attempt = attempts.last().cloned();
         let attempts_left = set.attempts_left.or_else(|| attempt.as_ref().and_then(|m| m.attempts_left));
-        let busy = e.working.is_some() || attempt.as_ref().is_some_and(Model::is_running);
+        // Being made: asked for (and not listed yet), or listed as queued or running.
+        let building = e.building.is_some() || matches!(e.working, Some("Starting the model" | "Rebuilding")) || attempt.as_ref().is_some_and(Model::is_running);
+        let busy = e.working.is_some() || building;
         let imported = e.record.imported.clone();
         frame.intro = "Inspect the model before importing it into your project.".into();
         frame.subtitle = match &attempt {
@@ -956,11 +1057,19 @@ impl ChatPanel {
         // The stage: what's being built, or the finished attempt and its preview.
         let stage = div().min_h(px(240.)).rounded(px(12.)).bg(ground).flex().flex_col().items_center().justify_center().gap_2().p_4();
         let stage = match &attempt {
-            Some(m) if m.is_running() => {
-                let seconds = catalog.and_then(|c| c.engine(&m.engine)).map_or(60, |en| en.seconds);
+            // Being made: the views it's made from (the card's overlay says what's happening).
+            _ if building => {
+                let running = attempt.as_ref().filter(|m| m.is_running());
+                let engine = running.map_or(picked.clone(), |m| m.engine.clone());
+                let seconds = catalog.and_then(|c| c.engine(&engine)).map_or(60, |en| en.seconds);
                 let about = if seconds >= 120 { format!("usually about {} minutes", seconds / 60) } else { "usually about a minute".to_string() };
-                let progress = m.progress.map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
-                stage.child(gpui_kit::component::spinner::Spinner::new().color(muted)).child(div().text_sm().text_color(fg).child(format!("Building the model, {about}{progress}")))
+                let progress = running.and_then(|m| m.progress).map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
+                frame.overlay = Some(self.hosted_busy_overlay(
+                    format!("Building the model{progress}"),
+                    format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }),
+                    cx,
+                ));
+                stage.child(self.hosted_view_row(dir, &files, &labels, 120., cx))
             }
             Some(m) if m.succeeded() => {
                 let (d1, mid) = (dir.to_path_buf(), m.id.clone());
@@ -1034,7 +1143,7 @@ impl ChatPanel {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .when(allowed, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
+                    .when(allowed && !building, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
                     .when(!allowed, |d| d.opacity(0.55))
                     .child(div().text_sm().text_color(fg).child(en.label.clone()))
                     .children((!en.license.label.is_empty()).then(|| div().text_xs().text_color(yellow).child(en.license.label.clone())))
@@ -1102,12 +1211,13 @@ impl ChatPanel {
             return;
         }
         frame.primary = Some(match &attempt {
+            // A rebuild on its way: the earlier attempt isn't the one to import now.
+            _ if building => Button::new(id("building")).small().primary().label("Building…").loading(true).disabled(true).into_any_element(),
             Some(m) if m.succeeded() => {
                 let cost = m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1);
                 let (d, mid) = (dir.to_path_buf(), m.id.clone());
                 Button::new(id("import")).small().primary().icon(Lucide::FolderOpen).label(format!("Import · {} →", credits(cost))).disabled(busy).on_click(move |_, _, cx| hosted_store::import(&d, &mid, cx)).into_any_element()
             }
-            Some(m) if m.is_running() => Button::new(id("building")).small().primary().label("Building…").loading(true).disabled(true).into_any_element(),
             _ => {
                 let d = dir.to_path_buf();
                 let blocked = picked_engine.as_ref().is_some_and(|en| !en.on_plan(plan));
@@ -1184,11 +1294,7 @@ impl ChatPanel {
             return format!("form open: {items} items, form {}, signed in {}, flow {}", self.hosted_form.is_some(), hosted_store::signed_in(), hosted_store::flow_on());
         }
         if cmd == "ref" {
-            if let Some(f) = &mut self.hosted_form {
-                f.references.push(PathBuf::from(arg));
-            }
-            self.list.remeasure();
-            cx.notify();
+            self.take_references(vec![PathBuf::from(arg)], cx);
             return format!("{} references", self.hosted_form.as_ref().map_or(0, |f| f.references.len()));
         }
         if cmd == "open" {

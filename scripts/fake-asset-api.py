@@ -35,7 +35,7 @@ def asset_view(a):
                 name = f"{s['id']}-{lab}.png"; FILES[name] = png(lab, color)
                 s["views"].append({"label": lab, "image_id": "img_" + name, "url": f"{BASE}/files/{name}", "width": 300, "height": 600})
     for m in [models[k] for k in a["models"]]:
-        if m["status"] == "running" and now - m["t"] > 4:
+        if m["status"] == "running" and now - m["t"] > 8:
             m["status"] = "succeeded"; m["preview_url"] = f"{BASE}/files/preview.glb"
     out = {k: v for k, v in a.items() if k != "models"}
     out["sets"] = [{k: v for k, v in s.items() if k != "t"} for s in a["sets"]]
@@ -85,7 +85,7 @@ class H(BaseHTTPRequestHandler):
                 approved["attempts_left"] -= 1
                 engine = b.get("engine") or "trellis2"
                 credits = {"trellis2": 1, "tripo_hd": 3}.get(engine, 1)
-                m = {"id": f"md_{next(ids)}", "asset": a["id"], "set": approved["id"], "engine": engine, "status": "running", "imported": False, "credits": credits, "t": time.time()}
+                m = {"id": f"job_{next(ids)}", "asset_id": a["id"], "set_id": approved["id"], "engine": engine, "status": "running", "imported": False, "credits": credits, "t": time.time()}
                 models[m["id"]] = m; a["models"].append(m["id"]); return self.send(202, {k: v for k, v in m.items() if k != "t"})
             if p[3] == "models" and len(p) == 6:
                 m = models[p[4]]

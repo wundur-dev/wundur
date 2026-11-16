@@ -162,6 +162,9 @@ pub struct ChatPanel {
     working_slot: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// The working line's spinner, the system's own where there is one.
     native_spinner: crate::native_spinner::NativeSpinner,
+    /// The one a hosted asset card shows while its model is being made (its own, so the
+    /// working line's stays where it is).
+    card_spinner: crate::native_spinner::NativeSpinner,
     /// The panel itself, for what the workspace draws for it (the working line's box).
     me: WeakEntity<ChatPanel>,
     /// Find in the conversation, while its bar shows; the item of the match gone to (marked);
@@ -357,6 +360,7 @@ impl ChatPanel {
             pulse: cx.new(|_| Pulse(0)),
             working_slot: Default::default(),
             native_spinner: Default::default(),
+            card_spinner: Default::default(),
             me: cx.entity().downgrade(),
             find: None,
             found: None,

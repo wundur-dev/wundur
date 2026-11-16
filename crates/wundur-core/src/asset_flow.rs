@@ -244,7 +244,10 @@ pub struct ViewImage {
 #[serde(default)]
 pub struct Model {
     pub id: String,
+    /// The live API calls these `asset_id` and `set_id`.
+    #[serde(alias = "asset_id")]
     pub asset: String,
+    #[serde(alias = "set_id")]
     pub set: String,
     pub engine: String,
     /// `queued`, `running`, `succeeded` or `failed`.
@@ -656,7 +659,8 @@ mod tests {
                      "views": [ { "label": "Front", "image_id": "img_a", "url": "https://x/a", "width": 512, "height": 1024 } ] },
                    { "id": "set_2", "status": "generating", "made_from": { "kind": "change", "from": "set_1", "instruction": "darker" } }
                  ],
-                 "models": [ { "id": "md_1", "set": "set_1", "engine": "trellis2", "status": "running", "progress": 0.4 } ] }"#,
+                 "models": [ { "id": "md_1", "set": "set_1", "engine": "trellis2", "status": "running", "progress": 0.4 },
+                             { "id": "job_2", "set_id": "set_1", "asset_id": "as_1", "engine": "tripo", "status": "succeeded", "preview_url": "https://x/p.glb" } ] }"#,
         )
         .unwrap();
         assert_eq!(a.sets[0].attempts_left, Some(4), "the review's name still reads");
@@ -664,6 +668,8 @@ mod tests {
         assert!(a.busy());
         assert_eq!(a.latest_set().unwrap().made_from.instruction.as_deref(), Some("darker"));
         assert!(a.approved_set().is_none());
+        assert_eq!((a.models[1].set.as_str(), a.models[1].asset.as_str()), ("set_1", "as_1"), "the live API's set_id and asset_id");
+        assert_eq!(a.models[1].preview_link(), Some("https://x/p.glb"));
     }
 
     #[test]
