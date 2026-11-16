@@ -44,6 +44,43 @@ fn default_choice(field: &Field) -> String {
     }
 }
 
+/// A paste into the new-asset form's boxes: pictures (an image, or image files) become
+/// references; anything else is the box's as usual. True when it took the paste.
+fn reference_paste(item: &ClipboardItem, panel: &WeakEntity<ChatPanel>, window: &mut Window, cx: &mut App) -> bool {
+    let mut pictures: Vec<PathBuf> = Vec::new();
+    for entry in item.entries() {
+        match entry {
+            ClipboardEntry::Image(image) => {
+                let ext = match image.format {
+                    ImageFormat::Jpeg => "jpg",
+                    ImageFormat::Webp => "webp",
+                    ImageFormat::Png => "png",
+                    // The service takes PNG, JPEG and WebP only.
+                    _ => continue,
+                };
+                if let Some(dir) = wundur_core::images::session_dir(Some("references"))
+                    && let Ok(path) = wundur_core::images::store(&dir, &image.bytes, ext)
+                {
+                    pictures.push(path);
+                }
+            }
+            // Files: only pictures are references; other files stay the box's paste.
+            ClipboardEntry::ExternalPaths(paths) => pictures.extend(
+                paths.paths().iter().filter(|p| matches!(p.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref(), Some("png" | "jpg" | "jpeg" | "webp"))).cloned(),
+            ),
+            _ => {}
+        }
+    }
+    if pictures.is_empty() {
+        return false;
+    }
+    let panel = panel.clone();
+    window.defer(cx, move |_, cx| {
+        let _ = panel.update(cx, |p, cx| p.take_references(pictures, cx));
+    });
+    true
+}
+
 /// "1 credit", "3 credits".
 fn credits(n: u32) -> String {
     format!("{n} credit{}", if n == 1 { "" } else { "s" })
@@ -401,6 +438,7 @@ impl ChatPanel {
             return self.hosted_frame(frame(left, None, None, "", None, cancel), cx);
         };
         let label = |t: &str| div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(t.to_string());
+        let me = cx.entity().downgrade();
         // The kinds, as one segmented control.
         let mut kinds = div().flex().rounded(px(8.)).border_1().border_color(border).overflow_hidden();
         for (n, k) in catalog.kinds.iter().enumerate() {
@@ -442,14 +480,20 @@ impl ChatPanel {
             .flex_col()
             .gap_2()
             .child(label("Name"))
-            .child(Input::new(&form.name))
+            .child(Input::new(&form.name).on_paste({
+                let me = me.clone();
+                move |item, window, cx| reference_paste(item, &me, window, cx)
+            }))
             .child(div().h(px(4.)))
             .child(label("Asset type"))
             .child(kinds)
             .children(kind.filter(|k| !k.description.is_empty()).map(|k| div().text_xs().text_color(muted).child(k.description.clone())))
             .child(div().h(px(4.)))
             .child(label("Describe your asset"))
-            .child(Textarea::new(&form.description))
+            .child(Textarea::new(&form.description).on_paste({
+                let me = me.clone();
+                move |item, window, cx| reference_paste(item, &me, window, cx)
+            }))
             .when(has_fields, |d| {
                 d.child(
                     div()
@@ -508,7 +552,17 @@ impl ChatPanel {
             .into_any_element();
         let error = form.error.clone().map(|e| div().text_xs().text_color(danger).child(e).into_any_element());
         let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make the views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
-        self.hosted_frame(frame(left, Some(right), error, "You can rename it later", Some(primary), cancel), cx)
+        let card = self.hosted_frame(frame(left, Some(right), error, "You can rename it later", Some(primary), cancel), cx);
+        // Pictures dropped anywhere on the form are references.
+        div()
+            .id("hosted-form-drop")
+            .rounded(px(14.))
+            .border_2()
+            .border_color(gpui_kit::transparent_black())
+            .drag_over::<ExternalPaths>(move |d, _, _, _| d.border_color(ring))
+            .on_drop(cx.listener(|p, paths: &ExternalPaths, _, cx| p.take_references(paths.paths().to_vec(), cx)))
+            .child(card)
+            .into_any_element()
     }
 
     /// The form's reference pictures: each as a thumbnail (with a way to drop it), and a tile
@@ -573,7 +627,7 @@ impl ChatPanel {
             .flex_col()
             .gap_1()
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Reference images"))
-            .child(div().text_xs().text_color(muted).child("Optional · up to 3 pictures for the look, shape or art style. They can't be changed later."))
+            .child(div().text_xs().text_color(muted).child("Optional · up to 3 pictures for the look, shape or art style. Drop them on the form or paste one into a box. They can't be changed later."))
             .child(div().pt_1().child(tiles))
             .into_any_element()
     }
@@ -583,24 +637,33 @@ impl ChatPanel {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Add".into()) });
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
-            let _ = this.update(cx, |p, cx| {
-                if let Some(f) = &mut p.hosted_form {
-                    for path in paths {
-                        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
-                            f.error = Some("References are PNG, JPEG or WebP pictures.".into());
-                            continue;
-                        }
-                        if f.references.len() < wundur_core::asset_flow::REFERENCES && !f.references.contains(&path) {
-                            f.references.push(path);
-                        }
-                    }
-                }
-                p.list.remeasure();
-                cx.notify();
-            });
+            let _ = this.update(cx, |p, cx| p.take_references(paths, cx));
         })
         .detach();
+    }
+
+    /// Pictures for the form's references, picked, dropped or pasted: PNG, JPEG and WebP join
+    /// (three at most); anything else says why it didn't.
+    pub(super) fn take_references(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.hosted_form else { return };
+        for path in paths {
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                f.error = Some("References are PNG, JPEG or WebP pictures.".into());
+                continue;
+            }
+            if f.references.contains(&path) {
+                continue;
+            }
+            if f.references.len() >= wundur_core::asset_flow::REFERENCES {
+                f.error = Some(format!("At most {} reference pictures.", wundur_core::asset_flow::REFERENCES));
+                break;
+            }
+            f.references.push(path);
+            f.error = None;
+        }
+        self.list.remeasure();
+        cx.notify();
     }
 
     /// One field of the form: its label and its control.
@@ -1184,11 +1247,7 @@ impl ChatPanel {
             return format!("form open: {items} items, form {}, signed in {}, flow {}", self.hosted_form.is_some(), hosted_store::signed_in(), hosted_store::flow_on());
         }
         if cmd == "ref" {
-            if let Some(f) = &mut self.hosted_form {
-                f.references.push(PathBuf::from(arg));
-            }
-            self.list.remeasure();
-            cx.notify();
+            self.take_references(vec![PathBuf::from(arg)], cx);
             return format!("{} references", self.hosted_form.as_ref().map_or(0, |f| f.references.len()));
         }
         if cmd == "open" {

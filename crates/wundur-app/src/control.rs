@@ -150,6 +150,23 @@ fn dispatch(line: &str, cx: &mut App) -> String {
             })
             .unwrap_or_else(|_| "window closed".into());
     }
+    if let Some(args) = line.strip_prefix("drop ") {
+        // Files dropped from the Finder (no system input): `drop X Y <path> [<path>…]`.
+        let mut parts = args.split_whitespace();
+        let (Some(x), Some(y)) = (parts.next().and_then(|v| v.parse::<f32>().ok()), parts.next().and_then(|v| v.parse::<f32>().ok())) else { return "drop X Y PATH…".into() };
+        let paths: Vec<std::path::PathBuf> = parts.map(std::path::PathBuf::from).collect();
+        return handle
+            .update(cx, |_, window, cx| {
+                let position = point(px(x), px(y));
+                window.dispatch_event(PlatformInput::FileDrop(FileDropEvent::Entered { position, paths: ExternalPaths(paths.into()) }), cx);
+                window.dispatch_event(PlatformInput::FileDrop(FileDropEvent::Pending { position }), cx);
+                window.refresh();
+                window.dispatch_event(PlatformInput::FileDrop(FileDropEvent::Submit { position }), cx);
+                window.refresh();
+                "drop".to_string()
+            })
+            .unwrap_or_else(|_| "window closed".into());
+    }
     if let Some(args) = line.strip_prefix("drag ") {
         // A left-button drag inside the app (no system input): `drag X1 Y1 X2 Y2`, pressed at
         // the first point, moved in steps with the button held, let go at the second.
