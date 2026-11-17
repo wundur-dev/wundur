@@ -15,3 +15,5 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # EXT_meshopt_compression (most optimised GLBs): meshoptimizer's own decoders.
 meshopt = "0.7"
 glam = "0.30"
+# Exports for other tools (Mixamo takes a ZIP of an OBJ, its MTL and textures).
+zip = { version = "9", default-features = false, features = ["deflate"] }

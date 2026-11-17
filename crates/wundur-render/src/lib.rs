@@ -7,6 +7,7 @@
 // Fixed-size chunks read more plainly as slices here (glam takes slices).
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
+pub mod export;
 mod font;
 pub mod gltf;
 pub mod pose;
