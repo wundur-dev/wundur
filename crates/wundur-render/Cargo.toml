@@ -1,0 +1,17 @@
+[package]
+name = "wundur-render"
+description = "Wundur's model renderer: glTF/GLB to still images on the CPU, with no window or GPU, so an agent can look at a model."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+base64 = "0.22"
+# Textures: the formats glTF uses (PNG, JPEG, and WebP through EXT_texture_webp).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# EXT_meshopt_compression (most optimised GLBs): meshoptimizer's own decoders.
+meshopt = "0.7"
+glam = "0.30"
