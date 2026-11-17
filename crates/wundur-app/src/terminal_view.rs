@@ -310,7 +310,9 @@ fn cached_blocks(cache: &std::cell::RefCell<BlocksCache>, pty: &Pty, generation:
 /// The space above each command's header, in pixels: commands read as separate, while the
 /// rows of output stay a line apart (aligned columns and box drawing need them so).
 const COMMAND_GAP: f32 = 14.;
-/// Padding inside a command's header, above and below its prompt line (the tint covers it).
+/// Space above a command's row of actions, between it and the output.
+const ACTIONS_PAD: f32 = 8.;
+/// Padding inside a command's header, above and below its prompt line.
 const HEADER_PAD: f32 = 5.;
 
 /// Where commands' headers begin and end, as lines in order: the gaps go there.
@@ -329,6 +331,10 @@ fn gap_for(edges: &HeaderEdges) -> impl Fn(DisplayRow) -> f32 + '_ {
         let mut gap = 0.;
         if matches!(row, DisplayRow::Line(_)) && edges.starts.binary_search(&l).is_ok() {
             gap += COMMAND_GAP + HEADER_PAD;
+        }
+        // A command's actions: room above, apart from its output, as its header has.
+        if let DisplayRow::Actions { .. } = row {
+            return ACTIONS_PAD;
         }
         if edges.ends.binary_search(&l).is_ok() {
             gap += HEADER_PAD;
