@@ -221,7 +221,7 @@ fn headers(blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>) -
     let blue = if dark { 0x6aa6ff } else { 0x2f6fde };
     blocks
         .iter()
-        .filter(|b| !b.block.command.is_empty())
+        .filter(|b| b.headed())
         .map(|b| {
             let status = match (b.running, b.info.exit) {
                 (true, _) => Status::Running,
@@ -310,7 +310,7 @@ fn gap_for(starts: &[i32]) -> impl Fn(DisplayRow) -> f32 + '_ {
 
 /// The lines commands start on (where a gap goes), in order.
 fn command_starts(blocks: &[BlockView]) -> Vec<i32> {
-    let mut v: Vec<i32> = blocks.iter().filter(|b| !b.block.command.is_empty()).map(|b| b.block.start).collect();
+    let mut v: Vec<i32> = blocks.iter().filter(|b| b.headed()).map(|b| b.block.start).collect();
     v.sort_unstable();
     v
 }
@@ -673,13 +673,21 @@ impl TerminalView {
             m.active().then_some(())?;
             Some((wundur_core::term_history::marks_path(id)?, serde_json::to_string(&m.saved()).ok()?))
         });
-        Some(Kept { path, text: self.kept_text()?, marks })
+        // At an empty prompt: kept without it (the shell draws a new one after a restart, and
+        // an old one would stay above it, once per restart).
+        let until = self.pty.as_ref().and_then(|p| {
+            let blocks = cached_blocks(&self.blocks, p, self.generation);
+            let last = blocks.iter().max_by_key(|b| b.block.start)?;
+            let idle = p.marks.lock().is_ok_and(|m| m.at_prompt());
+            (idle && !last.ran()).then_some(last.block.start)
+        });
+        Some(Kept { path, text: self.kept_text(until)?, marks })
     }
 
     /// The scrollback (its last 3,000 lines) and screen as text with colour codes; `None`
     /// while a full-screen program (an editor, a pager) has the screen, so what was kept
     /// before stays.
-    fn kept_text(&self) -> Option<String> {
+    fn kept_text(&self, until: Option<i32>) -> Option<String> {
         use wundur_core::term_history::{Ink, Style, to_ansi};
         use alacritty_terminal::vte::ansi::Color;
         let pty = self.pty.as_ref()?;
@@ -696,7 +704,8 @@ impl TerminalView {
         };
         let cols = grid.columns();
         let first = -(grid.history_size().min(3000) as i32);
-        let rows = (first..grid.screen_lines() as i32).map(|l| {
+        let end = until.map_or(grid.screen_lines() as i32, |u| u.min(grid.screen_lines() as i32));
+        let rows = (first..end).map(|l| {
             let row = &grid[Line(l)];
             let cells = (0..cols)
                 .map(|c| &row[Column(c)])
@@ -1088,7 +1097,7 @@ impl TerminalView {
             Some(p) => p.row.line(),
             None => -(pty.term.lock().grid().display_offset() as i32),
         };
-        let heads: Vec<i32> = self.blocks().iter().filter(|b| !b.block.command.is_empty()).map(|b| b.block.command.start).collect();
+        let heads: Vec<i32> = self.blocks().iter().filter(|b| b.headed()).map(|b| b.block.command.start).collect();
         let target = if up { heads.iter().rev().find(|&&l| l < top) } else { heads.iter().find(|&&l| l > top) };
         match target {
             Some(&l) => self.scroll_to_top(l),
@@ -2360,7 +2369,7 @@ fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMa
         window.paint_quad(fill(Bounds::new(point(x, y), size(px(3.), (at(end + 1) - y).max(px(6.)))), hsla(palette::dim()).opacity(0.18)));
     }
     let dark = palette::is_dark();
-    for b in blocks.iter().filter(|b| !b.block.command.is_empty()) {
+    for b in blocks.iter().filter(|b| b.headed()) {
         let Some(i) = term_blocks::index_of(&all, b.block.command.start) else { continue };
         let color = if b.running {
             hsla(if dark { 0x6aa6ff } else { 0x2f6fde })
