@@ -21,6 +21,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::Sizable;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::Icon;
@@ -177,8 +178,13 @@ pub struct TerminalView {
     /// Raw: as the program printed it, without headers, folds, buttons or colouring (the
     /// commands are still followed, for switching back).
     raw: bool,
-    /// Settings, as last drawn: the newest command's row of actions, and the toolbar.
+    /// Settings, as last drawn: the row of actions under each command.
     actions_row: bool,
+    /// Follow output: new output keeps the view at the bottom. Scrolling up turns it off (the
+    /// view then holds still as output comes); back at the bottom, it is on again.
+    follow: Cell<bool>,
+    /// The scrollback's size at the last output, to hold the view still while not following.
+    last_history: Cell<usize>,
     /// A click that began on a part of a command line: put on the prompt when the button comes
     /// up without a drag.
     pending_part: Option<Part>,
@@ -349,18 +355,24 @@ fn command_starts(blocks: &[BlockView]) -> HeaderEdges {
     HeaderEdges { starts, ends, prompt }
 }
 
-/// The commands that get a row of actions below their output: the newest that finished with
+/// Where the rows of actions are drawn: their commands and tops.
+fn action_places(shown: &[Placed]) -> Vec<(u64, i32)> {
+    shown
+        .iter()
+        .filter_map(|p| match p.row {
+            DisplayRow::Actions { id, .. } => Some((id, p.top.round() as i32)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The commands that get a row of actions below their output: each that finished with
 /// output (none when Settings turned the row off).
 fn action_ids(blocks: &[BlockView], on: bool) -> Vec<u64> {
     if !on {
         return Vec::new();
     }
-    blocks
-        .iter()
-        .filter(|b| b.ran() && !b.running && b.output_len() > 0)
-        .max_by_key(|b| b.block.start)
-        .map(|b| vec![b.id()])
-        .unwrap_or_default()
+    blocks.iter().filter(|b| b.ran() && !b.running && b.output_len() > 0).map(|b| b.id()).collect()
 }
 
 /// The rows to draw and where, in a shell's terminal with commands (`None`: as usual, the
@@ -388,7 +400,17 @@ fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64
         bottom += 1;
     }
     let starts = command_starts(blocks);
-    Some(term_blocks::place(&all, bottom, avail, line_h, &gap_for(&starts)))
+    let gap = gap_for(&starts);
+    let placed = term_blocks::place(&all, bottom, avail, line_h, &gap);
+    // Room left below (what was on screen folded away, say): filled from what follows.
+    let used = placed.last().map_or(0., |p| p.top + p.height);
+    if used + line_h <= avail && bottom + 1 < all.len()
+        && let Some(first) = placed.first().and_then(|p| term_blocks::index_of(&all, p.row.line()))
+    {
+        let to = term_blocks::fit_from(&all, first, avail, line_h, &gap);
+        return Some(term_blocks::place(&all, to, avail, line_h, &gap));
+    }
+    Some(placed)
 }
 
 /// Keeps a pasted image (its bytes and file extension); the file it is kept in.
@@ -554,6 +576,7 @@ impl TerminalView {
                                             crate::perf::switch_step("terminal drew its first screen");
                                         }
                                         view.output_came(cx);
+                                        view.keep_following();
                                     }
                                     PtyEvent::Title(t) => view.title = Some(t),
                                     PtyEvent::Copy(text) => {
@@ -647,6 +670,8 @@ impl TerminalView {
             hovered: false,
             raw: false,
             actions_row: true,
+            follow: Cell::new(true),
+            last_history: Cell::new(0),
             pending_part: None,
             copied: None,
         }
@@ -831,6 +856,47 @@ impl TerminalView {
         if let Some(pty) = &self.pty {
             pty.term.lock().scroll_display(Scroll::Bottom);
         }
+        self.follow.set(true);
+    }
+
+    /// New output came: at the bottom while following; held still while not (scrolled up, the
+    /// terminal holds the view itself; at the bottom, it is moved up by what came).
+    fn keep_following(&self) {
+        let Some(pty) = &self.pty else { return };
+        let mut term = pty.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let history = term.grid().history_size();
+        let added = history.saturating_sub(self.last_history.replace(history));
+        let offset = term.grid().display_offset();
+        if self.follow.get() {
+            if offset > 0 {
+                term.scroll_display(Scroll::Bottom);
+            }
+        } else if offset == 0 && added > 0 {
+            term.scroll_display(Scroll::Delta(added as i32));
+        }
+    }
+
+    /// After the person scrolled: following again once at the bottom, not while above it.
+    fn scrolled(&self) {
+        if let Some(pty) = &self.pty {
+            self.follow.set(pty.term.lock().grid().display_offset() == 0);
+        }
+    }
+
+    /// Follow output, from the footer's switch.
+    fn set_follow(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on {
+            self.scroll_to_bottom();
+        } else {
+            self.follow.set(false);
+            if let Some(pty) = &self.pty {
+                self.last_history.set(pty.term.lock().grid().history_size());
+            }
+        }
+        cx.notify();
     }
 
     /// The visible screen as text, one line per row (tests read it over the control channel).
@@ -1100,6 +1166,11 @@ impl TerminalView {
 
     /// Scroll by `n` rows as drawn (up when positive): a fold is one row.
     fn scroll_rows(&mut self, n: i32) {
+        self.scroll_rows_by(n);
+        self.scrolled();
+    }
+
+    fn scroll_rows_by(&mut self, n: i32) {
         let Some(pty) = &self.pty else { return };
         let blocks = self.blocks();
         let folds = self.folds.borrow();
@@ -1151,6 +1222,7 @@ impl TerminalView {
             None if !up => self.scroll_to_bottom(),
             None => {}
         }
+        self.scrolled();
         cx.notify();
     }
 
@@ -1720,7 +1792,12 @@ impl Render for TerminalView {
         let raw = self.raw;
         let integrated = self.integrated && !raw;
         let toolbar = (self.integrated && crate::prefs(cx).terminal_toolbar).then(|| self.toolbar(cx));
+        let footer = (self.integrated && crate::prefs(cx).terminal_footer).then(|| self.footer(cx));
         let actions = self.action_rows(cx);
+        // Where those rows were, to draw again when the layout moved them (they are placed from
+        // the last frame's layout; a command that just finished adds one).
+        let drawn_rows = action_places(&self.shown.borrow());
+        let view_id = cx.entity_id();
         // Blocks or Raw, while the pointer is over a shell's terminal (with no toolbar to say).
         let switch = (self.integrated && self.hovered && toolbar.is_none()).then(|| {
             let segment = |key: &'static str, label: &'static str, on: bool, raw: bool| {
@@ -1891,6 +1968,9 @@ impl Render for TerminalView {
                     let actions = action_ids(&blocks, actions_row);
                     let rows = layout(pty, &blocks, &folds.borrow(), &actions, f32::from(cell_paint.get().height), f32::from(bounds.size.height));
                     *shown.borrow_mut() = rows.clone().unwrap_or_default();
+                    if action_places(&shown.borrow()) != drawn_rows {
+                        cx.notify(view_id);
+                    }
                     let heads = headers(&blocks, &folds.borrow());
                     let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
                     paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &heads, &tinted, window, cx);
@@ -1937,6 +2017,7 @@ impl Render for TerminalView {
                 .shadow_lg()
                 .child(img(path).max_w(px(320.)).max_h(px(240.)).object_fit(ObjectFit::Contain))
         })))
+        .children(footer)
     }
 }
 
@@ -1960,7 +2041,6 @@ impl TerminalView {
         };
         let shell = shell.unwrap_or_else(|| login_shell().rsplit('/').next().unwrap_or("shell").to_string());
         let folder = self.folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-        let ran = self.blocks().iter().filter(|b| b.headed()).count();
         let blue = hsla(if palette::is_dark() { 0x6aa6ff } else { 0x2f6fde });
         let status = match running {
             Some(cmd) => div()
@@ -1970,7 +2050,6 @@ impl TerminalView {
                 .min_w_0()
                 .child(Icon::new(IconName::LoaderCircle).xsmall().text_color(blue))
                 .child(div().truncate().text_color(blue).child(if cmd.is_empty() { "Running".to_string() } else { format!("Running: {cmd}") })),
-            None if ran > 0 && !self.raw => div().text_color(dim).child(format!("{ran} {}", if ran == 1 { "command" } else { "commands" })),
             None => div(),
         };
         let jump = |key: &'static str, icon: IconName, up: bool, tip: &'static str| {
@@ -2008,6 +2087,57 @@ impl TerminalView {
                     .tooltip("Commands as blocks: headers, folds, buttons and colour. Off: the plain terminal.")
                     .on_click(cx.listener(|v, on: &bool, _, cx| v.set_raw(!*on, cx))),
             )
+            .into_any_element()
+    }
+
+    /// The footer below a shell's terminal: Follow output; how many commands ran and how many
+    /// run; and how to interrupt, while one does.
+    fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let dim = hsla(palette::dim());
+        let blocks = self.blocks();
+        let ran = blocks.iter().filter(|b| b.headed()).count();
+        let running = blocks.iter().filter(|b| b.running).count();
+        let counts = match (ran, running) {
+            (0, _) => String::new(),
+            (n, 0) => format!("{n} {}", if n == 1 { "command" } else { "commands" }),
+            (n, r) => format!("{n} {} · {r} running", if n == 1 { "command" } else { "commands" }),
+        };
+        // Ctrl+C on every system: it is what a terminal sends to interrupt.
+        let interrupt = "Ctrl+C";
+        div()
+            .id("terminal-footer")
+            .flex_none()
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_3()
+            .border_t_1()
+            .border_color(dim.opacity(0.25))
+            .text_size(px(12.))
+            .text_color(hsla(palette::foreground()))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Switch::new("follow-output")
+                    .checked(self.follow.get())
+                    .xsmall()
+                    .label("Follow output")
+                    .tooltip("New output keeps the view at the bottom. Scrolling up turns it off.")
+                    .on_click(cx.listener(|v, on: &bool, _, cx| v.set_follow(*on, cx))),
+            )
+            .child(div().flex_1())
+            .when(!counts.is_empty() && !self.raw, |d| d.child(div().text_color(dim).child(counts)))
+            .when(running > 0, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_color(dim)
+                        .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(dim.opacity(0.5)).child(interrupt))
+                        .child("to interrupt"),
+                )
+            })
             .into_any_element()
     }
 

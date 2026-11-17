@@ -377,9 +377,14 @@ fn terminals() -> SettingPage {
                 |p| &mut p.terminal_toolbar,
             ),
             pref(
-                "Actions under the newest command",
-                "A row below the newest command's output: copy it, send it to the chat, and more.",
+                "Actions under each command",
+                "A row below each command's output: copy it, send it to the chat, and more.",
                 |p| &mut p.command_actions,
+            ),
+            pref(
+                "Terminal footer",
+                "Below a shell's terminal: Follow output, how many commands ran, and how to interrupt the one running.",
+                |p| &mut p.terminal_footer,
             ),
         ]),
     )

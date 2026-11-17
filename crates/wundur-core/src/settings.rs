@@ -144,8 +144,11 @@ pub struct Prefs {
     /// A shell's terminal has a toolbar: its folder, branch and shell, what runs, a way
     /// between commands, and Blocks on or off.
     pub terminal_toolbar: bool,
-    /// The newest command has a row of actions below its output (copy, send to chat, more).
+    /// Each command has a row of actions below its output (copy, send to chat, more).
     pub command_actions: bool,
+    /// A shell's terminal has a footer: Follow output, how many commands ran, and how to
+    /// interrupt the one running.
+    pub terminal_footer: bool,
     /// The terminals' font size, in points.
     pub terminal_font_size: f32,
     /// The agents' own interfaces' font size (their Terminal view), in points: larger than
@@ -182,6 +185,7 @@ impl Default for Prefs {
             color_output: true,
             terminal_toolbar: true,
             command_actions: true,
+            terminal_footer: true,
             terminal_font_size: TERMINAL_FONT_SIZE,
             agent_font_size: AGENT_FONT_SIZE,
             hybrid_views: false,
