@@ -295,24 +295,52 @@ fn cached_blocks(cache: &std::cell::RefCell<BlocksCache>, pty: &Pty, generation:
     cache.list.clone()
 }
 
-/// The rows to draw when a fold changes them (`None`: as usual, the grid's own).
 /// The space above each command's header, in pixels: commands read as separate, while the
 /// rows of output stay a line apart (aligned columns and box drawing need them so).
-const COMMAND_GAP: f32 = 10.;
+const COMMAND_GAP: f32 = 14.;
+/// Padding inside a command's header, above and below its prompt line (the tint covers it).
+const HEADER_PAD: f32 = 5.;
 
-/// The gap above `row`, given the lines commands start on.
-fn gap_for(starts: &[i32]) -> impl Fn(DisplayRow) -> f32 + '_ {
-    move |row| match row {
-        DisplayRow::Line(l) if starts.binary_search(&l).is_ok() => COMMAND_GAP,
-        _ => 0.,
+/// Where commands' headers begin and end, as lines in order: the gaps go there.
+struct HeaderEdges {
+    starts: Vec<i32>,
+    ends: Vec<i32>,
+    /// The prompt being typed at: a gap above it, no header (nothing ran there yet).
+    prompt: Option<i32>,
+}
+
+/// The space above `row`: a gap and the header's top padding above a command, its bottom
+/// padding above the row after its header.
+fn gap_for(edges: &HeaderEdges) -> impl Fn(DisplayRow) -> f32 + '_ {
+    move |row| {
+        let l = row.line();
+        let mut gap = 0.;
+        if matches!(row, DisplayRow::Line(_)) && edges.starts.binary_search(&l).is_ok() {
+            gap += COMMAND_GAP + HEADER_PAD;
+        }
+        if edges.ends.binary_search(&l).is_ok() {
+            gap += HEADER_PAD;
+        }
+        if matches!(row, DisplayRow::Line(_)) && edges.prompt == Some(l) {
+            gap += COMMAND_GAP;
+        }
+        gap
     }
 }
 
-/// The lines commands start on (where a gap goes), in order.
-fn command_starts(blocks: &[BlockView]) -> Vec<i32> {
-    let mut v: Vec<i32> = blocks.iter().filter(|b| b.headed()).map(|b| b.block.start).collect();
-    v.sort_unstable();
-    v
+/// The edges of the headers of the commands that ran.
+fn command_starts(blocks: &[BlockView]) -> HeaderEdges {
+    let headed = || blocks.iter().filter(|b| b.headed());
+    let mut starts: Vec<i32> = headed().map(|b| b.block.start).collect();
+    let mut ends: Vec<i32> = headed().map(|b| b.block.command.end).collect();
+    starts.sort_unstable();
+    ends.sort_unstable();
+    let prompt = blocks
+        .iter()
+        .max_by_key(|b| b.block.start)
+        .filter(|b| !b.ran() && !b.block.command.is_empty() && blocks.iter().any(|o| o.headed()))
+        .map(|b| b.block.start);
+    HeaderEdges { starts, ends, prompt }
 }
 
 /// The rows to draw and where, in a shell's terminal with commands (`None`: as usual, the
@@ -2086,11 +2114,17 @@ fn paint_grid(
         if let Some(h) = header {
             let left = bounds.origin.x - px(GUTTER);
             let width = bounds.size.width + px(GUTTER);
+            // The header's padding is above its first row and below its last.
+            let pad = px(HEADER_PAD);
+            let first = h.rows.start == line.0;
+            let last = h.rows.end - 1 == line.0;
             if h.start == line.0 && row > 0 {
-                window.paint_quad(fill(Bounds::new(point(left, y), size(width, px(1.))), hsla(palette::dim()).opacity(0.3)));
+                window.paint_quad(fill(Bounds::new(point(left, y - pad), size(width, px(1.))), hsla(palette::dim()).opacity(0.35)));
             }
             if h.rows.contains(&line.0) {
-                window.paint_quad(fill(Bounds::new(point(left, y), size(width, cell.height)), hsla(palette::dim()).opacity(0.07)));
+                let top = if first { y - pad } else { y };
+                let bottom = y + cell.height + if last { pad } else { px(0.) };
+                window.paint_quad(fill(Bounds::new(point(left, top), size(width, bottom - top)), hsla(palette::dim()).opacity(0.08)));
             }
             if h.rows.start == line.0 {
                 paint_gutter(h, point(left, y), cell, font_size, &base_font, window, cx);
