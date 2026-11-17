@@ -1097,7 +1097,7 @@ impl ChatPanel {
                     .child(Button::new(id("preview")).small().outline().icon(Lucide::Eye).label("Open 3D preview").on_click(move |_, _, cx| {
                         let me = me.clone();
                         hosted_store::preview(&d1, &mid, cx, move |page, cx| {
-                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(wundur_core::web::file_url(&page))));
+                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                         });
                     }))
                     .child(div().text_xs().text_color(muted).child("Opens beside the chat: drag to orbit, scroll to zoom. Check the hands, feet and silhouette from every angle."))
@@ -1331,7 +1331,7 @@ impl ChatPanel {
                     .on_click(move |_, _, cx| {
                         let me = me.clone();
                         crate::asset_store::viewer_page(&project, &path, &name, cx, move |page, cx| {
-                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(wundur_core::web::file_url(&page))));
+                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                         });
                     })
                     .into_any_element(),

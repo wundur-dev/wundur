@@ -28,6 +28,11 @@ dirs = "6"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The model renderer draws every pixel itself: optimised in debug builds too, so the viewer
+# stays usable there.
+[profile.dev.package.wundur-render]
+opt-level = 3
+
 # gpui-base with text decorations for multi-line text (the message box's Markdown
 # highlighting). Proposed upstream; drop this once a release has it.
 [patch.crates-io]

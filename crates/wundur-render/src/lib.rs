@@ -9,8 +9,12 @@
 
 mod font;
 pub mod gltf;
-mod pose;
+pub mod pose;
 mod raster;
+pub mod view;
+
+pub use glam;
+pub use raster::{Camera, Look};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,7 +24,6 @@ use image::{Rgb, RgbImage};
 
 use crate::gltf::Model;
 use crate::pose::Scene;
-use crate::raster::Camera;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
@@ -190,7 +193,7 @@ pub fn render(req: &Request) -> Sheet {
                         let j = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(m, v)) = jobs.get(j) else { break };
                         if let (Ok(l), Some(cam)) = (&loaded[m], cams[m][v]) {
-                            done.push((j, raster::draw(&l.model, &l.scene, &cam, px, px)));
+                            done.push((j, raster::draw(&l.model, &l.scene, &cam, px, px, &raster::Look::default())));
                         }
                     }
                     done
@@ -368,15 +371,22 @@ fn focus_point(model: &Model, scene: &Scene, f: &str) -> (Vec3, String) {
 /// A camera on `view` that fits the model in the frame (or looks closely at `focus`).
 fn frame(scene: &Scene, view: View, focus: Option<Vec3>, zoom: f32) -> Camera {
     let (dir, up) = view.direction();
-    let half = (FOV * 0.5).tan();
     if let Some(p) = focus {
         let r = scene.radius() / zoom.max(1.0);
         return Camera { eye: p + dir * (r / (FOV * 0.5).sin()), target: p, up, fov: FOV };
     }
+    fit(scene, dir, up, 0.86, 1.0)
+}
+
+/// A camera looking along -`dir` (from the target toward the camera: `dir`) that fits every
+/// vertex of `scene` within `fill` of a frame `aspect` times as wide as tall, centred.
+pub(crate) fn fit(scene: &Scene, dir: Vec3, up: Vec3, fill: f32, aspect: f32) -> Camera {
+    let half = (FOV * 0.5).tan();
     let right = (-dir).cross(up).normalize();
     let cup = right.cross(-dir);
     let step = (scene.pos.len() / 40_000).max(1);
-    let t = half * 0.86;
+    let t = half * fill;
+    let tx = t * aspect.max(0.05);
     let mut target = scene.center();
     let mut dist = scene.radius() / (FOV * 0.5).sin();
     for _ in 0..2 {
@@ -384,7 +394,7 @@ fn frame(scene: &Scene, view: View, focus: Option<Vec3>, zoom: f32) -> Camera {
         for p in scene.pos.iter().step_by(step) {
             let r = *p - target;
             let (x, y, z) = (r.dot(right), r.dot(cup), r.dot(dir));
-            need = need.max(z + x.abs().max(y.abs()) / t);
+            need = need.max(z + (x.abs() / tx).max(y.abs() / t));
         }
         dist = need.max(1e-4);
         let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));

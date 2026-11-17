@@ -56,6 +56,7 @@ mod local_socket;
 mod messaging;
 mod pty;
 mod image_view;
+mod model_view;
 mod on_screen;
 mod native_spinner;
 mod sheet_tabs;

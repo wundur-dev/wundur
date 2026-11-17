@@ -9964,6 +9964,7 @@ dependencies = [
  "dirs 6.0.0",
  "getrandom 0.3.4",
  "gpui-kit",
+ "image",
  "interprocess",
  "libc",
  "lsp-types",
@@ -9983,6 +9984,7 @@ dependencies = [
  "windows 0.62.2",
  "wry",
  "wundur-core",
+ "wundur-render",
 ]
 
 [[package]]

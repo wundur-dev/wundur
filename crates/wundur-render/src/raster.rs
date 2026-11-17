@@ -16,7 +16,7 @@ pub struct Camera {
     pub fov: f32,
 }
 
-struct Basis {
+pub(crate) struct Basis {
     eye: Vec3,
     right: Vec3,
     up: Vec3,
@@ -62,8 +62,18 @@ static DEFAULT_MATERIAL: Material = Material {
 /// What a texture that couldn't be read shows: unmistakable.
 const MISSING: Vec4 = Vec4::new(1.0, 0.0, 1.0, 1.0);
 
+/// How a picture looks around the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Look {
+    /// A dark backdrop instead of the light grey one.
+    pub dark: bool,
+    /// A floor under the model with its soft shadow.
+    pub floor: bool,
+}
+
 /// `scene` (of `model`) from `cam`, `w`×`h` pixels, as display colours (0..1), background in.
-pub fn draw(model: &Model, scene: &Scene, cam: &Camera, w: usize, h: usize) -> Vec<Vec3> {
+/// Bands of rows are drawn on every core.
+pub fn draw(model: &Model, scene: &Scene, cam: &Camera, w: usize, h: usize, look: &Look) -> Vec<Vec3> {
     let b = cam.basis();
     let focal = (h as f32 * 0.5) / (cam.fov * 0.5).tan();
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
@@ -103,71 +113,200 @@ pub fn draw(model: &Model, scene: &Scene, cam: &Camera, w: usize, h: usize) -> V
         }
     }
 
-    // Visibility: the nearest triangle at each pixel.
-    let mut depth = vec![0f32; w * h];
-    let mut id = vec![u32::MAX; w * h];
-    for (ri, rt) in rts.iter().enumerate() {
-        let s = rt.s;
-        let area = edge(s[0], s[1], s[2]);
-        let x0 = s.iter().map(|p| p.x).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
-        let x1 = (s.iter().map(|p| p.x).fold(f32::MIN, f32::max).ceil() as isize).min(w as isize - 1);
-        let y0 = s.iter().map(|p| p.y).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
-        let y1 = (s.iter().map(|p| p.y).fold(f32::MIN, f32::max).ceil() as isize).min(h as isize - 1);
-        if x1 < 0 || y1 < 0 {
-            continue;
-        }
-        let m = mat(rt.orig as usize);
-        let cutoff = match m.alpha {
-            Alpha::Mask(c) => Some(c),
-            Alpha::Blend => Some(0.5),
-            Alpha::Opaque => None,
-        };
-        for y in y0..=y1 as usize {
-            for x in x0..=x1 as usize {
-                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                let (w0, w1, w2) = (edge(s[1], s[2], p) / area, edge(s[2], s[0], p) / area, edge(s[0], s[1], p) / area);
-                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                    continue;
-                }
-                let iz = w0 * rt.iz[0] + w1 * rt.iz[1] + w2 * rt.iz[2];
-                let at = y * w + x;
-                if iz <= depth[at] {
-                    continue;
-                }
-                if let Some(c) = cutoff {
-                    let ob = orig_bary(rt, w0, w1, w2);
-                    if base_color(model, scene, m, rt, ob).w < c {
+    let lights = Lights::new(&b);
+    // The floor: at the model's feet, seen only from above it.
+    let floor = (look.floor && b.eye.y > scene.min.y + 1e-4).then(|| Shadow::new(scene));
+    let mut out = vec![Vec3::ZERO; w * h];
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16).min(h.div_ceil(16)).max(1);
+    let band = h.div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (bi, chunk) in out.chunks_mut(band * w).enumerate() {
+            let (rts, lights, floor, b) = (&rts, &lights, &floor, &b);
+            sc.spawn(move || {
+                let y0 = bi * band;
+                let bh = chunk.len() / w;
+                let mut depth = vec![0f32; w * bh];
+                let mut id = vec![u32::MAX; w * bh];
+                // Visibility: the nearest triangle at each pixel.
+                for (ri, rt) in rts.iter().enumerate() {
+                    let s = rt.s;
+                    let ymin = s.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                    let ymax = s.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+                    if ymax < y0 as f32 || ymin > (y0 + bh) as f32 {
                         continue;
                     }
+                    let area = edge(s[0], s[1], s[2]);
+                    let x0 = s.iter().map(|p| p.x).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
+                    let x1 = (s.iter().map(|p| p.x).fold(f32::MIN, f32::max).ceil() as isize).min(w as isize - 1);
+                    let ya = (ymin.floor().max(y0 as f32)) as usize;
+                    let yb = (ymax.ceil() as isize).min((y0 + bh) as isize - 1);
+                    if x1 < 0 || yb < ya as isize {
+                        continue;
+                    }
+                    let m = mat(rt.orig as usize);
+                    let cutoff = match m.alpha {
+                        Alpha::Mask(c) => Some(c),
+                        Alpha::Blend => Some(0.5),
+                        Alpha::Opaque => None,
+                    };
+                    for y in ya..=yb as usize {
+                        for x in x0..=x1 as usize {
+                            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                            let (w0, w1, w2) = (edge(s[1], s[2], p) / area, edge(s[2], s[0], p) / area, edge(s[0], s[1], p) / area);
+                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                                continue;
+                            }
+                            let iz = w0 * rt.iz[0] + w1 * rt.iz[1] + w2 * rt.iz[2];
+                            let at = (y - y0) * w + x;
+                            if iz <= depth[at] {
+                                continue;
+                            }
+                            if let Some(c) = cutoff {
+                                let ob = orig_bary(rt, w0, w1, w2);
+                                if base_color(model, scene, m, rt, ob).w < c {
+                                    continue;
+                                }
+                            }
+                            depth[at] = iz;
+                            id[at] = ri as u32;
+                        }
+                    }
                 }
-                depth[at] = iz;
-                id[at] = ri as u32;
-            }
+                // Shading.
+                for ly in 0..bh {
+                    let y = y0 + ly;
+                    let bg = background(y as f32 / h as f32, look.dark);
+                    for x in 0..w {
+                        let at = ly * w + x;
+                        let ri = id[at];
+                        if ri == u32::MAX {
+                            chunk[at] = match floor {
+                                Some(f) => {
+                                    let dir = (b.fwd + b.right * ((x as f32 + 0.5 - cx) / focal) - b.up * ((y as f32 + 0.5 - cy) / focal)).normalize();
+                                    let t = (scene.min.y - b.eye.y) / dir.y;
+                                    if dir.y < 0.0 && t > 0.0 {
+                                        let hit = b.eye + dir * t;
+                                        bg * (1.0 - 0.55 * f.at(hit.x, hit.z))
+                                    } else {
+                                        bg
+                                    }
+                                }
+                                None => bg,
+                            };
+                            continue;
+                        }
+                        let rt = &rts[ri as usize];
+                        let s = rt.s;
+                        let area = edge(s[0], s[1], s[2]);
+                        let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                        let (w0, w1, w2) = (edge(s[1], s[2], p) / area, edge(s[2], s[0], p) / area, edge(s[0], s[1], p) / area);
+                        let ob = orig_bary(rt, w0, w1, w2);
+                        chunk[at] = shade(model, scene, mat(rt.orig as usize), rt, ob, b, lights);
+                    }
+                }
+            });
         }
-    }
+    });
+    out
+}
 
-    // Shading.
-    let lights = Lights::new(&b);
-    let mut out = vec![Vec3::ZERO; w * h];
-    for y in 0..h {
-        let bg = background(y as f32 / h as f32);
-        for x in 0..w {
-            let at = y * w + x;
-            let ri = id[at];
-            if ri == u32::MAX {
-                out[at] = bg;
+/// A soft shadow on the floor: how much of the model is just above each spot, blurred.
+struct Shadow {
+    origin: Vec2,
+    cell: f32,
+    n: usize,
+    v: Vec<f32>,
+}
+
+impl Shadow {
+    const N: usize = 160;
+
+    fn new(scene: &Scene) -> Shadow {
+        let size = scene.max - scene.min;
+        let biggest = size.max_element().max(1e-6);
+        let half = size.x.max(size.z) * 0.5 + biggest * 0.4;
+        let c = Vec2::new((scene.min.x + scene.max.x) * 0.5, (scene.min.z + scene.max.z) * 0.5);
+        let n = Self::N;
+        let cell = 2.0 * half / n as f32;
+        let origin = c - Vec2::splat(half);
+        let reach = (size.y * 0.35).max(1e-6);
+        let mut v = vec![0f32; n * n];
+        for tri in &scene.tris {
+            let p = tri.map(|i| scene.pos[i as usize]);
+            let low = p.iter().map(|q| q.y).fold(f32::MAX, f32::min);
+            let strength = 1.0 - ((low - scene.min.y) / reach).clamp(0.0, 1.0);
+            if strength <= 0.0 {
                 continue;
             }
-            let rt = &rts[ri as usize];
-            let s = rt.s;
-            let area = edge(s[0], s[1], s[2]);
-            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let (w0, w1, w2) = (edge(s[1], s[2], p) / area, edge(s[2], s[0], p) / area, edge(s[0], s[1], p) / area);
-            let ob = orig_bary(rt, w0, w1, w2);
-            out[at] = shade(model, scene, mat(rt.orig as usize), rt, ob, &b, &lights);
+            let g = p.map(|q| (Vec2::new(q.x, q.z) - origin) / cell);
+            let area = edge(g[0], g[1], g[2]);
+            if area.abs() < 1e-9 {
+                // Edge-on from above: mark its corners.
+                for q in g {
+                    let (x, y) = (q.x as isize, q.y as isize);
+                    if x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n {
+                        let i = y as usize * n + x as usize;
+                        v[i] = v[i].max(strength);
+                    }
+                }
+                continue;
+            }
+            let x0 = g.iter().map(|q| q.x).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
+            let x1 = (g.iter().map(|q| q.x).fold(f32::MIN, f32::max).ceil() as isize).min(n as isize - 1);
+            let y0 = g.iter().map(|q| q.y).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
+            let y1 = (g.iter().map(|q| q.y).fold(f32::MIN, f32::max).ceil() as isize).min(n as isize - 1);
+            for y in y0..=y1.max(0) as usize {
+                for x in x0..=x1.max(0) as usize {
+                    let q = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                    let (a, bb, cc) = (edge(g[1], g[2], q) / area, edge(g[2], g[0], q) / area, edge(g[0], g[1], q) / area);
+                    if a >= 0.0 && bb >= 0.0 && cc >= 0.0 {
+                        let i = y * n + x;
+                        v[i] = v[i].max(strength);
+                    }
+                }
+            }
         }
+        // Three box blurs, across then down: close to a Gaussian.
+        let r = 3isize;
+        let mut tmp = vec![0f32; n * n];
+        for _ in 0..3 {
+            for y in 0..n {
+                for x in 0..n {
+                    let mut sum = 0.0;
+                    for d in -r..=r {
+                        sum += v[y * n + (x as isize + d).clamp(0, n as isize - 1) as usize];
+                    }
+                    tmp[y * n + x] = sum / (2 * r + 1) as f32;
+                }
+            }
+            for y in 0..n {
+                for x in 0..n {
+                    let mut sum = 0.0;
+                    for d in -r..=r {
+                        sum += tmp[(y as isize + d).clamp(0, n as isize - 1) as usize * n + x];
+                    }
+                    v[y * n + x] = sum / (2 * r + 1) as f32;
+                }
+            }
+        }
+        Shadow { origin, cell, n, v }
     }
-    out
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let g = (Vec2::new(x, z) - self.origin) / self.cell - Vec2::splat(0.5);
+        let (x0, y0) = (g.x.floor(), g.y.floor());
+        let (tx, ty) = (g.x - x0, g.y - y0);
+        let get = |x: f32, y: f32| -> f32 {
+            if x < 0.0 || y < 0.0 || x as usize >= self.n || y as usize >= self.n {
+                0.0
+            } else {
+                self.v[y as usize * self.n + x as usize]
+            }
+        };
+        let top = get(x0, y0) * (1.0 - tx) + get(x0 + 1.0, y0) * tx;
+        let bot = get(x0, y0 + 1.0) * (1.0 - tx) + get(x0 + 1.0, y0 + 1.0) * tx;
+        top * (1.0 - ty) + bot * ty
+    }
 }
 
 fn edge(a: Vec2, b: Vec2, p: Vec2) -> f32 {
@@ -298,9 +437,13 @@ fn env(dir: Vec3, rough: f32, key: Vec3) -> Vec3 {
     base + Vec3::splat(soft_box)
 }
 
-fn background(t: f32) -> Vec3 {
-    // Already display values: a soft studio grey, lighter at the top.
-    Vec3::new(0.80, 0.81, 0.83).lerp(Vec3::new(0.60, 0.61, 0.63), t)
+fn background(t: f32, dark: bool) -> Vec3 {
+    // Already display values: a soft studio grey (or near black), lighter at the top.
+    if dark {
+        Vec3::new(0.19, 0.20, 0.22).lerp(Vec3::new(0.09, 0.095, 0.105), t)
+    } else {
+        Vec3::new(0.80, 0.81, 0.83).lerp(Vec3::new(0.60, 0.61, 0.63), t)
+    }
 }
 
 fn shade(model: &Model, scene: &Scene, m: &Material, rt: &RasterTri, b: Vec3, cam: &Basis, l: &Lights) -> Vec3 {
