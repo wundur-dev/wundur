@@ -76,7 +76,8 @@ const INSTRUCTIONS: &str = "Wundur Studio is the app this session runs in, and t
 - notify: tell the person when long work finishes, needs their decision, or went wrong (one notice per thing, not progress updates).\n\
 - ask_for_review: ask another agent for a read-only second opinion on work in this folder.\n\
 - list_sessions, send_message: reach the person's other open sessions (other agents, other folders); the person sees every message and may have to allow it.\n\
-- The person's tool packs (make_image, edit_image, model_from_*, rig_model, view_model, music, sound_effect, voice_line and others) make game assets and more: search for them when a task needs one.";
+- look_at_model: look at 3D models (GLB/glTF) yourself, from fixed angles, several side by side, with their facts and warnings; check every model you make or change with it. show_model: open one in the person's model viewer.\n\
+- The person's tool packs (make_image, edit_image, model_from_*, rig_model, music, sound_effect, voice_line and others) make game assets and more: search for them when a task needs one.";
 
 /// The tools, as MCP describes them.
 fn tools() -> Value {
@@ -164,6 +165,39 @@ fn tools() -> Value {
             "_meta": { "anthropic/alwaysLoad": true },
             "description": "The person's task lists for this folder: each task's step number (as the person sees it), its id (for complete_task) and whether it is done.",
             "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "look_at_model",
+            "description": "Look at 3D models yourself: draws GLB or glTF models to one picture and returns it, with each model's facts. A row per model, a column per fixed camera angle (default front, left side, back, three-quarter), the same camera and studio light for every model, so differences come from the models and not the framing. Use it to check a model you made or changed (model_from_*, rig_model, edits), to compare variants side by side, or to look closely at hands, feet or a face with focus. The facts list triangles, vertices, size, every texture's size and format, the skeleton and animations; warnings flag textures that failed to load (they show magenta), WebP textures not marked as such, fully metallic materials that look black in most engines, and extensions it can't read. glTF models face +Z; if a model's front column shows its side, say which way it faces (facing, or 'path @+x'). Free and quick (well under a second a model). The picture is saved in the project's .wundur/looks/ (ignored by git).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "models": { "type": "string", "description": "The models: one path (in the project, absolute, or ~/...), or several separated by commas (a row each, in this order). Add ' @+x' (or @-x, @-z) after a path when that model faces another way than +Z." },
+                    "views": { "type": "string", "description": "Camera angles, comma-separated, from: front, back, left, right, three-quarter, back-three-quarter, top, bottom. Default: front, left, back, three-quarter." },
+                    "facing": { "type": "string", "enum": ["+z", "-z", "+x", "-x"], "description": "Which way the models face (default +z, glTF's convention); each is turned so 'front' shows its front." },
+                    "animation": { "type": "string", "description": "Pose them in an animation (part of its name, e.g. run); default their rest pose." },
+                    "time": { "type": "string", "description": "When in the animation: seconds (0.4) or a share of it (50%). Default its start." },
+                    "focus": { "type": "string", "description": "A close-up: a joint name or part of one (head, hand, foot_l), a region of the model's box (front top, bottom, left front bottom), or x,y,z fractions of its box (0.5,0.1,0.9). If nothing matches, the facts list its joints." },
+                    "zoom": { "type": "number", "description": "How much closer a close-up is (default 3)." },
+                    "same_scale": { "type": "boolean", "description": "Keep the models' sizes relative to each other (one camera distance for all) instead of each filling its picture." },
+                    "labels": { "type": "string", "description": "Names for the rows, comma-separated in the models' order (default: the file names)." },
+                    "size": { "type": "integer", "description": "Pixels per view (default: what fits one readable picture, up to 512)." },
+                    "name": { "type": "string", "description": "File name for the picture, without extension." },
+                },
+                "required": ["models"],
+            },
+        },
+        {
+            "name": "show_model",
+            "description": "Show a 3D model (GLB or glTF) to the person: opens it in Wundur's model viewer, a tab beside the chat where they can turn and zoom it, play its animations and see it on a floor. Use after making or changing a model so the person sees it; use look_at_model to look at it yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model": { "type": "string", "description": "The model: a path in the project, absolute, or ~/..." },
+                    "animation": { "type": "string", "description": "An animation to play as it opens (part of its name, e.g. walk)." },
+                },
+                "required": ["model"],
+            },
         },
         {
             "name": "ask_for_review",

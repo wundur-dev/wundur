@@ -136,42 +136,6 @@ pub fn view_3d(dir: &Path, file: &str, cx: &mut App, then: impl FnOnce(PathBuf, 
     then(dir.join(file), cx);
 }
 
-/// The 3D viewer's page for `model` (a file inside `cwd`), then `then` with the page.
-pub fn viewer_page(cwd: &Path, model: &Path, title: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
-    viewer_page_or(cwd, model, title, cx, then, |why, _| eprintln!("wundur: {why}"));
-}
-
-fn viewer_page_or(
-    cwd: &Path,
-    model: &Path,
-    title: &str,
-    cx: &mut App,
-    then: impl FnOnce(PathBuf, &mut App) + 'static,
-    failed: impl FnOnce(String, &mut App) + 'static,
-) {
-    let Some(pack) = pack() else { return failed("The 3D viewer comes with the game-assets pack, which isn't installed.".into(), cx) };
-    let Some(tool) = pack.manifest.tools.iter().find(|t| t.name == "view_model").cloned() else { return };
-    let project = cwd.to_path_buf();
-    let model = model.strip_prefix(&project).map(Path::to_path_buf).unwrap_or_else(|_| model.to_path_buf());
-    let title = title.to_string();
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let none = |_: &str| None;
-        let settings = std::collections::BTreeMap::new();
-        let grant = wundur_core::packs::Grant { cwd: &project, secret: &none, settings: &settings, extra_hosts: Vec::new(), allow_http: false };
-        let out = wundur_core::packs::run(&pack, &tool, &serde_json::json!({ "model": model.to_string_lossy(), "title": title }), &grant);
-        let _ = tx.send_blocking(out);
-    });
-    cx.spawn(async move |cx: &mut AsyncApp| {
-        let Ok(out) = rx.recv().await else { return };
-        cx.update(|cx| match out.show {
-            Some(page) if !out.failed => then(page, cx),
-            _ => failed(format!("Couldn't make the viewer: {}", out.text), cx),
-        });
-    })
-    .detach();
-}
-
 /// The game-assets pack, when installed.
 fn pack() -> Option<wundur_core::packs::Pack> {
     let dir = wundur_core::packs::dir()?;

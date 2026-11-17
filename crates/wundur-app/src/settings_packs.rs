@@ -353,7 +353,7 @@ fn card(page: &WeakEntity<SettingsPage>, entity: &Entity<SettingsPage>, pack: &P
 
     // Its tools, folded: ✓ ready (its service set up), ○ not yet.
     let tools_key = format!("{}/tools", m.id);
-    let ready_tools = m.tools.iter().filter(|t| Pack::ready(t, &has)).count();
+    let ready_tools = m.tools.iter().filter(|t| !t.hidden && Pack::ready(t, &has)).count();
     let mut tools = div().flex().flex_col().gap_1().pl_6();
     if open.contains(&tools_key) {
         for t in &m.tools {
@@ -582,7 +582,7 @@ fn service_row(
                 }
             }
         }
-        let names: Vec<String> = m.tools.iter().filter(|t| t.service == service.id).map(|t| t.name.clone()).collect();
+        let names: Vec<String> = m.tools.iter().filter(|t| t.service == service.id && !t.hidden).map(|t| t.name.clone()).collect();
         if !names.is_empty() {
             body = body.child(div().text_xs().text_color(muted).child(format!("Tools: {}", names.join(", "))));
         }

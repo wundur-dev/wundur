@@ -1,7 +1,7 @@
 {
   "id": "wundur/game-assets",
   "name": "Game assets",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Images, sound, music, voices and 3D models for games, with your own keys.",
   "homepage": "https://github.com/wundur-dev/wundur",
   "services": [
@@ -646,7 +646,7 @@
     },
     {
       "name": "view_model",
-      "description": "Show a 3D model (a GLB in the project) to the person: writes a viewer page next to it (one HTML file holding the model, nothing to install, opens in any browser) and opens it in Wundur's web panel. A studio shot: backdrop, floor and shadow, lights; drag to turn, scroll to zoom; its animations to pick, play, scrub and slow down, with the camera following the body. Use after model_from_* or rig_model so the person sees the result.",
+      "description": "Not for agents (Wundur's own look_at_model and show_model replace it): writes a page next to a GLB that shows it with three.js in any browser. Kept until models can be shared through the Wundur service.",
       "script": "view.js",
       "params": [
         {
@@ -672,79 +672,8 @@
         }
       ],
       "needs": [],
-      "service": "models"
-    },
-    {
-      "name": "look_at_model",
-      "description": "Look at 3D models yourself: draws GLB or glTF models in the project to one picture and returns it, with each model's facts. A row per model, a column per fixed camera angle (default front, left side, back, three-quarter), the same camera and studio light for every model, so differences come from the models and not the framing. Use it to check a model you made or changed (model_from_*, rig_model, edits), to compare variants side by side, or to look closely at hands, feet or a face with focus. The facts list triangles, vertices, size, every texture's size and format, the skeleton and animations; warnings flag textures that failed to load (they show magenta), WebP textures not marked as such, fully metallic materials that look black in most engines, and extensions it can't read. glTF models face +Z; if a model's front column shows its side, say which way it faces (facing, or 'path @+x'). Free, quick (well under a second a model) and needs nothing installed. The picture is saved in .wundur/looks/ (ignored by git).",
-      "script": "look.js",
-      "params": [
-        {
-          "name": "models",
-          "kind": "text",
-          "required": true,
-          "description": "The models: one path in the project, or several separated by commas (a row each, in this order). Add ' @+x' (or @-x, @-z) after a path when that model faces another way than +Z."
-        },
-        {
-          "name": "views",
-          "kind": "text",
-          "description": "Camera angles, comma-separated, from: front, back, left, right, three-quarter, back-three-quarter, top, bottom. Default: front, left, back, three-quarter."
-        },
-        {
-          "name": "facing",
-          "kind": "choice",
-          "choices": [
-            "+z",
-            "-z",
-            "+x",
-            "-x"
-          ],
-          "description": "Which way the models face (default +z, glTF's convention); each is turned so 'front' shows its front."
-        },
-        {
-          "name": "animation",
-          "kind": "text",
-          "description": "Pose them in an animation (part of its name, e.g. run); default their rest pose."
-        },
-        {
-          "name": "time",
-          "kind": "text",
-          "description": "When in the animation: seconds (0.4) or a share of it (50%). Default its start."
-        },
-        {
-          "name": "focus",
-          "kind": "text",
-          "description": "A close-up: a joint name or part of one (head, hand, foot_l), a region of the model's box (front top, bottom, left front bottom), or x,y,z fractions of its box (0.5,0.1,0.9). If nothing matches, the facts list its joints."
-        },
-        {
-          "name": "zoom",
-          "kind": "text",
-          "description": "How much closer a close-up is (default 3)."
-        },
-        {
-          "name": "same_scale",
-          "kind": "flag",
-          "description": "Keep the models' sizes relative to each other (one camera distance for all) instead of each filling its picture."
-        },
-        {
-          "name": "labels",
-          "kind": "text",
-          "description": "Names for the rows, comma-separated in the models' order (default: the file names)."
-        },
-        {
-          "name": "size",
-          "kind": "text",
-          "description": "Pixels per view (default: what fits one readable picture, up to 512)."
-        },
-        {
-          "name": "name",
-          "kind": "text",
-          "description": "File name for the picture, without extension."
-        }
-      ],
-      "needs": [],
-      "timeout_secs": 300,
-      "service": "models"
+      "service": "models",
+      "hidden": true
     }
   ]
 }

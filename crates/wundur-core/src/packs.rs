@@ -98,6 +98,8 @@ pub struct PackTool {
     pub timeout_secs: u64,
     /// The [`Service`] it belongs to (empty: the pack's own).
     pub service: String,
+    /// Not offered to agents: Wundur may call it itself.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,7 +322,7 @@ fn host_allowed(url: &str, hosts: &[String], allow_http: bool) -> bool {
 }
 
 /// A path the script names, made safe: inside `cwd`, no way out.
-fn inside(cwd: &Path, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn inside(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.is_absolute() || p.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
         return Err(format!("{path}: only paths inside the project"));
@@ -569,7 +571,8 @@ fn run_inner(pack: &Pack, tool: &PackTool, args: &Value, grant: &Grant) -> Resul
         host.set(
             "renderModel",
             Function::new(ctx.clone(), move |req: String| -> String {
-                match render_model(&mcwd, &req) {
+                let parsed = serde_json::from_str::<Value>(&req).map_err(|e| format!("a bad request: {e}"));
+                match parsed.and_then(|r| crate::model_look::render(&mcwd, &r, &|p| inside(&mcwd, p))) {
                     Ok((v, path)) => {
                         mwr.borrow_mut().push(path);
                         v.to_string()
@@ -641,69 +644,6 @@ fn run_inner(pack: &Pack, tool: &PackTool, args: &Value, grant: &Grant) -> Resul
         show: v.get("show").and_then(Value::as_str).and_then(|p| inside(&cwd, p).ok()).filter(|p| p.is_file()),
         failed: v.get("failed").and_then(Value::as_bool).unwrap_or(false),
     })
-}
-
-/// `kx.renderModel`: draw the models a script names (all in the project) as one sheet, a row
-/// per model and a column per view, and save it as a PNG at `out` (replacing what was there).
-fn render_model(cwd: &Path, req: &str) -> Result<(Value, PathBuf), String> {
-    let r: Value = serde_json::from_str(req).map_err(|e| format!("a bad request: {e}"))?;
-    let mut models = Vec::new();
-    for m in r["models"].as_array().into_iter().flatten() {
-        let (path, label, facing) = match m {
-            Value::String(p) => (p.as_str(), None, None),
-            _ => (m["path"].as_str().unwrap_or(""), m["label"].as_str(), m["facing"].as_str()),
-        };
-        let full = inside(cwd, path)?;
-        if !full.is_file() {
-            return Err(format!("{path}: no such file in the project"));
-        }
-        let stem = full.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        models.push(wundur_render::Item {
-            path: full,
-            label: label.map(str::to_string).unwrap_or(stem),
-            shown_path: path.to_string(),
-            facing: facing.or(r["facing"].as_str()).map(str::to_string),
-        });
-    }
-    if models.is_empty() {
-        return Err("no models to draw".into());
-    }
-    let mut views = Vec::new();
-    for v in r["views"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        views.push(wundur_render::View::parse(v).ok_or_else(|| format!("\"{v}\" isn't a view: front, back, left, right, three-quarter, back-three-quarter, top, bottom"))?);
-    }
-    let text = |k: &str| r[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let request = wundur_render::Request {
-        models,
-        views,
-        animation: text("animation"),
-        time: text("time"),
-        focus: text("focus"),
-        zoom: r["zoom"].as_f64().unwrap_or(3.0) as f32,
-        same_scale: r["sameScale"].as_bool().unwrap_or(false),
-        cell: r["cell"].as_u64().map(|c| c as u32),
-    };
-    let out_name = r["out"].as_str().ok_or("no out path")?;
-    let out = inside(cwd, out_name)?;
-    let sheet = wundur_render::render(&request);
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    // Wundur's own folder in a project keeps itself out of git.
-    let own = cwd.join(".wundur");
-    if out.starts_with(&own) && !own.join(".gitignore").exists() {
-        let _ = std::fs::write(own.join(".gitignore"), "*\n");
-    }
-    sheet.image.save_with_format(&out, image::ImageFormat::Png).map_err(|e| format!("couldn't save {out_name}: {e}"))?;
-    let v = json!({
-        "image": out_name,
-        "width": sheet.image.width(),
-        "height": sheet.image.height(),
-        "report": sheet.report,
-        "warnings": sheet.warnings,
-        "failed": sheet.failed,
-    });
-    Ok((v, out))
 }
 
 /// One request, for `kx.fetch`: JSON with the status, headers and body (as text and base64), or
@@ -820,6 +760,45 @@ mod tests {
 
     /// A pack whose script calls a local stand-in for an image service, saves the image it
     /// returns, and answers with it; its key is used and never comes back.
+    #[test]
+    fn looking_at_models_is_wundurs_own_and_the_web_viewer_page_is_hidden_from_agents() {
+        let pack = game_assets();
+        assert!(pack.manifest.tools.iter().all(|t| t.name != "look_at_model"), "look_at_model is Wundur's own tool");
+        let page = pack.manifest.tools.iter().find(|t| t.name == "view_model").expect("view_model kept");
+        assert!(page.hidden);
+        assert!(pack.manifest.tools.iter().filter(|t| t.name != "view_model").all(|t| !t.hidden));
+    }
+
+    #[test]
+    fn a_pack_script_can_draw_models_in_the_project_and_only_there() {
+        let dir = std::env::temp_dir().join(format!("wundur-pack-render-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (pack_dir, cwd) = (dir.join("pack"), dir.join("project"));
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("cube.glb"), wundur_render::test_cube([0.2, 0.6, 0.2], None)).unwrap();
+        std::fs::write(
+            pack_dir.join("look.js"),
+            r#"export default async function (args, kx) {
+  const r = kx.renderModel({ models: [args.model], views: ["front"], cell: 96, out: "previews/cube.png" });
+  return { text: r.report, images: [r.image] };
+}"#,
+        )
+        .unwrap();
+        let tool = PackTool { name: "preview".into(), script: "look.js".into(), ..Default::default() };
+        let pack = Pack { manifest: Manifest { id: "test/look".into(), tools: vec![tool.clone()], ..Default::default() }, dir: pack_dir };
+        let none = |_: &str| None;
+        let grant = Grant { cwd: &cwd, secret: &none, settings: &BTreeMap::new(), extra_hosts: Vec::new(), allow_http: false };
+        let out = run(&pack, &tool, &json!({ "model": "cube.glb" }), &grant);
+        assert!(!out.failed, "{}", out.text);
+        assert_eq!(out.images, [cwd.join("previews/cube.png")]);
+        assert!(out.text.contains("12 triangles"), "{}", out.text);
+        // A model outside the project is refused.
+        let outside = run(&pack, &tool, &json!({ "model": "../cube.glb" }), &grant);
+        assert!(outside.failed && outside.text.contains("only paths inside the project"), "{}", outside.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_pack_tool_calls_a_service_saves_what_it_made_and_keeps_its_key_hidden() {
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1238,34 +1217,6 @@ mod tests {
         assert!(html.trim_end().ends_with("</html>"));
         // Not a GLB: refused.
         assert!(run_game_tool("view_model", json!({ "model": "assets/generated/trex.png" }), &[], &cwd).failed);
-        let _ = std::fs::remove_dir_all(&cwd);
-    }
-
-    #[test]
-    fn look_at_model_draws_models_for_the_agent_and_keeps_the_picture_out_of_git() {
-        let cwd = scratch("look");
-        std::fs::create_dir_all(cwd.join("models")).unwrap();
-        std::fs::write(cwd.join("models/red.glb"), wundur_render::test_cube([0.8, 0.1, 0.1], None)).unwrap();
-        std::fs::write(cwd.join("models/odd.glb"), wundur_render::test_cube([1.0, 1.0, 1.0], Some(b"no image"))).unwrap();
-        let out = run_game_tool("look_at_model", json!({ "models": "models/red.glb, models/odd.glb @+x", "views": "front, top", "labels": "Red, Odd" }), &[], &cwd);
-        assert!(!out.failed, "{}", out.text);
-        let pic = cwd.join(".wundur/looks/compare.png");
-        assert_eq!(out.images, std::slice::from_ref(&pic));
-        let img = image::open(&pic).unwrap();
-        assert_eq!(img.width() % 2, 0, "two views across");
-        assert!(out.text.starts_with(".wundur/looks/compare.png"), "{}", out.text);
-        assert!(out.text.contains("2 models, a row each; columns front, top"), "{}", out.text);
-        assert!(out.text.contains("Red (models/red.glb"), "{}", out.text);
-        assert!(out.text.contains("taken as facing +x"), "{}", out.text);
-        assert!(out.text.contains("WARNING: texture #0 (base colour) failed to load"), "{}", out.text);
-        assert_eq!(std::fs::read_to_string(cwd.join(".wundur/.gitignore")).unwrap(), "*\n");
-        // Drawn again: the same picture, replaced.
-        let again = run_game_tool("look_at_model", json!({ "models": "models/red.glb, models/odd.glb" }), &[], &cwd);
-        assert_eq!(again.images, [pic]);
-        // Nothing outside the project, and only models.
-        assert!(run_game_tool("look_at_model", json!({ "models": "../x.glb" }), &[], &cwd).failed);
-        assert!(run_game_tool("look_at_model", json!({ "models": "models/red.png" }), &[], &cwd).failed);
-        assert!(run_game_tool("look_at_model", json!({ "models": "models/gone.glb" }), &[], &cwd).failed);
         let _ = std::fs::remove_dir_all(&cwd);
     }
 
