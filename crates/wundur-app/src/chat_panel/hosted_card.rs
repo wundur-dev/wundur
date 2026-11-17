@@ -81,6 +81,18 @@ fn reference_paste(item: &ClipboardItem, panel: &WeakEntity<ChatPanel>, window: 
     true
 }
 
+/// The width of two view tiles side by side (a tile is 0.62 of its picture's height, plus its
+/// border) and the gap between: four views wrap into two rows of two.
+fn two_wide(height: f32) -> f32 {
+    // Two points to spare: rounding never pushes a tile onto a third row.
+    2. * (height * 0.62 + 2.) + 8. + 2.
+}
+
+/// [`two_wide`] for the placeholders (`asset_making` draws squares).
+fn two_wide_placeholders(height: f32) -> f32 {
+    2. * height + 8. + 2.
+}
+
 /// "1 credit", "3 credits".
 fn credits(n: u32) -> String {
     format!("{n} credit{}", if n == 1 { "" } else { "s" })
@@ -382,10 +394,11 @@ impl ChatPanel {
             .into_any_element()
     }
 
-    /// Placeholders while a set is on its way.
+    /// Placeholders while a set is on its way (four as two rows of two).
     fn hosted_waiting(&self, what: &str, views: u32, height: f32, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let mut row = div().flex().flex_wrap().gap_2();
+        let height = if views == 4 { height * 0.85 } else { height };
+        let mut row = div().flex().flex_wrap().gap_2().when(views == 4, |d| d.w(px(two_wide_placeholders(height))));
         for _ in 0..views {
             row = row.child(self.asset_making(height, None, cx));
         }
@@ -396,7 +409,10 @@ impl ChatPanel {
     fn hosted_view_row(&self, dir: &Path, files: &[String], labels: &[String], height: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, ground, border) = (theme.muted_foreground, theme.secondary, theme.border);
-        let mut row = div().flex().flex_wrap().gap_2();
+        // Four views (a character's or creature's) as two rows of two, as they're drawn.
+        let four = files.len() == 4;
+        let height = if four { height * 0.85 } else { height };
+        let mut row = div().flex().flex_wrap().gap_2().when(four, |d| d.w(px(two_wide(height))));
         for (n, file) in files.iter().enumerate() {
             let path = dir.join(file);
             let full = path.clone();
@@ -1182,9 +1198,10 @@ impl ChatPanel {
                             .flex_col()
                             .child(div().text_sm().text_color(fg).child(en.label.clone()))
                             .child(div().text_xs().text_color(muted).child(match (en.multiview, set.views.len()) {
+                                // Which ones is the service's choice; "Built from" says after.
                                 (_, 0 | 1) => "Uses its view".to_string(),
-                                (true, n) => format!("Uses all {n} views"),
-                                (false, _) => "Uses the front view".to_string(),
+                                (true, _) => "Uses several views".to_string(),
+                                (false, _) => "Uses one view".to_string(),
                             })),
                     )
                     .children((!en.license.label.is_empty()).then(|| div().text_xs().text_color(yellow).child(en.license.label.clone())))

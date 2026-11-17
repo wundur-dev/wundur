@@ -11,11 +11,11 @@ CATALOG = {"version": "test", "kinds": [
   {"id": "humanoid", "label": "Humanoid", "description": "People and anything on two legs.",
    "fields": [{"id": "style", "label": "Style", "type": "enum", "options": ["realistic", "stylized", "pixel"], "default": "stylized"},
               {"id": "notes", "label": "Anything else", "type": "text"}],
-   "views": 3, "supports_3d": True, "engines": ["trellis2", "tripo_hd"], "default_engine": "trellis2"},
+   "views": 4, "supports_3d": True, "engines": ["trellis2", "tripo_hd"], "default_engine": "trellis2"},
   {"id": "place", "label": "Place", "description": "A room, a building, a landscape.", "fields": [], "views": 1, "supports_3d": False, "engines": [], "offers": ["concept_art"]}],
  "engines": [
-  {"id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "monthly"], "seconds": 60, "best_for": ["props", "creatures"], "help": "Fast and reliable; simpler textures.", "license": {"commercial": True, "label": ""}},
-  {"id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "best_for": ["detailed characters"], "help": "Finer detail; slower.", "license": {"commercial": True, "label": ""}}],
+  {"id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "monthly"], "seconds": 60, "best_for": ["props", "creatures"], "help": "Fast and reliable; simpler textures. Uses the three-quarter view.", "license": {"commercial": True, "label": ""}, "multiview": False},
+  {"id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "best_for": ["detailed characters"], "help": "Finer detail; slower.", "license": {"commercial": True, "label": ""}, "multiview": True}],
  "riggers": [], "sounds": []}
 assets, models = {}, {}
 ids = itertools.count(1)
@@ -31,7 +31,7 @@ def asset_view(a):
             s["status"] = "ready"
             color = ["#3a6ea5", "#a5503a", "#3aa56e"][len(a["sets"]) % 3]
             s["views"] = []
-            for lab in ["Front", "Side", "Back"]:
+            for lab in ["Front", "Side", "Back", "Three-quarter"]:
                 name = f"{s['id']}-{lab}.png"; FILES[name] = png(lab, color)
                 s["views"].append({"label": lab, "image_id": "img_" + name, "url": f"{BASE}/files/{name}", "width": 300, "height": 600})
     for m in [models[k] for k in a["models"]]:
