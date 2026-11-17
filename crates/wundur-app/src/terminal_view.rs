@@ -20,7 +20,6 @@ use crate::palette;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::Sizable;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
@@ -2086,7 +2085,7 @@ impl TerminalView {
                 d.child(div().flex().flex_none().child(jump("cmd-prev", IconName::ArrowUp, true, up_tip)).child(jump("cmd-next", IconName::ArrowDown, false, down_tip)))
             })
             .child(
-                Checkbox::new("blocks-view")
+                Switch::new("blocks-view")
                     .label("Blocks")
                     .checked(!self.raw)
                     .xsmall()
