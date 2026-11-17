@@ -394,6 +394,45 @@ impl ModelView {
         cx.notify();
     }
 
+    /// Send to Mixamo (it rigs and animates humanoids, with no API to hand a model to): export
+    /// a ZIP of an OBJ and its textures (the form Mixamo takes), open mixamo.com, and show the
+    /// ZIP in the file manager, so uploading is one drag.
+    fn send_to_mixamo(&mut self, cx: &mut Context<Self>) {
+        let Some(l) = self.ready() else { return };
+        let model = l.model.clone();
+        let stem = self.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into());
+        let name: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        let Some(out) = dirs::cache_dir().map(|d| d.join("wundur-studio").join("mixamo").join(format!("{name}-mixamo.zip"))) else { return };
+        self.note = Some("Exporting for Mixamo…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (zip, n) = (out.clone(), name.clone());
+            let done = cx.background_spawn(async move { wundur_render::export::obj_zip(&model, &n, &zip) }).await;
+            let _ = this.update(cx, |v, cx| {
+                v.note = Some(match done {
+                    Ok(e) => {
+                        cx.open_url("https://www.mixamo.com/");
+                        cx.reveal_path(&out);
+                        let mut said = format!(
+                            "Exported {} ({} triangles, {} texture{}): in Mixamo, sign in, choose Upload Character and drop it there. Mixamo rigs humanoids; turn it to face you in its first step if it doesn't.",
+                            out.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+                            e.triangles,
+                            e.textures,
+                            if e.textures == 1 { "" } else { "s" }
+                        );
+                        for n in e.notes {
+                            said.push_str(&format!(" Note: {n}."));
+                        }
+                        said
+                    }
+                    Err(e) => format!("Couldn't export for Mixamo: {e}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Save what's shown, drawn at its best, as a PNG where the person picks.
     fn save_png(&mut self, cx: &mut Context<Self>) {
         let Some(l) = self.ready() else { return };
@@ -502,6 +541,7 @@ impl ModelView {
             .child(Button::new("mv-floor").ghost().xsmall().label("Floor").selected(look.floor).on_click(cx.listener(move |v, _, _, cx| v.set_look(Look { floor: !look.floor, ..look }, cx))))
             .child(Button::new("mv-dark").ghost().xsmall().label("Dark").selected(look.dark).on_click(cx.listener(move |v, _, _, cx| v.set_look(Look { dark: !look.dark, ..look }, cx))))
             .child(Button::new("mv-reset").ghost().xsmall().icon(gpui_kit::assets::IconName::RotateCcw).tooltip("Reset view (or double-click)").on_click(cx.listener(|v, _, _, cx| v.reset(cx))))
+            .child(Button::new("mv-mixamo").ghost().xsmall().label("Mixamo").tooltip("Send to Mixamo: export it (OBJ and textures, zipped), open mixamo.com and show the file to drop in").on_click(cx.listener(|v, _, _, cx| v.send_to_mixamo(cx))))
             .child(Button::new("mv-save").ghost().xsmall().icon(gpui_kit::assets::IconName::Download).tooltip("Save as PNG").on_click(cx.listener(|v, _, _, cx| v.save_png(cx))));
         bar.child(anim).child(view)
     }
@@ -623,6 +663,7 @@ impl ModelView {
                 self.request(false, cx);
             }
             "reset" => self.reset(cx),
+            "mixamo" => self.send_to_mixamo(cx),
             "state" => {}
             _ => return format!("unknown: {cmd}"),
         }
