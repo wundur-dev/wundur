@@ -80,6 +80,11 @@ icon_assets!(
         Layers,
         Bone,
         // A terminal command's buttons.
+        CircleX,
+        LoaderCircle,
+        ChevronRight,
+        Ellipsis,
+        MessageSquare,
         SquareTerminal,
         ChevronsDownUp,
         ChevronsUpDown,
