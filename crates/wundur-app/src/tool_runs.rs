@@ -90,7 +90,7 @@ fn pack_tools(cx: &App) -> Vec<(Pack, PackTool)> {
         .filter(|p| !off.contains(&p.manifest.id))
         .flat_map(|p| {
             let has = |name: &str| wundur_core::secrets::kept(&p.secret_account(name));
-            let ready: Vec<PackTool> = p.manifest.tools.iter().filter(|t| Pack::ready(t, &has)).cloned().collect();
+            let ready: Vec<PackTool> = p.manifest.tools.iter().filter(|t| !t.hidden && Pack::ready(t, &has)).cloned().collect();
             ready.into_iter().map(move |t| (p.clone(), t))
         })
         .collect()
@@ -196,10 +196,7 @@ fn start(session: &Entity<AgentSession>, tool: Tool, job: Job, reply: Option<Rep
                     let names: Vec<String> = out.files.iter().map(|f| f.strip_prefix(&cwd).unwrap_or(f).display().to_string()).collect();
                     text.push_str(&format!("\nFiles: {}", names.join(", ")));
                 }
-                // view_model's page is still made (it opens in any browser); the model itself
-                // opens in the model viewer.
-                let model = (ptool.name == "view_model").then(|| args["model"].as_str().map(|m| cwd.join(m))).flatten().filter(|m| m.is_file());
-                if let Some(page) = model.or(out.show).filter(|_| !out.failed) {
+                if let Some(page) = out.show.filter(|_| !out.failed) {
                     let _ = shown.try_send(page);
                 }
                 answer(reply, text, out.failed, images_as_content(&out.images));
@@ -220,7 +217,7 @@ fn start(session: &Entity<AgentSession>, tool: Tool, job: Job, reply: Option<Rep
 }
 
 /// Images as MCP image content (the first few, each not too big).
-fn images_as_content(paths: &[PathBuf]) -> Vec<Value> {
+pub(crate) fn images_as_content(paths: &[PathBuf]) -> Vec<Value> {
     paths
         .iter()
         .filter(|p| p.metadata().is_ok_and(|m| m.len() <= MAX_IMAGE_BYTES))

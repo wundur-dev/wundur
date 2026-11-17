@@ -1321,7 +1321,7 @@ impl ChatPanel {
         frame.status = model.as_deref().map(shown_path).unwrap_or_default();
         if let Some(file) = model {
             let me = cx.entity().downgrade();
-            let (project, name, path) = (e.project.clone(), e.record.name.clone(), dir.join(&file));
+            let path = dir.join(&file);
             frame.primary = Some(
                 Button::new(id("open-model"))
                     .small()
@@ -1329,10 +1329,7 @@ impl ChatPanel {
                     .icon(Lucide::Box)
                     .label("Open model")
                     .on_click(move |_, _, cx| {
-                        let me = me.clone();
-                        crate::asset_store::viewer_page(&project, &path, &name, cx, move |page, cx| {
-                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
-                        });
+                        let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(path.clone(), None)));
                     })
                     .into_any_element(),
             );

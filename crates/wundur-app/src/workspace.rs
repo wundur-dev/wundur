@@ -327,6 +327,14 @@ impl Workspace {
                     ws.open_terminal_link(line, *column, *browser, window, cx)
                 }
                 SessionEvent::ShowPage(path) if crate::model_view::is_model(path) => ws.open_model(path.clone(), window, cx),
+                SessionEvent::ShowModel(path, clip) => {
+                    ws.open_model(path.clone(), window, cx);
+                    if let Some(clip) = clip
+                        && let Some(view) = ws.models.iter().find(|m| m.read(cx).path == *path).cloned()
+                    {
+                        view.update(cx, |v, cx| v.play_named(clip, window, cx));
+                    }
+                }
                 SessionEvent::ShowPage(path) => ws.open_web(wundur_core::web::file_url(path), window, cx),
                 // The undone message goes back in the box, to change and send again.
                 SessionEvent::Undone(text) => {
@@ -1206,20 +1214,8 @@ impl Workspace {
     fn adopt_model(&mut self, view: Entity<crate::model_view::ModelView>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::model_view::ModelEvent;
         let id = view.entity_id();
-        let sub = cx.subscribe_in(&view, window, |ws, view, ev: &ModelEvent, window, cx| match ev {
+        let sub = cx.subscribe_in(&view, window, |ws, view, ev: &ModelEvent, _, cx| match ev {
             ModelEvent::Activated => ws.touch_code(view.entity_id()),
-            // The three.js page, made next to the model, in a web tab.
-            ModelEvent::OpenWebViewer(path) => {
-                let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                let me = cx.entity().downgrade();
-                let handle = window.window_handle();
-                crate::asset_store::viewer_page(&dir, path, &title, cx, move |page, cx| {
-                    let _ = handle.update(cx, |_, window, cx| {
-                        let _ = me.update(cx, |ws, cx| ws.open_web(wundur_core::web::file_url(&page), window, cx));
-                    });
-                });
-            }
             ModelEvent::Closed => {
                 ws.models.retain(|m| m != view);
                 ws.panel_subs.remove(&view.entity_id());

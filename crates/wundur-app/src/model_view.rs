@@ -15,7 +15,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable as _, Sizable};
+use gpui_kit::component::{ActiveTheme, Icon, Selectable as _, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use wundur_render::glam::Vec3;
@@ -36,8 +36,6 @@ pub fn is_model(path: &Path) -> bool {
 pub enum ModelEvent {
     Activated,
     Closed,
-    /// Show it in the web viewer (three.js in a web tab) instead.
-    OpenWebViewer(PathBuf),
 }
 
 impl EventEmitter<ModelEvent> for ModelView {}
@@ -102,6 +100,8 @@ pub struct ModelView {
     slider: Entity<SliderState>,
     renderer_name: &'static str,
     note: Option<String>,
+    /// An animation to play once the model has loaded (`show_model`'s).
+    pending_clip: Option<String>,
     settle: Option<Task<()>>,
     player: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -124,9 +124,14 @@ impl ModelView {
             }
         });
         let load_path = path.clone();
-        let load = cx.spawn(async move |this, cx| {
+        let load = cx.spawn_in(window, async move |this, cx| {
             let loaded = cx.background_spawn(async move { load(&load_path) }).await;
-            let _ = this.update(cx, |v, cx| v.loaded(loaded, cx));
+            let _ = this.update_in(cx, |v, window, cx| {
+                v.loaded(loaded, cx);
+                if let Some(clip) = v.pending_clip.take() {
+                    v.play_named(&clip, window, cx);
+                }
+            });
         });
         Self {
             path,
@@ -149,10 +154,26 @@ impl ModelView {
             slider,
             renderer_name: "",
             note: None,
+            pending_clip: None,
             settle: None,
             player: None,
             _subs: vec![sub],
             _tasks: vec![load],
+        }
+    }
+
+    /// Play the animation whose name holds `name` (now, or once the model has loaded).
+    pub fn play_named(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let want = name.trim().to_lowercase();
+        match &self.state {
+            State::Loading => self.pending_clip = Some(want),
+            State::Ready(l) => {
+                let found = l.clips.iter().position(|c| c.0.to_lowercase() == want).or_else(|| l.clips.iter().position(|c| c.0.to_lowercase().contains(&want)));
+                if found.is_some() {
+                    self.choose_clip(found, window, cx);
+                }
+            }
+            State::Failed(_) => {}
         }
     }
 
@@ -481,8 +502,7 @@ impl ModelView {
             .child(Button::new("mv-floor").ghost().xsmall().label("Floor").selected(look.floor).on_click(cx.listener(move |v, _, _, cx| v.set_look(Look { floor: !look.floor, ..look }, cx))))
             .child(Button::new("mv-dark").ghost().xsmall().label("Dark").selected(look.dark).on_click(cx.listener(move |v, _, _, cx| v.set_look(Look { dark: !look.dark, ..look }, cx))))
             .child(Button::new("mv-reset").ghost().xsmall().icon(gpui_kit::assets::IconName::RotateCcw).tooltip("Reset view (or double-click)").on_click(cx.listener(|v, _, _, cx| v.reset(cx))))
-            .child(Button::new("mv-save").ghost().xsmall().icon(gpui_kit::assets::IconName::Download).tooltip("Save as PNG").on_click(cx.listener(|v, _, _, cx| v.save_png(cx))))
-            .child(Button::new("mv-web").ghost().xsmall().icon(IconName::Globe).tooltip("Open in the web viewer").on_click(cx.listener(|v, _, _, cx| cx.emit(ModelEvent::OpenWebViewer(v.path.clone())))));
+            .child(Button::new("mv-save").ghost().xsmall().icon(gpui_kit::assets::IconName::Download).tooltip("Save as PNG").on_click(cx.listener(|v, _, _, cx| v.save_png(cx))));
         bar.child(anim).child(view)
     }
 

@@ -12,6 +12,7 @@
 //! to answer.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
@@ -98,12 +99,53 @@ pub fn tool_call(session: Entity<AgentSession>, call: Call, cx: &mut App) {
         "add_tasks" => add_tasks(&session, &args, cx),
         "complete_task" => complete_task(&args, cx),
         "list_tasks" => list_tasks(&session, cx),
+        "show_model" => show_model(&session, &args, cx),
+        // Drawn off the UI thread; answered when the picture is made.
+        "look_at_model" => {
+            let cwd = session.read(cx).cwd().to_path_buf();
+            let reply = call.reply;
+            std::thread::spawn(move || {
+                let look = wundur_core::model_look::look(&cwd, &args);
+                let images = crate::tool_runs::images_as_content(look.image.as_slice());
+                if let Some(reply) = reply {
+                    reply.send(&json!({ "text": look.text, "error": look.failed, "images": images }).to_string());
+                }
+            });
+            return;
+        }
         // The person's tools answer when their run ends.
         _ => return crate::tool_runs::call(session, &tool, args, call.reply, cx),
     };
     if let Some(reply) = call.reply {
         reply.send(&json!({ "text": text, "error": error }).to_string());
     }
+}
+
+/// Open a model in the person's model viewer, from `me`'s agent.
+fn show_model(me: &Entity<AgentSession>, args: &Value, cx: &mut App) -> (String, bool) {
+    let given = args.get("model").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    if given.is_empty() {
+        return ("show_model needs a model: a GLB or glTF path.".into(), true);
+    }
+    let cwd = me.read(cx).cwd().to_path_buf();
+    let path = match (given.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ if Path::new(&given).is_absolute() => PathBuf::from(&given),
+        _ => cwd.join(&given),
+    };
+    if !crate::model_view::is_model(&path) {
+        return (format!("{given} isn't a GLB or glTF model."), true);
+    }
+    if !path.is_file() {
+        return (format!("{given}: no such file."), true);
+    }
+    let clip = args.get("animation").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
+    let said = match &clip {
+        Some(c) => format!("Opened {given} in the person's model viewer, playing \"{c}\" if it has an animation by that name."),
+        None => format!("Opened {given} in the person's model viewer."),
+    };
+    me.update(cx, |_, cx| cx.emit(crate::agent_session::SessionEvent::ShowModel(path, clip)));
+    (said, false)
 }
 
 /// A list of tasks for the person, from `me`'s agent.
