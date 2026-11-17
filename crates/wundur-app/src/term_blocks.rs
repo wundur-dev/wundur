@@ -135,6 +135,8 @@ pub enum Fold {
 pub enum DisplayRow {
     Line(i32),
     Fold { id: u64, hidden: usize, first: i32, last: i32, whole: bool },
+    /// A command's row of actions (copy, send to chat, more), below its output line `after`.
+    Actions { id: u64, after: i32 },
 }
 
 impl DisplayRow {
@@ -143,6 +145,16 @@ impl DisplayRow {
         match self {
             DisplayRow::Line(l) => l,
             DisplayRow::Fold { first, .. } => first,
+            DisplayRow::Actions { after, .. } => after,
+        }
+    }
+
+    /// The last grid line it stands for.
+    pub fn last(self) -> i32 {
+        match self {
+            DisplayRow::Line(l) => l,
+            DisplayRow::Fold { last, .. } => last,
+            DisplayRow::Actions { after, .. } => after,
         }
     }
 
@@ -150,6 +162,7 @@ impl DisplayRow {
         match self {
             DisplayRow::Line(l) => l == line,
             DisplayRow::Fold { first, last, .. } => (first..=last).contains(&line),
+            DisplayRow::Actions { .. } => false,
         }
     }
 }
@@ -180,7 +193,23 @@ fn hidden_lines(b: &BlockView, folds: &HashMap<u64, Fold>) -> Option<(Range<i32>
 }
 
 /// Every row as drawn, top to bottom, from grid line `top` to `bottom` (exclusive).
-pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, Fold>, top: i32, bottom: i32) -> Vec<DisplayRow> {
+pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, Fold>, top: i32, bottom: i32, actions: &[u64]) -> Vec<DisplayRow> {
+    // The action rows, by the output line they follow.
+    let after: HashMap<i32, u64> = blocks
+        .iter()
+        .filter(|b| actions.contains(&b.id()) && b.output_len() > 0)
+        .map(|b| (b.output.end - 1, b.id()))
+        .collect();
+    let push = |rows: &mut Vec<DisplayRow>, row: DisplayRow| {
+        rows.push(row);
+        let (from, to) = match row {
+            DisplayRow::Fold { first, last, .. } => (first, last),
+            other => (other.line(), other.line()),
+        };
+        if let Some((&line, &id)) = after.iter().find(|(l, _)| (from..=to).contains(*l)) {
+            rows.push(DisplayRow::Actions { id, after: line });
+        }
+    };
     let mut hidden: Vec<(Range<i32>, u64, bool)> = blocks
         .iter()
         .filter_map(|b| hidden_lines(b, folds).map(|(r, whole)| (r, b.id(), whole)))
@@ -199,12 +228,12 @@ pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, Fold>, top: i32, 
             && r.start <= l
         {
             let last = r.end.min(bottom) - 1;
-            rows.push(DisplayRow::Fold { id, hidden: (last - l + 1) as usize, first: l, last, whole });
+            push(&mut rows, DisplayRow::Fold { id, hidden: (last - l + 1) as usize, first: l, last, whole });
             l = last + 1;
             next.next();
             continue;
         }
-        rows.push(DisplayRow::Line(l));
+        push(&mut rows, DisplayRow::Line(l));
         l += 1;
     }
     rows
@@ -212,10 +241,7 @@ pub fn display_rows(blocks: &[BlockView], folds: &HashMap<u64, Fold>, top: i32, 
 
 /// The index of the row standing for grid line `line`.
 pub fn index_of(rows: &[DisplayRow], line: i32) -> Option<usize> {
-    let i = rows.partition_point(|r| match r {
-        DisplayRow::Line(l) => *l < line,
-        DisplayRow::Fold { last, .. } => *last < line,
-    });
+    let i = rows.partition_point(|r| r.last() < line);
     rows.get(i).filter(|r| r.contains(line)).map(|_| i)
 }
 
@@ -416,7 +442,7 @@ mod tests {
     #[test]
     fn long_output_folds_keeping_its_ends() {
         let blocks = vec![block(1, 0, 1..101), block(2, 101, 102..103)];
-        let rows = display_rows(&blocks, &HashMap::new(), 0, 104);
+        let rows = display_rows(&blocks, &HashMap::new(), 0, 104, &[]);
         // Prompt, 3 head lines, the fold, 5 tail lines, then the next command.
         assert_eq!(rows[0], DisplayRow::Line(0));
         assert_eq!(rows[3], DisplayRow::Line(3));
@@ -431,18 +457,31 @@ mod tests {
     fn unfolded_or_running_output_shows_whole() {
         let mut running = block(1, 0, 1..101);
         running.running = true;
-        assert!(display_rows(&[running], &HashMap::new(), 0, 101).iter().all(|r| matches!(r, DisplayRow::Line(_))));
+        assert!(display_rows(&[running], &HashMap::new(), 0, 101, &[]).iter().all(|r| matches!(r, DisplayRow::Line(_))));
         let opened = HashMap::from([(1, Fold::Open)]);
-        assert_eq!(display_rows(&[block(1, 0, 1..101)], &opened, 0, 101).len(), 101);
+        assert_eq!(display_rows(&[block(1, 0, 1..101)], &opened, 0, 101, &[]).len(), 101);
     }
 
     #[test]
     fn a_collapsed_command_shows_its_header_alone() {
         let blocks = vec![block(1, 0, 1..4), block(2, 4, 5..6)];
-        let rows = display_rows(&blocks, &HashMap::from([(1, Fold::All)]), 0, 6);
+        let rows = display_rows(&blocks, &HashMap::from([(1, Fold::All)]), 0, 6, &[]);
         assert_eq!(rows, [DisplayRow::Line(0), DisplayRow::Fold { id: 1, hidden: 3, first: 1, last: 3, whole: true }, DisplayRow::Line(4), DisplayRow::Line(5)]);
         // Short output is not folded in the middle, even if asked.
         assert_eq!(fold_of(&blocks[1], &HashMap::from([(2, Fold::Middle)])), Fold::Open);
+    }
+
+    #[test]
+    fn an_action_row_follows_a_commands_output() {
+        let blocks = vec![block(1, 0, 1..3), block(2, 3, 4..5)];
+        let rows = display_rows(&blocks, &HashMap::new(), 0, 5, &[1]);
+        assert_eq!(rows[3], DisplayRow::Actions { id: 1, after: 2 });
+        assert_eq!(rows[4], DisplayRow::Line(3));
+        assert_eq!(index_of(&rows, 2), Some(2));
+        assert_eq!(index_of(&rows, 3), Some(4));
+        // Collapsed: after the fold.
+        let rows = display_rows(&blocks, &HashMap::from([(1, Fold::All)]), 0, 5, &[1]);
+        assert_eq!(rows[2], DisplayRow::Actions { id: 1, after: 2 });
     }
 
     #[test]

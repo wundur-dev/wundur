@@ -371,6 +371,16 @@ fn terminals() -> SettingPage {
                 "Plain output gets light colouring: labels, numbers, paths, links, hashes, and words like error, warning and done. Colours a program chose stay; copied text is unchanged. Needs shell integration.",
                 |p| &mut p.color_output,
             ),
+            pref(
+                "Terminal toolbar",
+                "Above a shell's terminal: its folder, branch and shell, what is running, jumping between commands, and Blocks on or off.",
+                |p| &mut p.terminal_toolbar,
+            ),
+            pref(
+                "Actions under the newest command",
+                "A row below the newest command's output: copy it, send it to the chat, and more.",
+                |p| &mut p.command_actions,
+            ),
         ]),
     )
 }

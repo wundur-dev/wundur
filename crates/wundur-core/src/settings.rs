@@ -141,6 +141,11 @@ pub struct Prefs {
     /// Command output a program printed plain gets light colouring (see
     /// [`crate::output_colors`]).
     pub color_output: bool,
+    /// A shell's terminal has a toolbar: its folder, branch and shell, what runs, a way
+    /// between commands, and Blocks on or off.
+    pub terminal_toolbar: bool,
+    /// The newest command has a row of actions below its output (copy, send to chat, more).
+    pub command_actions: bool,
     /// The terminals' font size, in points.
     pub terminal_font_size: f32,
     /// The agents' own interfaces' font size (their Terminal view), in points: larger than
@@ -175,6 +180,8 @@ impl Default for Prefs {
             keep_terminal_history: true,
             shell_integration: true,
             color_output: true,
+            terminal_toolbar: true,
+            command_actions: true,
             terminal_font_size: TERMINAL_FONT_SIZE,
             agent_font_size: AGENT_FONT_SIZE,
             hybrid_views: false,

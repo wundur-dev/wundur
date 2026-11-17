@@ -20,6 +20,10 @@ use crate::palette;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::Sizable;
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::Icon;
 use crate::pty::{GridSize, Pty, PtyEvent};
 use crate::term_blocks::{self, BlockView, DisplayRow, Fold, Part, Placed};
 
@@ -173,6 +177,8 @@ pub struct TerminalView {
     /// Raw: as the program printed it, without headers, folds, buttons or colouring (the
     /// commands are still followed, for switching back).
     raw: bool,
+    /// Settings, as last drawn: the newest command's row of actions, and the toolbar.
+    actions_row: bool,
     /// A click that began on a part of a command line: put on the prompt when the button comes
     /// up without a drag.
     pending_part: Option<Part>,
@@ -181,7 +187,7 @@ pub struct TerminalView {
 }
 
 /// The gutter left of the grid in a terminal whose shell marks its commands.
-const GUTTER: f32 = 30.;
+const GUTTER: f32 = 36.;
 
 /// A command's header: the rows of its prompt and command line, drawn as one.
 struct Header {
@@ -343,10 +349,24 @@ fn command_starts(blocks: &[BlockView]) -> HeaderEdges {
     HeaderEdges { starts, ends, prompt }
 }
 
+/// The commands that get a row of actions below their output: the newest that finished with
+/// output (none when Settings turned the row off).
+fn action_ids(blocks: &[BlockView], on: bool) -> Vec<u64> {
+    if !on {
+        return Vec::new();
+    }
+    blocks
+        .iter()
+        .filter(|b| b.ran() && !b.running && b.output_len() > 0)
+        .max_by_key(|b| b.block.start)
+        .map(|b| vec![b.id()])
+        .unwrap_or_default()
+}
+
 /// The rows to draw and where, in a shell's terminal with commands (`None`: as usual, the
 /// grid's own rows a line apart). At the bottom, the last row is the cursor's or the last
 /// with text, so blank rows below it don't push the commands off the top.
-fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, line_h: f32, avail: f32) -> Option<Vec<Placed>> {
+fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, actions: &[u64], line_h: f32, avail: f32) -> Option<Vec<Placed>> {
     if blocks.is_empty() {
         return None;
     }
@@ -354,7 +374,7 @@ fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64
     let grid = term.grid();
     let screen = grid.screen_lines() as i32;
     let offset = grid.display_offset() as i32;
-    let all = term_blocks::display_rows(blocks, folds, -(grid.history_size() as i32), screen);
+    let all = term_blocks::display_rows(blocks, folds, -(grid.history_size() as i32), screen, actions);
     let bottom_line = if offset == 0 {
         let cols = grid.columns();
         let last_text = (0..screen).rev().find(|&l| (0..cols).any(|c| !matches!(grid[Line(l)][Column(c)].c, ' ' | '\0'))).unwrap_or(0);
@@ -362,7 +382,11 @@ fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64
     } else {
         screen - 1 - offset
     };
-    let bottom = term_blocks::index_of(&all, bottom_line).unwrap_or(all.len().saturating_sub(1));
+    let mut bottom = term_blocks::index_of(&all, bottom_line).unwrap_or(all.len().saturating_sub(1));
+    // A row of actions right below it shows too.
+    if matches!(all.get(bottom + 1), Some(DisplayRow::Actions { .. })) {
+        bottom += 1;
+    }
     let starts = command_starts(blocks);
     Some(term_blocks::place(&all, bottom, avail, line_h, &gap_for(&starts)))
 }
@@ -622,6 +646,7 @@ impl TerminalView {
             hover_fold: false,
             hovered: false,
             raw: false,
+            actions_row: true,
             pending_part: None,
             copied: None,
         }
@@ -1086,14 +1111,11 @@ impl TerminalView {
         let grid = term.grid();
         let screen = grid.screen_lines() as i32;
         let offset = grid.display_offset() as i32;
-        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen);
+        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen, &action_ids(&blocks, self.actions_row));
         let Some(at) = term_blocks::index_of(&all, screen - 1 - offset) else { return };
         let lowest = (screen as usize - 1).min(all.len() - 1);
         let to = (at as i64 - n as i64).clamp(lowest as i64, all.len() as i64 - 1) as usize;
-        let bottom = match all[to] {
-            DisplayRow::Line(l) => l,
-            DisplayRow::Fold { last, .. } => last,
-        };
+        let bottom = all[to].last();
         term.scroll_display(Scroll::Delta(screen - 1 - bottom - offset));
     }
 
@@ -1106,14 +1128,11 @@ impl TerminalView {
         let grid = term.grid();
         let screen = grid.screen_lines() as i32;
         let offset = grid.display_offset() as i32;
-        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen);
+        let all = term_blocks::display_rows(&blocks, &folds, -(grid.history_size() as i32), screen, &action_ids(&blocks, self.actions_row));
         let Some(at) = term_blocks::index_of(&all, line) else { return };
         let starts = command_starts(&blocks);
         let to = term_blocks::fit_from(&all, at, f32::from(self.bounds.get().size.height), f32::from(self.cell.get().height), &gap_for(&starts));
-        let bottom = match all[to] {
-            DisplayRow::Line(l) => l,
-            DisplayRow::Fold { last, .. } => last,
-        };
+        let bottom = all[to].last();
         term.scroll_display(Scroll::Delta(screen - 1 - bottom - offset));
     }
 
@@ -1696,10 +1715,14 @@ impl Render for TerminalView {
         let shown = self.shown.clone();
         let buttons = self.block_bars(cx);
         let color_output = crate::prefs(cx).color_output;
+        self.actions_row = crate::prefs(cx).command_actions;
+        let actions_row = self.actions_row;
         let raw = self.raw;
         let integrated = self.integrated && !raw;
-        // Blocks or Raw, while the pointer is over a shell's terminal.
-        let switch = (self.integrated && self.hovered).then(|| {
+        let toolbar = (self.integrated && crate::prefs(cx).terminal_toolbar).then(|| self.toolbar(cx));
+        let actions = self.action_rows(cx);
+        // Blocks or Raw, while the pointer is over a shell's terminal (with no toolbar to say).
+        let switch = (self.integrated && self.hovered && toolbar.is_none()).then(|| {
             let segment = |key: &'static str, label: &'static str, on: bool, raw: bool| {
                 Button::new(key)
                     .label(label)
@@ -1829,7 +1852,7 @@ impl Render for TerminalView {
                 None => col.into_any_element(),
             });
         let gutter = if self.integrated && !self.raw { px(GUTTER) } else { px(4.) };
-        base.pl(gutter).pr_1().relative().child(
+        base.flex().flex_col().children(toolbar).child(div().flex_1().min_h_0().w_full().pl(gutter).pr_1().relative().child(
             canvas(
                 move |bounds, window, cx| {
                     bounds_cell.set(bounds);
@@ -1865,13 +1888,14 @@ impl Render for TerminalView {
                     }
                     let start = std::time::Instant::now();
                     let blocks = if raw { Rc::default() } else { cached_blocks(&blocks_cache, pty, generation) };
-                    let rows = layout(pty, &blocks, &folds.borrow(), f32::from(cell_paint.get().height), f32::from(bounds.size.height));
+                    let actions = action_ids(&blocks, actions_row);
+                    let rows = layout(pty, &blocks, &folds.borrow(), &actions, f32::from(cell_paint.get().height), f32::from(bounds.size.height));
                     *shown.borrow_mut() = rows.clone().unwrap_or_default();
                     let heads = headers(&blocks, &folds.borrow());
                     let tinted: Vec<_> = if color_output { blocks.iter().map(|b| b.output.clone()).collect() } else { Vec::new() };
                     paint_grid(text_size, pty, bounds, cell_paint.get(), focused, &underline, rows.as_deref(), &heads, &tinted, window, cx);
                     if integrated {
-                        paint_marks(pty, &blocks, &folds.borrow(), bounds, window);
+                        paint_marks(pty, &blocks, &folds.borrow(), &actions, bounds, window);
                     }
                     crate::perf::record("terminal paint", start.elapsed());
                     crate::perf::terminal_painted();
@@ -1881,6 +1905,7 @@ impl Render for TerminalView {
         )
         .children(placeholder)
         .children(buttons)
+        .children(actions)
         .children(switch)
         .when(scrolled_up, |d| {
             d.child(
@@ -1911,23 +1936,164 @@ impl Render for TerminalView {
                 .border_color(hsla(palette::dim()))
                 .shadow_lg()
                 .child(img(path).max_w(px(320.)).max_h(px(240.)).object_fit(ObjectFit::Contain))
-        }))
+        })))
     }
 }
 
 impl TerminalView {
-    /// The bars of buttons on commands' headers: on the one under the pointer; on a running
-    /// command (Stop); and on the newest command when it failed (its output to copy or send).
+    /// The toolbar above a shell's terminal: its folder, branch and shell; what runs (or how
+    /// many commands ran); the previous and next command; and Blocks on or off.
+    fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let dim = hsla(palette::dim());
+        let (running, shell) = match &self.pty {
+            Some(p) => match p.marks.lock() {
+                Ok(m) => {
+                    let running = match m.current {
+                        Some((id, wundur_core::term_marks::Phase::Running)) => Some(m.info.get(&id).and_then(|i| i.command.clone()).unwrap_or_default()),
+                        _ => None,
+                    };
+                    (running, m.shell.clone())
+                }
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+        let shell = shell.unwrap_or_else(|| login_shell().rsplit('/').next().unwrap_or("shell").to_string());
+        let folder = self.folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+        let ran = self.blocks().iter().filter(|b| b.headed()).count();
+        let blue = hsla(if palette::is_dark() { 0x6aa6ff } else { 0x2f6fde });
+        let status = match running {
+            Some(cmd) => div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .child(Icon::new(IconName::LoaderCircle).xsmall().text_color(blue))
+                .child(div().truncate().text_color(blue).child(if cmd.is_empty() { "Running".to_string() } else { format!("Running: {cmd}") })),
+            None if ran > 0 && !self.raw => div().text_color(dim).child(format!("{ran} {}", if ran == 1 { "command" } else { "commands" })),
+            None => div(),
+        };
+        let jump = |key: &'static str, icon: IconName, up: bool, tip: &'static str| {
+            Button::new(key).icon(icon).xsmall().ghost().tooltip(tip).on_click(cx.listener(move |v, _, _, cx| v.jump_command(up, cx)))
+        };
+        let (up_tip, down_tip) = if cfg!(target_os = "macos") { ("Previous command (Cmd+↑)", "Next command (Cmd+↓)") } else { ("Previous command (Ctrl+↑)", "Next command (Ctrl+↓)") };
+        div()
+            .id("terminal-toolbar")
+            .flex_none()
+            .h(px(30.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_3()
+            .border_b_1()
+            .border_color(dim.opacity(0.25))
+            .text_size(px(12.))
+            .text_color(hsla(palette::foreground()))
+            // Clicks here are for the toolbar, not a selection in the terminal.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(div().flex().items_center().gap_1().flex_none().child(Icon::new(IconName::Folder).xsmall().text_color(dim)).child(folder))
+            .when_some(self.branch.clone(), |d, b| {
+                d.child(div().flex().items_center().gap_1().min_w_0().child(Icon::new(IconName::GitBranch).xsmall().text_color(dim)).child(div().truncate().child(b)))
+            })
+            .child(div().flex_none().text_color(dim).child(shell))
+            .child(div().flex_1().min_w_0().flex().justify_end().child(status))
+            .when(!self.raw, |d| {
+                d.child(div().flex().flex_none().child(jump("cmd-prev", IconName::ArrowUp, true, up_tip)).child(jump("cmd-next", IconName::ArrowDown, false, down_tip)))
+            })
+            .child(
+                Checkbox::new("blocks-view")
+                    .label("Blocks")
+                    .checked(!self.raw)
+                    .xsmall()
+                    .tooltip("Commands as blocks: headers, folds, buttons and colour. Off: the plain terminal.")
+                    .on_click(cx.listener(|v, on: &bool, _, cx| v.set_raw(!*on, cx))),
+            )
+            .into_any_element()
+    }
+
+    /// The row of actions below a command's output (the newest's): copy its output, send it to
+    /// the chat, and more.
+    fn action_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let rows: Vec<(u64, f32)> = self
+            .shown
+            .borrow()
+            .iter()
+            .filter_map(|p| match p.row {
+                DisplayRow::Actions { id, .. } => Some((id, p.top)),
+                _ => None,
+            })
+            .collect();
+        let blocks = self.blocks();
+        let view = cx.entity().downgrade();
+        rows.into_iter()
+            .filter_map(|(id, top)| {
+                let b = blocks.iter().find(|b| b.id() == id)?;
+                let copied = self.copied.filter(|(c, _, t)| *c == id && t.elapsed() < std::time::Duration::from_millis(1400)).map(|(_, all, _)| all);
+                let (foldable, folded) = (b.foldable(), term_blocks::folded(b, &self.folds.borrow()));
+                let key = |name: &'static str| ElementId::NamedInteger(name.into(), id);
+                let view = view.clone();
+                Some(
+                    div()
+                        .id(key("actions-row"))
+                        .absolute()
+                        .top(px(top))
+                        .left(px(GUTTER) - px(6.))
+                        .h(self.cell.get().height)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Button::new(key("row-copy"))
+                                .icon(if copied == Some(false) { IconName::Check } else { IconName::Copy })
+                                .label(if copied == Some(false) { "Copied" } else { "Copy output" })
+                                .xsmall()
+                                .ghost()
+                                .on_click(cx.listener(move |v, _, _, cx| v.copy_block(id, false, cx))),
+                        )
+                        .child(div().w(px(1.)).h(px(12.)).bg(hsla(palette::dim()).opacity(0.35)))
+                        .child(
+                            Button::new(key("row-send"))
+                                .icon(IconName::MessageSquare)
+                                .label("Send to chat")
+                                .xsmall()
+                                .ghost()
+                                .tooltip("The command, its output and exit code, into the message box")
+                                .on_click(cx.listener(move |v, _, _, cx| v.send_block(id, cx))),
+                        )
+                        .child(div().w(px(1.)).h(px(12.)).bg(hsla(palette::dim()).opacity(0.35)))
+                        .child(Button::new(key("row-more")).icon(IconName::Ellipsis).xsmall().ghost().tooltip("More").dropdown_menu(move |menu, _, _| {
+                            let act = |f: fn(&mut TerminalView, u64, &mut Context<TerminalView>)| {
+                                let view = view.clone();
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let _ = view.update(cx, |v, cx| f(v, id, cx));
+                                }
+                            };
+                            let menu = menu
+                                .item(PopupMenuItem::new("Copy with command").icon(Icon::new(IconName::SquareTerminal)).on_click(act(|v, id, cx| v.copy_block(id, true, cx))))
+                                .item(PopupMenuItem::new("Collapse").icon(Icon::new(IconName::ChevronRight)).on_click(act(|v, id, cx| v.toggle_collapse(id, cx))));
+                            if foldable {
+                                menu.item(
+                                    PopupMenuItem::new(if folded { "Show all" } else { "Fold the middle" })
+                                        .icon(Icon::new(if folded { IconName::ChevronsUpDown } else { IconName::ChevronsDownUp }))
+                                        .on_click(act(|v, id, cx| v.toggle_fold(id, cx))),
+                                )
+                            } else {
+                                menu
+                            }
+                        }))
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
+    /// The bars of buttons on commands' headers: on the one under the pointer, and Stop on a
+    /// running command.
     fn block_bars(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let blocks = self.blocks();
         let mut ids: Vec<u64> = Vec::new();
         ids.extend(blocks.iter().filter(|b| b.running).map(|b| b.id()));
-        if let Some(last) = blocks.iter().rev().find(|b| b.info.exit.is_some())
-            && last.info.exit != Some(0)
-            && !blocks.iter().any(|b| b.block.start > last.block.start && b.info.exit.is_some())
-        {
-            ids.push(last.id());
-        }
         ids.extend(self.hover_block);
         ids.sort_unstable();
         ids.dedup();
@@ -2095,6 +2261,8 @@ fn paint_grid(
                 paint_fold(hidden, whole, point(bounds.origin.x, y), bounds.size.width, cell, font_size, &base_font, window, cx);
                 continue;
             }
+            // Its buttons are elements over the terminal (see `action_rows`).
+            DisplayRow::Actions { .. } => continue,
         };
         // Command output: plain text gets light colouring (see `output_colors`).
         let tones = if tinted.iter().any(|r| r.contains(&line.0)) {
@@ -2108,23 +2276,16 @@ fn paint_grid(
         } else {
             Vec::new()
         };
-        // A command's header: a rule above it, its rows tinted, its chevron and status in the
-        // gutter.
+        // A command's header: a rule above it (above its padding), its chevron and status in
+        // the gutter.
         let header = headers.iter().find(|h| h.rows.contains(&line.0) || h.start == line.0);
         if let Some(h) = header {
             let left = bounds.origin.x - px(GUTTER);
             let width = bounds.size.width + px(GUTTER);
             // The header's padding is above its first row and below its last.
             let pad = px(HEADER_PAD);
-            let first = h.rows.start == line.0;
-            let last = h.rows.end - 1 == line.0;
             if h.start == line.0 && row > 0 {
                 window.paint_quad(fill(Bounds::new(point(left, y - pad), size(width, px(1.))), hsla(palette::dim()).opacity(0.35)));
-            }
-            if h.rows.contains(&line.0) {
-                let top = if first { y - pad } else { y };
-                let bottom = y + cell.height + if last { pad } else { px(0.) };
-                window.paint_quad(fill(Bounds::new(point(left, top), size(width, bottom - top)), hsla(palette::dim()).opacity(0.08)));
             }
             if h.rows.start == line.0 {
                 paint_gutter(h, point(left, y), cell, font_size, &base_font, window, cx);
@@ -2382,7 +2543,7 @@ fn paint_fold(
 
 /// Marks down the right edge where each command starts, over the whole history: grey when
 /// it ran, red when it failed, blue while it runs; and the part in view, faintly.
-fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, bounds: Bounds<Pixels>, window: &mut Window) {
+fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64, Fold>, actions: &[u64], bounds: Bounds<Pixels>, window: &mut Window) {
     let (top, screen, offset) = {
         let term = pty.term.lock();
         let grid = term.grid();
@@ -2391,7 +2552,7 @@ fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMa
     if top == 0 || blocks.is_empty() {
         return;
     }
-    let all = term_blocks::display_rows(blocks, folds, top, screen);
+    let all = term_blocks::display_rows(blocks, folds, top, screen, actions);
     let total = all.len().max(1) as f32;
     let x = bounds.origin.x + bounds.size.width + px(1.);
     let h = bounds.size.height;
@@ -2417,20 +2578,27 @@ fn paint_marks(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMa
 }
 
 /// A header's chevron (open or collapsed) and status (done, failed, running) in the gutter.
-fn paint_gutter(h: &Header, at: Point<Pixels>, cell: Size<Pixels>, font_size: Pixels, base_font: &Font, window: &mut Window, cx: &mut App) {
+fn paint_gutter(h: &Header, at: Point<Pixels>, cell: Size<Pixels>, _font_size: Pixels, _base_font: &Font, window: &mut Window, cx: &mut App) {
     let dark = palette::is_dark();
-    let glyph = |text: &str, color: u32, x: Pixels, window: &mut Window, cx: &mut App| {
-        let run = TextRun { len: text.len(), font: base_font.clone(), color: hsla(color), background_color: None, underline: None, strikethrough: None };
-        let shaped = window.text_system().shape_line(text.to_string().into(), font_size * 0.85, &[run], None);
-        let _ = shaped.paint(point(at.x + x, at.y), cell.height, TextAlign::Left, None, window, cx);
+    // Icons, centred on the row.
+    let icon = |name: &str, color: Hsla, x: f32, size: f32, window: &mut Window, cx: &mut App| {
+        let y = at.y + (cell.height - px(size)) / 2.;
+        let _ = window.paint_svg(
+            Bounds::new(point(at.x + px(x), y), gpui_kit::size(px(size), px(size))),
+            SharedString::from(format!("icons/{name}.svg")),
+            None,
+            TransformationMatrix::unit(),
+            color,
+            cx,
+        );
     };
     if let Some(open) = h.chevron {
-        glyph(if open { "▾" } else { "▸" }, palette::dim(), px(3.), window, cx);
+        icon(if open { "chevron-down" } else { "chevron-right" }, hsla(palette::dim()), 2., 15., window, cx);
     }
     match h.status {
-        Status::Ok => glyph("✓", if dark { 0x5cb85c } else { 0x2e8b3a }, px(15.), window, cx),
-        Status::Failed => glyph("✕", if dark { 0xe06c6c } else { 0xc0392b }, px(15.), window, cx),
-        Status::Running => glyph("●", if dark { 0x6aa6ff } else { 0x2f6fde }, px(15.), window, cx),
+        Status::Ok => icon("check", hsla(if dark { 0x5cb85c } else { 0x2e8b3a }), 19., 14., window, cx),
+        Status::Failed => icon("circle-x", hsla(if dark { 0xe06c6c } else { 0xc0392b }), 19., 14., window, cx),
+        Status::Running => icon("loader-circle", hsla(if dark { 0x6aa6ff } else { 0x2f6fde }), 19., 14., window, cx),
         Status::None => {}
     }
 }
