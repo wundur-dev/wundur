@@ -61,6 +61,7 @@ enum Made {
     Terminal(Entity<TerminalView>),
     Agent(Entity<ChatPanel>),
     Web(Entity<WebPanel>),
+    Model(Entity<crate::model_view::ModelView>),
 }
 
 /// Factories by dock area, so the global panel registry can find the right window.
@@ -146,6 +147,16 @@ pub fn register_panels(cx: &mut App) {
         f.made.borrow_mut().push(Made::Asset(view.clone()));
         panel_handle(view)
     });
+    register_panel(cx, "Model", |ctx, window, cx| {
+        let f = factory(&ctx, cx).expect("a workspace for this dock");
+        let path = match ctx.info() {
+            PanelInfo::Panel(v) => v.get("path").and_then(|p| p.as_str()).map(PathBuf::from).unwrap_or_default(),
+            _ => PathBuf::new(),
+        };
+        let view = cx.new(|cx| crate::model_view::ModelView::new(path, window, cx));
+        f.made.borrow_mut().push(Made::Model(view.clone()));
+        panel_handle(view)
+    });
     register_panel(cx, "Web", |ctx, window, cx| {
         let f = factory(&ctx, cx).expect("a workspace for this dock");
         let url = match ctx.info() {
@@ -191,6 +202,8 @@ pub struct Workspace {
     /// Docked views of subagents, one per subagent watched.
     agent_views: Vec<Entity<ChatPanel>>,
     webs: Vec<Entity<WebPanel>>,
+    /// 3D models, drawn natively (see `model_view`).
+    models: Vec<Entity<crate::model_view::ModelView>>,
     /// Game assets being made (see `asset_panel`).
     assets: Vec<Entity<crate::asset_panel::AssetPanel>>,
     doc_ctx: DocContext,
@@ -313,6 +326,7 @@ impl Workspace {
                 SessionEvent::TerminalLink { line, column, browser } => {
                     ws.open_terminal_link(line, *column, *browser, window, cx)
                 }
+                SessionEvent::ShowPage(path) if crate::model_view::is_model(path) => ws.open_model(path.clone(), window, cx),
                 SessionEvent::ShowPage(path) => ws.open_web(wundur_core::web::file_url(path), window, cx),
                 // The undone message goes back in the box, to change and send again.
                 SessionEvent::Undone(text) => {
@@ -363,6 +377,7 @@ impl Workspace {
             panel_subs: HashMap::new(),
             agent_views: Vec::new(),
             webs: Vec::new(),
+            models: Vec::new(),
             assets: Vec::new(),
             _watch: watch,
             _subs: subs,
@@ -520,6 +535,7 @@ impl Workspace {
                 Made::Agent(view) => self.adopt_agent(view, window, cx),
                 Made::Web(view) => self.adopt_web(view, window, cx),
                 Made::Asset(view) => self.adopt_asset(view, window, cx),
+                Made::Model(view) => self.adopt_model(view, window, cx),
             }
         }
         // A layout saved before the Changes panel: it joins the Files group, behind Files.
@@ -836,6 +852,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A 3D model opens in the model viewer.
+        if crate::model_view::is_model(&path) {
+            return self.open_model(path, window, cx);
+        }
         // An asset's record opens the asset.
         if crate::asset_panel::is_record(&path)
             && let Some(dir) = path.parent()
@@ -1159,7 +1179,7 @@ impl Workspace {
         let id = view.entity_id();
         let sub = cx.subscribe_in(&view, window, |ws, view, ev: &AssetEvent, window, cx| match ev {
             AssetEvent::Activated => ws.touch_code(view.entity_id()),
-            AssetEvent::OpenPage(page) => ws.open_web(wundur_core::web::file_url(page), window, cx),
+            AssetEvent::OpenModel(path) => ws.open_model(path.clone(), window, cx),
             AssetEvent::Closed => {
                 ws.assets.retain(|a| a != view);
                 ws.panel_subs.remove(&view.entity_id());
@@ -1168,6 +1188,47 @@ impl Workspace {
         });
         self.panel_subs.insert(id, vec![sub]);
         self.assets.push(view);
+    }
+
+    /// Show the 3D model at `path` in the model viewer (the tab it's already in, if any).
+    pub fn open_model(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.models.iter().find(|m| m.read(cx).path == path).cloned() {
+            self.show_panel(PanelId::from(view.entity_id()), window, cx);
+            return;
+        }
+        let view = cx.new(|cx| crate::model_view::ModelView::new(path, window, cx));
+        self.adopt_model(view.clone(), window, cx);
+        self.place_code(panel_handle(view.clone()), window, cx);
+        let handle = view.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    fn adopt_model(&mut self, view: Entity<crate::model_view::ModelView>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::model_view::ModelEvent;
+        let id = view.entity_id();
+        let sub = cx.subscribe_in(&view, window, |ws, view, ev: &ModelEvent, window, cx| match ev {
+            ModelEvent::Activated => ws.touch_code(view.entity_id()),
+            // The three.js page, made next to the model, in a web tab.
+            ModelEvent::OpenWebViewer(path) => {
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+                let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let me = cx.entity().downgrade();
+                let handle = window.window_handle();
+                crate::asset_store::viewer_page(&dir, path, &title, cx, move |page, cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = me.update(cx, |ws, cx| ws.open_web(wundur_core::web::file_url(&page), window, cx));
+                    });
+                });
+            }
+            ModelEvent::Closed => {
+                ws.models.retain(|m| m != view);
+                ws.panel_subs.remove(&view.entity_id());
+                cx.notify();
+            }
+        });
+        self.panel_subs.insert(id, vec![sub]);
+        self.touch_code(id);
+        self.models.push(view);
     }
 
     pub fn open_web(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1428,6 +1489,11 @@ impl Workspace {
             }
             "term" => self.new_terminal(window, cx),
             "web" => self.open_web(arg.to_string(), window, cx),
+            // Tests: a command for the model viewer opened last (see ModelView::command).
+            "viewer" => {
+                let Some(view) = self.models.last().cloned() else { return "no model open".into() };
+                return view.update(cx, |v, cx| v.command(arg, window, cx));
+            }
             "new-asset" => self.open_asset(None, window, cx),
             "asset" => {
                 // Tests: a command for this chat's latest asset card (see ChatPanel::asset_command).

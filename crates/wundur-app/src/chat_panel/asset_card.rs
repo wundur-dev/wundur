@@ -87,7 +87,7 @@ impl ChatPanel {
                 let me = cx.entity().downgrade();
                 if let Some(f) = asset_store::entry(&dir, cx).and_then(|e| e.asset.models.last().map(|m| m.file.clone())) {
                     asset_store::view_3d(&dir, &f, cx, move |page, cx| {
-                        let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(wundur_core::web::file_url(&page))));
+                        let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                     });
                 }
             }
@@ -516,7 +516,7 @@ impl ChatPanel {
                                     .child(Button::new(id(&format!("m3d{i}"))).xsmall().ghost().icon(gpui_kit::assets::IconName::Box).label("3D").tooltip("View in 3D").on_click(move |_, _, cx| {
                                         let me = me.clone();
                                         asset_store::view_3d(&d1, &f1, cx, move |page, cx| {
-                                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(wundur_core::web::file_url(&page))));
+                                            let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                                         });
                                     }))
                                     .child(div().flex_1())
@@ -556,7 +556,7 @@ impl ChatPanel {
                         .child(Button::new(id("view-approved")).small().outline().icon(gpui_kit::assets::IconName::Box).label("View in 3D").on_click(move |_, _, cx| {
                             let me = me.clone();
                             asset_store::view_3d(&d, &approved, cx, move |page, cx| {
-                                let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(wundur_core::web::file_url(&page))));
+                                let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                             });
                         })),
                 );

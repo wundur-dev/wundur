@@ -15,8 +15,8 @@ use crate::asset_store;
 /// What the workspace hears from an asset tab.
 pub enum AssetEvent {
     Activated,
-    /// Show a page (the 3D viewer's) in a web tab.
-    OpenPage(PathBuf),
+    /// Show a model in the model viewer.
+    OpenModel(PathBuf),
     Closed,
 }
 
@@ -74,7 +74,7 @@ impl AssetPanel {
 }
 
 impl AssetPanel {
-    /// The models: each try's preview, with View in 3D (the viewer in a web tab beside it).
+    /// The models: each try's preview, with View in 3D (the model viewer in a tab beside it).
     fn models(&self, models: &[Attempt], approved: Option<&str>, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme();
         let (muted, green, border) = (theme.muted_foreground, theme.green, theme.border);
@@ -98,10 +98,7 @@ impl AssetPanel {
                             .xsmall()
                             .label("View in 3D")
                             .on_click(cx.listener(move |_, _, _, cx| {
-                                let me = cx.entity().downgrade();
-                                asset_store::view_3d(&dir, &file, cx, move |page, cx| {
-                                    let _ = me.update(cx, |_, cx| cx.emit(AssetEvent::OpenPage(page)));
-                                });
+                                cx.emit(AssetEvent::OpenModel(dir.join(&file)));
                             })),
                     )),
             );

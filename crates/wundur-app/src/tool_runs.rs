@@ -196,7 +196,10 @@ fn start(session: &Entity<AgentSession>, tool: Tool, job: Job, reply: Option<Rep
                     let names: Vec<String> = out.files.iter().map(|f| f.strip_prefix(&cwd).unwrap_or(f).display().to_string()).collect();
                     text.push_str(&format!("\nFiles: {}", names.join(", ")));
                 }
-                if let Some(page) = out.show.filter(|_| !out.failed) {
+                // view_model's page is still made (it opens in any browser); the model itself
+                // opens in the model viewer.
+                let model = (ptool.name == "view_model").then(|| args["model"].as_str().map(|m| cwd.join(m))).flatten().filter(|m| m.is_file());
+                if let Some(page) = model.or(out.show).filter(|_| !out.failed) {
                     let _ = shown.try_send(page);
                 }
                 answer(reply, text, out.failed, images_as_content(&out.images));

@@ -30,6 +30,9 @@ gpui-fast = ["gpui-kit/gpui-fast"]
 
 [dependencies]
 wundur-core = { workspace = true }
+# The native 3D viewer (model_view): models drawn without a web view.
+wundur-render = { workspace = true }
+image = { version = "0.25", default-features = false }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 base64 = "0.22"

@@ -88,6 +88,9 @@ icon_assets!(
         SquareTerminal,
         ChevronsDownUp,
         ChevronsUpDown,
+        // The model viewer: pause, reset view.
+        Pause,
+        RotateCcw,
     ]
 );
 

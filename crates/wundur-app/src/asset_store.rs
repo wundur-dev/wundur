@@ -131,12 +131,9 @@ pub fn approve_model(dir: &Path, file: &str, cx: &mut App) {
     update(dir, true, cx, |e| e.asset.approve_model(&file));
 }
 
-/// The 3D viewer's page for the model `file` of the asset in `dir` (made by the pack's
-/// view_model, here, with no network), then `then` with the page to open.
+/// The model `file` of the asset in `dir`, for `then` to show in the model viewer.
 pub fn view_3d(dir: &Path, file: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
-    let Some(e) = entry(dir, cx) else { return };
-    let (project, title, model, dir) = (e.project.clone(), e.asset.name.clone(), dir.join(file), dir.to_path_buf());
-    viewer_page_or(&project, &model, &title, cx, then, move |why, cx| update(&dir, false, cx, |e| e.error = Some(why)));
+    then(dir.join(file), cx);
 }
 
 /// The 3D viewer's page for `model` (a file inside `cwd`), then `then` with the page.

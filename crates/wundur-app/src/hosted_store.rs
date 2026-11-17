@@ -427,7 +427,7 @@ pub fn reject(dir: &Path, model: &str, cx: &mut App) {
 
 /// Show model attempt `model`'s preview in the 3D viewer: its reduced mesh downloaded into
 /// Wundur's cache (not the project: it isn't the person's until imported), then `then` with
-/// the viewer's page to open.
+/// the model to show in the model viewer.
 pub fn preview(dir: &Path, model: &str, cx: &mut App, then: impl FnOnce(PathBuf, &mut App) + 'static) {
     let Some(e) = entry(dir, cx) else { return };
     let Some(m) = e.asset.as_ref().and_then(|a| a.models.iter().find(|m| m.id == model)).cloned() else { return };
@@ -436,7 +436,6 @@ pub fn preview(dir: &Path, model: &str, cx: &mut App, then: impl FnOnce(PathBuf,
         return;
     };
     let Some(cache) = dirs::cache_dir().map(|d| d.join("wundur-studio").join("previews").join(&e.record.id)) else { return };
-    let title = format!("{} (preview)", e.record.name);
     let (folder, model_id) = (dir.to_path_buf(), model.to_string());
     let known = e.previews.get(model).cloned();
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -453,7 +452,7 @@ pub fn preview(dir: &Path, model: &str, cx: &mut App, then: impl FnOnce(PathBuf,
                 update(&folder, false, cx, |e| {
                     e.previews.insert(model_id, path.clone());
                 });
-                crate::asset_store::viewer_page(&cache, &path, &title, cx, then);
+                then(path, cx);
             }
             Err(err) => update(&folder, false, cx, |e| e.error = Some((format!("Couldn't fetch the preview: {err}"), false))),
         });
