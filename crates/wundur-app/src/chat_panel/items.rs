@@ -757,8 +757,10 @@ impl ChatPanel {
         TextView::markdown(id, md.clone())
             .selectable(true)
             .text_sm()
-            // Code blocks: the language and a copy button; a one-line `!` command also gets Run,
-            // which runs it (without the `!`) in a terminal tab of the session's folder.
+            // Code blocks: the language and a copy button. A block of commands for the person to
+            // run (`run` on its fence, or every line a `!` command) also gets Run, which types them
+            // into a terminal tab of the session's folder; nothing runs until it is pressed. Copy
+            // then gives the commands as Run would type them, without any `!`.
             .code_block_actions({
                 let panel = entity.clone();
                 let session = self.session.clone();
@@ -766,7 +768,9 @@ impl ChatPanel {
                 let code = block.code();
                 let lang = block.lang().unwrap_or_else(|| "code".into());
                 let muted = cx.theme().muted_foreground;
-                let command = wundur_core::conversation::shell_command(&code);
+                let (fence_lang, meta) = (block.lang(), block.meta());
+                let command = wundur_core::conversation::run_block(fence_lang.as_deref(), meta.as_deref(), &code);
+                let copied = command.clone().unwrap_or_else(|| code.to_string());
                 let panel = panel.clone();
                 div()
                     .flex()
@@ -786,7 +790,7 @@ impl ChatPanel {
                             .icon(gpui_kit::assets::IconName::Copy)
                             .tooltip("Copy")
                             .on_click(move |_, window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+                                cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
                                 gpui_kit::component::WindowExt::push_notification(window, "Copied", cx);
                             }),
                     )
@@ -1484,9 +1488,10 @@ pub(super) fn run_pill(id: impl Into<ElementId>, command: String, background: us
         })
 }
 
-/// Whether `command` is Wundur's own restart script (`./scripts/restart`), which quits the app.
+/// Whether `command` runs Wundur's own restart script (`./scripts/restart`), which quits the app:
+/// on any of its lines, since several run in order.
 fn restarts_wundur(command: &str) -> bool {
-    command.trim().trim_start_matches('!').split_whitespace().next().is_some_and(|w| w.ends_with("scripts/restart"))
+    command.lines().any(|l| l.trim().trim_start_matches('!').split_whitespace().next().is_some_and(|w| w.ends_with("scripts/restart")))
 }
 
 /// Ask where to save a table's CSV (in Downloads to start with), then write it. The file goes
@@ -1530,6 +1535,7 @@ mod run_pill_tests {
     fn wundurs_restart_is_told_from_other_commands() {
         assert!(super::restarts_wundur("./scripts/restart"));
         assert!(super::restarts_wundur("! ./scripts/restart"));
+        assert!(super::restarts_wundur("cargo build\n./scripts/restart"), "on any line of several");
         assert!(super::restarts_wundur("scripts/restart --release"));
         assert!(!super::restarts_wundur("cargo test"));
         assert!(!super::restarts_wundur("echo ./scripts/restart"));
