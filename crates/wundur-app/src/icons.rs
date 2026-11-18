@@ -58,6 +58,12 @@ icon_assets!(
         Redo,
         // Send page to chat, in the web panel.
         MessageSquareShare,
+        // The kinds on the new game asset form, and its reference drop area.
+        PersonStanding,
+        PawPrint,
+        Package,
+        Mountain,
+        ImagePlus,
         // An asset card's Open.
         Maximize2,
         // Settings > Tools > Packs: a pack, its services, where keys are kept.

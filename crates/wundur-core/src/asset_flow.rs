@@ -57,6 +57,23 @@ pub struct Catalog {
     pub riggers: Vec<Rigger>,
     #[serde(deserialize_with = "list")]
     pub sounds: Vec<SoundEngine>,
+    /// How detailed a model is made (triangles), for the Model step.
+    #[serde(deserialize_with = "list")]
+    pub details: Vec<Detail>,
+    /// The detail picked to start with, and the one for a faceted (low poly) model.
+    pub default_detail: String,
+    pub faceted_detail: String,
+}
+
+/// A detail level for a model: how many triangles it is made with.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Detail {
+    pub id: String,
+    pub label: String,
+    #[serde(deserialize_with = "count")]
+    pub triangles: u32,
+    pub help: String,
 }
 
 /// A kind of thing to make (a humanoid, a creature, a prop, a place).
@@ -99,6 +116,9 @@ pub struct Field {
     pub help: String,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// A picture for each option (option → path under the API's base URL; public), for a
+    /// choice shown as picture tiles (the art style). An option without one is a text tile.
+    pub option_images: BTreeMap<String, String>,
 }
 
 /// Who may use something, and how its output may be used.
@@ -132,6 +152,9 @@ pub struct Engine {
     pub license: License,
     /// Whether it's given every view of the approved set (else only the front).
     pub multiview: bool,
+    /// The finishes it offers (`smooth`, `faceted`); most engines have none.
+    #[serde(deserialize_with = "list")]
+    pub finishes: Vec<String>,
 }
 
 /// A rigger, for an imported model.
@@ -180,6 +203,103 @@ impl Catalog {
     pub fn riggers_for(&self, kind: &str) -> Vec<&Rigger> {
         self.riggers.iter().filter(|r| r.kinds.is_empty() || r.kinds.iter().any(|k| k == kind)).collect()
     }
+
+    pub fn detail(&self, id: &str) -> Option<&Detail> {
+        self.details.iter().find(|d| d.id == id)
+    }
+
+    /// The detail to start with: the faceted one when the model will be faceted, else the
+    /// default (else the first offered).
+    pub fn detail_for(&self, faceted: bool) -> Option<&Detail> {
+        let wanted = if faceted { &self.faceted_detail } else { &self.default_detail };
+        self.detail(wanted).or_else(|| self.detail(&self.default_detail)).or_else(|| self.details.first())
+    }
+}
+
+/// The field drawn as picture tiles at the top of the form (the art style), not among the
+/// rest of a kind's settings.
+pub const STYLE_FIELD: &str = "style";
+
+/// One line saying what a kind's settings are set to, for the folded settings: each choice
+/// with its field ("Adult height", "Closed mouth"; a choice of several words after its field:
+/// "Stands on two legs"), fields with the same one-word choice together ("Auto hands & feet"),
+/// switches that are on by name. The style and free text are left out.
+pub fn settings_summary(fields: &[Field], choices: &BTreeMap<String, String>, flags: &BTreeMap<String, bool>) -> String {
+    let cap = |t: &str| {
+        let mut c = t.chars();
+        c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
+    };
+    // (the one-word choice, the fields with it) or a phrase on its own.
+    let mut parts: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    for f in fields.iter().filter(|f| f.id != STYLE_FIELD) {
+        match f.kind.as_str() {
+            "enum" => {
+                let Some(value) = choices.get(&f.id).map(|v| v.trim()).filter(|v| !v.is_empty()) else { continue };
+                if value.contains(' ') {
+                    parts.push((None, vec![format!("{} {}", cap(&f.label), value.to_lowercase())]));
+                } else {
+                    let label = f.label.to_lowercase();
+                    match parts.last_mut() {
+                        Some((Some(v), labels)) if v.eq_ignore_ascii_case(value) => labels.push(label),
+                        _ => parts.push((Some(value.to_string()), vec![label])),
+                    }
+                }
+            }
+            "bool" if flags.get(&f.id).copied().unwrap_or(false) => parts.push((None, vec![cap(&f.label)])),
+            _ => {}
+        }
+    }
+    parts
+        .into_iter()
+        .map(|(value, labels)| match value {
+            Some(v) => {
+                let joined = match labels.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => format!("{} & {last}", rest.join(", ")),
+                    _ => labels.join(""),
+                };
+                format!("{} {joined}", cap(&v))
+            }
+            None => labels.join(""),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Whether an asset's style makes its model faceted by default (low poly).
+pub fn low_poly(style: Option<&str>) -> bool {
+    style.is_some_and(|s| s.eq_ignore_ascii_case("low poly"))
+}
+
+/// The finish to start with on `engine`: faceted for a low-poly asset, smooth otherwise, when
+/// the engine offers it (else its first); none on an engine without finishes.
+pub fn default_finish(engine: &Engine, low_poly: bool) -> Option<String> {
+    let wanted = if low_poly { "faceted" } else { "smooth" };
+    engine.finishes.iter().find(|f| *f == wanted).or_else(|| engine.finishes.first()).cloned()
+}
+
+/// A name for an asset from its description, to show greyed in the name box (the service
+/// names it the same way when none is given): its first words, before what it wears or holds,
+/// without a leading article. "A tiger raptor scout wearing a vest" → "Tiger raptor scout".
+pub fn suggested_name(description: &str) -> String {
+    let first = description.trim().split(['.', ',', ';', ':', '\n', '(']).next().unwrap_or_default();
+    let stops = ["wearing", "with", "in", "holding", "carrying", "who", "that", "on", "and", "from", "made"];
+    let mut words: Vec<&str> = Vec::new();
+    for (n, w) in first.split_whitespace().enumerate() {
+        let lower = w.to_lowercase();
+        if n == 0 && matches!(lower.as_str(), "a" | "an" | "the") {
+            continue;
+        }
+        if !words.is_empty() && stops.contains(&lower.as_str()) {
+            break;
+        }
+        words.push(w);
+        if words.len() == 5 {
+            break;
+        }
+    }
+    let name = words.join(" ");
+    let mut chars = name.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 impl Engine {
@@ -295,6 +415,13 @@ pub struct Model {
     pub credits: Option<u32>,
     #[serde(default, deserialize_with = "maybe_count")]
     pub credits_charged: Option<u32>,
+    /// The detail it was made at (a [`Detail`] id), its triangle limit, and its finish.
+    pub detail: Option<String>,
+    #[serde(default, deserialize_with = "maybe_count")]
+    pub face_limit: Option<u32>,
+    pub finish: Option<String>,
+    /// Why it's waiting, while the service says ("Starting the GPU: …"): shown while queued.
+    pub note: Option<String>,
 }
 
 /// What a finished model can be looked at with: never the importable file.
@@ -531,8 +658,12 @@ pub fn catalog() -> Result<Catalog, Error> {
 
 /// `POST /v1/assets`: a new asset, with up to three reference pictures (base64, see
 /// [`reference`]); its first set is being made (one image spent).
-pub fn create(kind: &str, name: &str, description: &str, fields: &BTreeMap<String, Value>, references: &[String]) -> Result<Asset, Error> {
-    let mut body = json!({ "kind": kind, "name": name, "description": description, "fields": fields });
+/// Without a `name`, the service names it from the description (and says so in the answer).
+pub fn create(kind: &str, name: Option<&str>, description: &str, fields: &BTreeMap<String, Value>, references: &[String]) -> Result<Asset, Error> {
+    let mut body = json!({ "kind": kind, "description": description, "fields": fields });
+    if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        body["name"] = json!(name);
+    }
     if !references.is_empty() {
         body["references"] = json!(references);
     }
@@ -577,9 +708,21 @@ pub fn approve(id: &str, set: &str) -> Result<Asset, Error> {
 /// `POST /v1/assets/{id}/models`: a model attempt from the approved set (the server picks the
 /// views) on `engine`, or the kind's default. Free; the set's `attempts_left` counts them.
 /// The answer isn't relied on: the asset's `models` shows it on the next poll.
-pub fn start_model(id: &str, engine: Option<&str>) -> Result<(), Error> {
-    let body = engine.map(|e| json!({ "engine": e }));
-    call::<Value>("POST", &format!("/v1/assets/{id}/models"), body.as_ref(), true).map(|_| ())
+/// `detail` is a [`Detail`] id, `finish` one of the engine's finishes (only for an engine that
+/// has any); either left out takes the service's default.
+pub fn start_model(id: &str, engine: Option<&str>, detail: Option<&str>, finish: Option<&str>) -> Result<(), Error> {
+    call::<Value>("POST", &format!("/v1/assets/{id}/models"), Some(&model_body(engine, detail, finish)), true).map(|_| ())
+}
+
+/// The body of [`start_model`]: only what was picked.
+fn model_body(engine: Option<&str>, detail: Option<&str>, finish: Option<&str>) -> Value {
+    let mut body = serde_json::Map::new();
+    for (key, value) in [("engine", engine), ("detail", detail), ("finish", finish)] {
+        if let Some(v) = value.filter(|v| !v.is_empty()) {
+            body.insert(key.into(), json!(v));
+        }
+    }
+    Value::Object(body)
 }
 
 /// `POST /v1/assets/{id}/models/{model}/import`: spends the engine's credits (once; a repeat is
@@ -696,6 +839,94 @@ mod tests {
         assert_eq!(c.riggers_for("humanoid").len(), 1);
         assert!(c.riggers_for("prop").is_empty());
         assert_eq!(c.sounds[0].max_seconds, 30);
+    }
+
+    /// The catalog as of the November 2026 update: detail levels, engine finishes, style
+    /// pictures.
+    const CATALOG_NOV: &str = r#"{
+      "version": "2026-11-18.1",
+      "kinds": [
+        { "id": "humanoid", "label": "Humanoid", "fields": [
+            { "id": "style", "label": "Style", "type": "enum", "options": ["stylized", "realistic", "low poly", "toon"], "default": "stylized",
+              "help": "Sets the look of the drawings, and the model's paint on Wundur.",
+              "option_images": { "low poly": "/v1/catalog/styles/low-poly.jpg", "toon": "/v1/catalog/styles/toon.jpg" } },
+            { "id": "mouth", "label": "Mouth", "type": "enum", "options": ["closed", "open"], "default": "closed", "help": "Closed rigs and animates best." }
+          ], "views": 3, "supports_3d": true, "engines": ["trellis2", "wundur"], "default_engine": "trellis2" }
+      ],
+      "engines": [
+        { "id": "trellis2", "label": "Standard", "credits": 1, "finishes": [] },
+        { "id": "wundur", "label": "Wundur (preview)", "credits": 1, "multiview": true, "finishes": ["smooth", "faceted"],
+          "license": { "commercial": false, "label": "Preview: not yet cleared for commercial use" } }
+      ],
+      "details": [
+        { "id": "light", "label": "Light", "triangles": 8000, "help": "Phones and crowds." },
+        { "id": "standard", "label": "Standard", "triangles": 30000, "help": "Most game characters." },
+        { "id": "high", "label": "High", "triangles": 100000, "help": "Heroes and close-ups." }
+      ],
+      "default_detail": "standard",
+      "faceted_detail": "light"
+    }"#;
+
+    #[test]
+    fn the_november_catalog_reads_details_finishes_and_style_pictures() {
+        let c: Catalog = serde_json::from_str(CATALOG_NOV).unwrap();
+        let style = &c.kind("humanoid").unwrap().fields[0];
+        assert_eq!(style.option_images.get("low poly").map(String::as_str), Some("/v1/catalog/styles/low-poly.jpg"));
+        assert!(!style.option_images.contains_key("realistic"), "an option without a picture");
+        assert_eq!(c.details.iter().map(|d| (d.id.as_str(), d.triangles)).collect::<Vec<_>>(), [("light", 8000), ("standard", 30000), ("high", 100000)]);
+        assert_eq!(c.detail_for(false).map(|d| d.id.as_str()), Some("standard"));
+        assert_eq!(c.detail_for(true).map(|d| d.id.as_str()), Some("light"));
+        let (wundur, standard) = (c.engine("wundur").unwrap(), c.engine("trellis2").unwrap());
+        assert_eq!(default_finish(wundur, true).as_deref(), Some("faceted"));
+        assert_eq!(default_finish(wundur, false).as_deref(), Some("smooth"));
+        assert_eq!(default_finish(standard, true), None, "no finishes: none sent");
+        assert!(low_poly(Some("low poly")) && !low_poly(Some("toon")) && !low_poly(None));
+        // An older catalog, without any of it: nothing to pick, nothing breaks.
+        let old: Catalog = serde_json::from_str(CATALOG).unwrap();
+        assert!(old.details.is_empty() && old.detail_for(false).is_none());
+        assert!(old.engines.iter().all(|e| e.finishes.is_empty()));
+    }
+
+    #[test]
+    fn a_model_says_its_detail_finish_and_why_it_waits() {
+        let m: Model = serde_json::from_str(r#"{ "id": "m1", "engine": "wundur", "status": "queued", "detail": "light", "face_limit": 8000, "finish": "faceted",
+            "note": "Starting the GPU: the first model after a quiet spell takes about 10 minutes." }"#).unwrap();
+        assert_eq!((m.detail.as_deref(), m.face_limit, m.finish.as_deref()), (Some("light"), Some(8000), Some("faceted")));
+        assert!(m.note.unwrap().starts_with("Starting the GPU"));
+    }
+
+    #[test]
+    fn a_model_is_asked_for_with_only_what_was_picked() {
+        assert_eq!(model_body(Some("wundur"), Some("light"), Some("faceted")), json!({ "engine": "wundur", "detail": "light", "finish": "faceted" }));
+        assert_eq!(model_body(Some("trellis2"), Some("standard"), None), json!({ "engine": "trellis2", "detail": "standard" }));
+        assert_eq!(model_body(None, None, Some("")), json!({}));
+    }
+
+    #[test]
+    fn the_settings_line_says_what_each_is_set_to() {
+        let field = |id: &str, label: &str| Field { id: id.into(), label: label.into(), kind: "enum".into(), ..Default::default() };
+        let humanoid = [field("style", "Style"), field("height", "Height"), field("hands", "Hands"), field("feet", "Feet"), field("mouth", "Mouth"), Field { id: "notes".into(), label: "Anything else".into(), kind: "text".into(), ..Default::default() }];
+        let pick = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        let off: BTreeMap<String, bool> = BTreeMap::new();
+        let defaults = pick(&[("style", "low poly"), ("height", "adult"), ("hands", "auto"), ("feet", "auto"), ("mouth", "closed")]);
+        assert_eq!(settings_summary(&humanoid, &defaults, &off), "Adult height · Auto hands & feet · Closed mouth");
+        let changed = pick(&[("height", "giant"), ("hands", "human-like"), ("feet", "as described"), ("mouth", "open")]);
+        assert_eq!(settings_summary(&humanoid, &changed, &off), "Giant height · Human-like hands · Feet as described · Open mouth");
+        let creature = [field("legs", "Stands on"), field("hands", "Hands")];
+        assert_eq!(settings_summary(&creature, &pick(&[("legs", "four legs"), ("hands", "auto")]), &off), "Stands on four legs · Auto hands");
+        let switch = [Field { id: "tail".into(), label: "Tail".into(), kind: "bool".into(), ..Default::default() }];
+        assert_eq!(settings_summary(&switch, &none, &[("tail".to_string(), true)].into_iter().collect()), "Tail");
+        assert_eq!(settings_summary(&[], &none, &off), "");
+    }
+
+    #[test]
+    fn a_name_is_suggested_from_the_description() {
+        assert_eq!(suggested_name("A tiger raptor scout wearing a vest"), "Tiger raptor scout");
+        assert_eq!(suggested_name("a wiry goblin scout with olive-green skin, a hood"), "Wiry goblin scout");
+        assert_eq!(suggested_name("Treasure chest. Iron bands."), "Treasure chest");
+        assert_eq!(suggested_name("an enormous ancient stone golem guardian of the gate"), "Enormous ancient stone golem guardian");
+        assert_eq!(suggested_name("   "), "");
     }
 
     #[test]
