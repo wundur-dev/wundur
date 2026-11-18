@@ -19,13 +19,13 @@ On an exFAT drive, macOS leaves `._*` files that break builds and git; delete th
 ## After a change: offer the restart
 
 When a change to the app is done (built, tests and clippy pass), end the reply by offering a
-restart onto the new build, as its own block:
+restart onto the new build, as its own block marked `run` on its fence:
 
-```
-! ./scripts/restart
+```sh run
+./scripts/restart
 ```
 
-Wundur shows a Run button on that block. The script builds the release binary, quits the
+Wundur shows a Run button on that block (a block of `! command` lines still gets one too). The script builds the release binary, quits the
 running Wundur and starts the new build in the same folder with the same arguments; open
 sessions come back. Never run it yourself: it quits the app this session runs in.
 

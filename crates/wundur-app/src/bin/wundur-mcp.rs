@@ -71,7 +71,10 @@ fn main() {
 /// What every agent is told about these tools at the start of its session (Claude Code keeps
 /// a server's instructions in context even while its tools wait to be searched for, and cuts
 /// them past 4,096 characters): the behaviour wanted most first.
-const INSTRUCTIONS: &str = "Wundur Studio is the app this session runs in, and these are its tools.\n\
+const INSTRUCTIONS: &str = "Wundur Studio is the app this session runs in: a window that shows your replies as Markdown and can do more with them than a terminal can.\n\
+- Commands for the person to run themselves: put them in a code block with run after the language on its opening fence (```sh run), one command per line, in order. Wundur shows a Run button on it that types them into a terminal in this folder; nothing runs until they press it, and they can copy the commands instead. Leave run off code you only show, and off commands you run yourself. Chain lines that depend on each other with &&.\n\
+- A file path in backticks (`src/main.rs:12`) becomes a link that opens the file, at that line.\n\
+Its tools:\n\
 - add_tasks: whenever the person has to do something themselves (sign up or sign in somewhere, accept an agreement, add a secret or a DNS record, test on a device, decide something), hand it to them as task cards with add_tasks instead of listing the steps in your reply. One card per step, in order, with the command to run and the page to open when there is one. Never put secret values in a card. The cards are numbered within their list: mention one by list and number (\"step 2 of API service chores\"), not by its id. See what is still open with list_tasks, and tick a step off with complete_task once you have checked it is done.\n\
 - notify: tell the person when long work finishes, needs their decision, or went wrong (one notice per thing, not progress updates).\n\
 - ask_for_review: ask another agent for a read-only second opinion on work in this folder.\n\

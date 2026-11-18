@@ -1226,13 +1226,49 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
-/// A code block that is one shell command written as for the agent's shell (`! git push`): the
-/// command, without the `!`.
+/// A code block written as for the agent's shell, every line one `! command` (`! git push`):
+/// the commands, without their `!`s, in order. A block with any unmarked line is just code.
+/// The older way to mark commands to run (see [`run_block`]), still read for old replies and
+/// for agents that write it.
 pub fn shell_command(code: &str) -> Option<String> {
-    let mut lines = code.lines().map(str::trim).filter(|l| !l.is_empty());
-    let first = lines.next()?;
-    let command = first.strip_prefix('!')?.trim();
-    (lines.next().is_none() && !command.is_empty()).then(|| command.to_string())
+    let commands: Option<Vec<&str>> = code
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()))
+        .collect();
+    let commands = commands?;
+    (!commands.is_empty()).then(|| commands.join("\n"))
+}
+
+/// Whether a fence's info string marks its block as commands for the person to run: the word
+/// `run` after the language (```` ```sh run ````), or `run` as the language itself.
+pub fn marks_run(lang: Option<&str>, meta: Option<&str>) -> bool {
+    let is_run = |w: &str| w.trim_matches(|c: char| "{}[](),".contains(c)).eq_ignore_ascii_case("run");
+    lang.is_some_and(is_run) || meta.is_some_and(|m| m.split_whitespace().any(is_run))
+}
+
+/// The commands a code block offers the person to run, if it offers any: a block marked `run`
+/// on its fence (see [`marks_run`]), its lines in order, or a block of `!` lines (see
+/// [`shell_command`]). Other code blocks are just code. `lang` and `meta` are the fence's info
+/// string: its first word, and the rest.
+pub fn run_block(lang: Option<&str>, meta: Option<&str>, code: &str) -> Option<String> {
+    if !marks_run(lang, meta) {
+        return shell_command(code);
+    }
+    // A `!` some agents add out of habit is dropped, so Run and copy give the plain command.
+    let lines: Vec<&str> = code.trim().lines().map(|l| l.trim_start().strip_prefix('!').map_or(l, str::trim_start)).collect();
+    let commands = lines.join("\n");
+    (!commands.trim().is_empty()).then_some(commands)
+}
+
+/// A fence line's info string as [`run_block`] takes it: the language, and the rest.
+pub fn fence_info(fence: &str) -> (Option<&str>, Option<&str>) {
+    let info = fence.trim().trim_start_matches(['`', '~']).trim();
+    let mut parts = info.splitn(2, char::is_whitespace);
+    let lang = parts.next().filter(|l| !l.is_empty());
+    let meta = parts.next().map(str::trim).filter(|m| !m.is_empty());
+    (lang, meta)
 }
 
 /// How many tool calls in a row the chat shows as one group.
@@ -1578,15 +1614,40 @@ fn letters(text: &str) -> String {
 
 #[cfg(test)]
 mod shell_command_tests {
-    use super::shell_command;
+    use super::{fence_info, run_block, shell_command};
 
     #[test]
     fn one_bang_line_is_a_command() {
         assert_eq!(shell_command("! git push -u origin main\n").as_deref(), Some("git push -u origin main"));
         assert_eq!(shell_command("!ls").as_deref(), Some("ls"));
         assert_eq!(shell_command("ls -la"), None);
-        assert_eq!(shell_command("! a\n! b"), None, "several commands: copy them instead");
+        assert_eq!(shell_command("! a\n! b").as_deref(), Some("a\nb"), "several marked lines run in order");
+        assert_eq!(shell_command("! a\nls"), None, "an unmarked line: just code");
         assert_eq!(shell_command("!"), None);
+    }
+
+    #[test]
+    fn a_fence_marked_run_is_commands_to_run() {
+        assert_eq!(run_block(Some("sh"), Some("run"), "npm install\nnpm run dev\n").as_deref(), Some("npm install\nnpm run dev"));
+        assert_eq!(run_block(Some("bash"), Some("{run}"), "ls").as_deref(), Some("ls"));
+        assert_eq!(run_block(Some("run"), None, "ls").as_deref(), Some("ls"));
+        assert_eq!(run_block(Some("sh"), Some("run"), "! ./scripts/restart").as_deref(), Some("./scripts/restart"), "a habitual ! is dropped");
+        assert_eq!(run_block(Some("sh"), Some("run"), "  \n"), None);
+    }
+
+    #[test]
+    fn an_unmarked_fence_is_just_code_unless_every_line_has_a_bang() {
+        assert_eq!(run_block(Some("sh"), None, "npm install"), None);
+        assert_eq!(run_block(Some("sh"), Some("title=\"x\""), "npm install"), None);
+        assert_eq!(run_block(Some("rust"), Some("runner"), "fn main() {}"), None, "a word that only starts with run");
+        assert_eq!(run_block(None, None, "! git push").as_deref(), Some("git push"));
+    }
+
+    #[test]
+    fn a_fence_line_splits_into_language_and_the_rest() {
+        assert_eq!(fence_info("```sh run"), (Some("sh"), Some("run")));
+        assert_eq!(fence_info("  ~~~bash  run  "), (Some("bash"), Some("run")));
+        assert_eq!(fence_info("```"), (None, None));
     }
 
     #[test]

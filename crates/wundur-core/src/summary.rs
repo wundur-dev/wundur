@@ -295,7 +295,8 @@ fn said(chat: &Conversation, from: usize) -> Option<(String, String, Vec<String>
 }
 
 /// A piece of what the agent said, tagged so the model can point at it: `P3` a paragraph or
-/// list item, `C1` a `!` command block (only those can be run from the summary).
+/// list item, `C1` a block of commands to run (see [`crate::conversation::run_block`]; only
+/// those can be run from the summary).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Piece {
     pub tag: String,
@@ -370,14 +371,16 @@ pub fn pieces(replies: &str) -> Vec<Piece> {
     out
 }
 
-/// A fenced block holding one `!` command: the command.
+/// A fenced block of commands to run (marked `run` on its fence, or every line a `!` command):
+/// the commands.
 fn fenced_command(block: &str) -> Option<String> {
     let lines: Vec<&str> = block.lines().collect();
     let fence = |l: &str| l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~");
     if lines.len() < 3 || !fence(lines[0]) || !fence(lines[lines.len() - 1]) {
         return None;
     }
-    crate::conversation::shell_command(&lines[1..lines.len() - 1].join("\n"))
+    let (lang, meta) = crate::conversation::fence_info(lines[0]);
+    crate::conversation::run_block(lang, meta, &lines[1..lines.len() - 1].join("\n"))
 }
 
 /// What the model is told about the job, unless the person changed it (see [`prompt_file`]):
@@ -874,6 +877,14 @@ mod tests {
         assert_eq!(p[3].command.as_deref(), Some("./scripts/restart"));
         assert!(p[4].text.contains("fn y()"), "a fence is kept whole, blank lines and all");
         assert_eq!(p[4].command, None);
+    }
+
+    #[test]
+    fn a_block_marked_run_is_a_command_piece() {
+        let p = pieces("Then:\n\n```sh run\nnpm install\nnpm run dev\n```\n\n```sh\nnpm test\n```");
+        let tags: Vec<&str> = p.iter().map(|p| p.tag.as_str()).collect();
+        assert_eq!(tags, ["P1", "C1", "P2"]);
+        assert_eq!(p[1].command.as_deref(), Some("npm install\nnpm run dev"));
     }
 
     #[test]

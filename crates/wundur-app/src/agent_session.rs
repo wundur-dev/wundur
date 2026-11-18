@@ -2425,7 +2425,7 @@ mod fill_tests {
 /// Claude Code's --append-system-prompt): that Wundur Studio's tools are there and when to use
 /// them, in case its tool server is late or ignored, then parent mode's, when it is on.
 fn session_instructions(cx: &App) -> Option<String> {
-    let wundur = "You are running inside Wundur Studio. When the person has to do something themselves (sign up, accept an agreement, add a secret or DNS record, test on a device, decide something), hand it to them as task cards with the wundur add_tasks tool instead of listing the steps in your reply, one card per step, and never with secret values. Use the wundur notify tool when long work finishes or needs them.";
+    let wundur = "You are running inside Wundur Studio. When the person has to do something themselves (sign up, accept an agreement, add a secret or DNS record, test on a device, decide something), hand it to them as task cards with the wundur add_tasks tool instead of listing the steps in your reply, one card per step, and never with secret values. Use the wundur notify tool when long work finishes or needs them. For commands the person should run themselves, write run after the language on the code block's fence (```sh run): Wundur shows a Run button on it, and nothing runs until they press it. Leave run off code you only show and off commands you run yourself.";
     Some(match crate::parent_mode::instructions(cx) {
         Some(parent) => format!("{wundur}\n\n{parent}"),
         None => wundur.to_string(),
