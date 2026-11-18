@@ -170,6 +170,9 @@ pub fn set_appearance(choice: &str, cx: &mut App) {
     // `sync` compares with the theme; apply anyway so the chrome and theme agree.
     let dark = wants_dark(cx);
     apply(dark, cx);
+    // The View menu's checks are read when the menu bar is built: rebuild it, or the check stays
+    // on the old choice (the menu bar is only rebuilt by the settings window otherwise).
+    cx.set_menus(crate::actions::menus(cx));
     cx.refresh_windows();
 }
 
