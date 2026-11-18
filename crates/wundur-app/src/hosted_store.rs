@@ -31,8 +31,11 @@ pub struct Entry {
     pub working: Option<&'static str>,
     /// What went wrong last, and whether Upgrade is the way on.
     pub error: Option<(String, bool)>,
-    /// The engine picked for the next model.
+    /// The engine, detail and finish picked for the next model (else the defaults: see
+    /// [`model_choice`]).
     pub engine: Option<String>,
+    pub detail: Option<String>,
+    pub finish: Option<String>,
     /// Previews downloaded (outside the project), by model attempt.
     pub previews: HashMap<String, PathBuf>,
     /// The step the card shows when the person went back to one (else the asset's own), and
@@ -53,6 +56,10 @@ struct Store {
     plan: Option<String>,
     /// When the plan's allowance resets (paid plans: what's said instead of Upgrade).
     period_end: Option<String>,
+    /// Images left this month, for the cost line on the form.
+    images_left: Option<i64>,
+    /// Style pictures being fetched now, by path (so each is asked for once).
+    fetching: std::collections::HashSet<String>,
     loading: bool,
     catalog_error: Option<String>,
     revision: u64,
@@ -86,16 +93,18 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     if store.catalog.is_none() && !store.loading {
         store.loading = true;
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let got = cx.background_spawn(async move { (flow::catalog(), account::shared().me_with(Auth::Key).map(|m| (m.plan, m.period_end))) }).await;
+            let got = cx.background_spawn(async move { (flow::catalog(), account::shared().me_with(Auth::Key).map(|m| (m.plan, (m.period_end, m.allowance.images.left)))) }).await;
             cx.update(|cx| {
                 let store = cx.default_global::<Store>();
                 store.loading = false;
                 match got {
                     (Ok(c), me) => {
                         store.catalog = Some(c);
-                        let (plan, period_end) = me.ok().unzip();
+                        let (plan, rest) = me.ok().unzip();
+                        let (period_end, images_left) = rest.unzip();
                         store.plan = plan;
                         store.period_end = period_end.flatten();
+                        store.images_left = images_left;
                         store.catalog_error = None;
                     }
                     (Err(e), _) => store.catalog_error = Some(flow::explain(&e).0),
@@ -108,6 +117,61 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     }
     let store = cx.global::<Store>();
     (store.catalog.clone(), store.plan.clone())
+}
+
+/// Images left this month (`GET /v1/me`), once known.
+pub fn images_left(cx: &App) -> Option<i64> {
+    cx.try_global::<Store>().and_then(|s| s.images_left)
+}
+
+/// Ask again how many images are left (after one was spent).
+fn refresh_allowance(cx: &mut App) {
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        let got = cx.background_spawn(async move { account::shared().me_with(Auth::Key) }).await;
+        cx.update(|cx| {
+            if let Ok(me) = got {
+                let store = cx.default_global::<Store>();
+                store.images_left = Some(me.allowance.images.left);
+                store.revision += 1;
+                cx.refresh_windows();
+            }
+        });
+    })
+    .detach();
+}
+
+/// How long a style picture is kept before it's fetched again (the service caches them a day).
+const STYLE_IMAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A style option's picture (`path` from the field's `option_images`, under the API's base
+/// URL) as a file on this machine: the one kept from earlier, fetched again once it's a day
+/// old. `None` until the first fetch lands (the tile shows its name meanwhile).
+pub fn style_image(path: &str, cx: &mut App) -> Option<PathBuf> {
+    let name: String = path.trim_start_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    let file = dirs::cache_dir()?.join("wundur-studio").join("styles").join(name);
+    let fresh = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < STYLE_IMAGE_AGE);
+    let have = file.is_file().then(|| file.clone());
+    let store = cx.default_global::<Store>();
+    if fresh || store.fetching.contains(path) {
+        return have;
+    }
+    store.fetching.insert(path.to_string());
+    let (path, into) = (path.to_string(), file);
+    let url = format!("{}{}", account::shared().api_base().trim_end_matches('/'), if path.starts_with('/') { path.clone() } else { format!("/{path}") });
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        let got = cx.background_spawn(async move { flow::download(&url, &into) }).await;
+        cx.update(|cx| {
+            let store = cx.default_global::<Store>();
+            store.fetching.remove(&path);
+            if got.is_ok() {
+                // A new picture under the same file name: drop the drawn one.
+                store.revision += 1;
+                cx.refresh_windows();
+            }
+        });
+    })
+    .detach();
+    have
 }
 
 /// When the person's monthly allowance resets, on a paid plan (`None` on the free one).
@@ -179,6 +243,37 @@ pub fn pick_engine(dir: &Path, engine: &str, cx: &mut App) {
     update(dir, false, cx, |e| e.engine = Some(engine));
 }
 
+pub fn pick_detail(dir: &Path, detail: &str, cx: &mut App) {
+    let detail = detail.to_string();
+    update(dir, false, cx, |e| e.detail = Some(detail));
+}
+
+pub fn pick_finish(dir: &Path, finish: &str, cx: &mut App) {
+    let finish = finish.to_string();
+    update(dir, false, cx, |e| e.finish = Some(finish));
+}
+
+/// What the next model is asked for: the engine (picked, else the kind's default), the detail
+/// (picked, else the catalog's for a faceted or a smooth model) and the finish, only when the
+/// engine has finishes (picked, else faceted for a low-poly asset and smooth otherwise).
+pub fn model_choice(e: &Entry, catalog: Option<&Catalog>) -> (String, Option<String>, Option<String>) {
+    let asset = e.asset.as_ref();
+    let kind = asset.and_then(|a| catalog?.kind(&a.kind));
+    let engine = e.engine.clone().or_else(|| kind.map(|k| k.default_engine.clone())).unwrap_or_default();
+    let low_poly = flow::low_poly(asset.and_then(|a| a.fields.get("style")).and_then(Value::as_str));
+    let finish = catalog.and_then(|c| c.engine(&engine)).filter(|en| !en.finishes.is_empty()).and_then(|en| match &e.finish {
+        Some(f) if en.finishes.contains(f) => Some(f.clone()),
+        _ => flow::default_finish(en, low_poly),
+    });
+    let faceted = low_poly || finish.as_deref() == Some("faceted");
+    let detail = match (&e.detail, catalog) {
+        (Some(d), Some(c)) if c.detail(d).is_some() => Some(d.clone()),
+        (_, Some(c)) => c.detail_for(faceted).map(|d| d.id.clone()),
+        (picked, None) => picked.clone(),
+    };
+    (engine, detail, finish)
+}
+
 /// A new asset in `project`: its folder (another name's if taken) and record, then the
 /// service makes its first set of views (one image spent).
 #[allow(clippy::too_many_arguments)]
@@ -192,10 +287,14 @@ pub fn create(
     origin: Option<wundur_core::assets::Origin>,
     cx: &mut App,
 ) -> Result<PathBuf, String> {
-    let (name, description) = (name.trim(), description.trim());
-    if name.is_empty() || description.is_empty() {
-        return Err("Give it a name and say what it is.".into());
+    let (typed, description) = (name.trim(), description.trim());
+    if description.is_empty() {
+        return Err("Say what it is: describe your asset.".into());
     }
+    // Without a name the service names it from the description; the folder takes the name
+    // shown greyed in the box, which is made the same way.
+    let suggested = flow::suggested_name(description);
+    let name = if typed.is_empty() { suggested.as_str() } else { typed };
     if references.len() > flow::REFERENCES {
         return Err(format!("At most {} reference pictures.", flow::REFERENCES));
     }
@@ -231,13 +330,13 @@ pub fn create(
     let store = cx.default_global::<Store>();
     store.entries.insert(dir.clone(), Entry { record, project: project.to_path_buf(), working: Some("Starting"), polling: true, ..Default::default() });
     store.revision += 1;
-    let (kind, name, description, folder) = (kind.to_string(), name.to_string(), description.to_string(), dir.clone());
+    let (kind, typed, description, folder) = (kind.to_string(), typed.to_string(), description.to_string(), dir.clone());
     let pictures: Vec<PathBuf> = kept.iter().map(|f| dir.join(f)).collect();
     cx.spawn(async move |cx: &mut AsyncApp| {
         let got = cx
             .background_spawn(async move {
                 let encoded = pictures.iter().map(|p| flow::reference(p)).collect::<Result<Vec<_>, _>>().map_err(|e| (e, false))?;
-                flow::create(&kind, &name, &description, &fields, &encoded).map_err(|e| flow::explain(&e))
+                flow::create(&kind, (!typed.is_empty()).then_some(typed.as_str()), &description, &fields, &encoded).map_err(|e| flow::explain(&e))
             })
             .await;
         cx.update(|cx| {
@@ -247,12 +346,17 @@ pub fn create(
                 match got {
                     Ok(asset) => {
                         e.record.id = asset.id.clone();
+                        // The name the service gave it, when none was typed.
+                        if !asset.name.trim().is_empty() {
+                            e.record.name = asset.name.clone();
+                        }
                         e.asset = Some(asset);
                         e.error = None;
                     }
                     Err(err) => e.error = Some(err),
                 }
             });
+            refresh_allowance(cx);
             poll(&folder, cx);
         });
     })
@@ -324,8 +428,7 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
     let Some(e) = entry(dir, cx) else { return };
     let Some(asset) = e.asset.clone() else { return };
     let (catalog, _) = catalog(cx);
-    let default = catalog.as_ref().and_then(|c| c.kind(&asset.kind)).map(|k| k.default_engine.clone()).unwrap_or_default();
-    let engine = e.engine.clone().unwrap_or(default);
+    let (engine, detail, finish) = model_choice(&e, catalog.as_ref());
     if asset.approved_set().is_none() {
         return;
     }
@@ -340,7 +443,7 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         let got = cx
             .background_spawn(async move {
-                flow::start_model(&id, (!engine.is_empty()).then_some(engine.as_str())).and_then(|_| flow::get(&id))
+                flow::start_model(&id, (!engine.is_empty()).then_some(engine.as_str()), detail.as_deref(), finish.as_deref()).and_then(|_| flow::get(&id))
             })
             .await;
         cx.update(|cx| {

@@ -7,16 +7,44 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image, ImageDraw
 PORT = int(sys.argv[1])
 BASE = f"http://127.0.0.1:{PORT}"
-CATALOG = {"version": "test", "kinds": [
-  {"id": "humanoid", "label": "Humanoid", "description": "People and anything on two legs.",
-   "fields": [{"id": "style", "label": "Style", "type": "enum", "options": ["realistic", "stylized", "pixel"], "default": "stylized"},
-              {"id": "notes", "label": "Anything else", "type": "text"}],
-   "views": 4, "supports_3d": True, "engines": ["trellis2", "tripo_hd"], "default_engine": "trellis2"},
-  {"id": "place", "label": "Place", "description": "A room, a building, a landscape.", "fields": [], "views": 1, "supports_3d": False, "engines": [], "offers": ["concept_art"]}],
+STYLES = ["stylized", "realistic", "low poly", "toon"]
+STYLE = {"id": "style", "label": "Style", "type": "enum", "options": STYLES, "default": "stylized", "required": False,
+         "help": "Sets the look of the drawings, and the model's paint on Wundur.",
+         "option_images": {o: f"/v1/catalog/styles/{o.replace(' ', '-')}.jpg" for o in STYLES}}
+BODY = [{"id": "hands", "label": "Hands", "type": "enum", "options": ["auto", "human-like", "as described"], "default": "auto",
+         "help": "Auto gives animals with arms hand-like hands where that makes sense, which rigs and animates better. 'As described' keeps paws, claws or wings."},
+        {"id": "feet", "label": "Feet", "type": "enum", "options": ["auto", "as described"], "default": "auto",
+         "help": "Auto plants the feet with every toe and claw on the ground, which builds and rigs best. 'As described' keeps raised claws, spurs and the like."},
+        {"id": "mouth", "label": "Mouth", "type": "enum", "options": ["closed", "open"], "default": "closed",
+         "help": "Closed rigs and animates best (a rig can open it). Open shows the teeth, but the model keeps it open."}]
+NOTES = {"id": "notes", "label": "Anything else", "type": "text", "help": "Colours, materials, details to keep."}
+CATALOG = {"version": "test-2026-11", "kinds": [
+  {"id": "humanoid", "label": "Humanoid", "description": "People and anything standing on two legs.",
+   "fields": [STYLE, {"id": "height", "label": "Height", "type": "enum", "options": ["child", "adult", "giant"], "default": "adult"}] + BODY + [NOTES],
+   "views": 4, "supports_3d": True, "engines": ["trellis2", "tripo_hd", "wundur"], "default_engine": "trellis2"},
+  {"id": "creature", "label": "Creature", "description": "Animals and monsters.",
+   "fields": [STYLE, {"id": "legs", "label": "Stands on", "type": "enum", "options": ["two legs", "four legs", "other"], "default": "four legs"}] + BODY + [NOTES],
+   "views": 4, "supports_3d": True, "engines": ["trellis2", "wundur"], "default_engine": "trellis2"},
+  {"id": "prop", "label": "Prop", "description": "Things to hold, wear or place.", "fields": [STYLE, NOTES], "views": 3, "supports_3d": True, "engines": ["trellis2", "wundur"], "default_engine": "trellis2"},
+  {"id": "place", "label": "Place", "description": "A room, a building, a landscape.", "fields": [STYLE, NOTES], "views": 1, "supports_3d": False, "engines": [], "offers": ["concept_art"]}],
  "engines": [
-  {"id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "monthly"], "seconds": 60, "best_for": ["props", "creatures"], "help": "Fast and reliable; simpler textures. Uses the three-quarter view.", "license": {"commercial": True, "label": ""}, "multiview": False},
-  {"id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "best_for": ["detailed characters"], "help": "Finer detail; slower.", "license": {"commercial": True, "label": ""}, "multiview": True}],
+  {"id": "trellis2", "label": "Standard", "credits": 1, "plans": ["free", "monthly"], "seconds": 60, "best_for": ["props", "creatures"], "help": "Fast and reliable; simpler textures. Uses the three-quarter view.", "license": {"commercial": True, "label": ""}, "multiview": False, "finishes": []},
+  {"id": "tripo_hd", "label": "High detail", "credits": 3, "plans": ["monthly"], "seconds": 180, "best_for": ["detailed characters"], "help": "Finer detail; slower.", "license": {"commercial": True, "label": ""}, "multiview": True, "finishes": []},
+  {"id": "wundur", "label": "Wundur (preview)", "credits": 1, "plans": ["free", "monthly"], "seconds": 90, "best_for": ["stylized and low-poly characters"], "help": "Our own engine, in preview.", "license": {"commercial": False, "label": "Preview: not yet cleared for commercial use"}, "multiview": True, "finishes": ["smooth", "faceted"]}],
+ "details": [{"id": "light", "label": "Light", "triangles": 8000, "help": "Phones, crowds and background characters; low poly's default."},
+             {"id": "standard", "label": "Standard", "triangles": 30000, "help": "Most game characters and props."},
+             {"id": "high", "label": "High", "triangles": 100000, "help": "Heroes and close-ups, on PC and console."}],
+ "default_detail": "standard", "faceted_detail": "light",
  "riggers": [], "sounds": []}
+TRIANGLES = {d["id"]: d["triangles"] for d in CATALOG["details"]}
+def style_jpg(name):
+    colors = {"stylized": "#e07b39", "realistic": "#5d6d7e", "low-poly": "#3aa56e", "toon": "#a55dd1"}
+    im = Image.new("RGB", (224, 152), colors.get(name, "#888")); d = ImageDraw.Draw(im)
+    d.polygon([(112, 20), (180, 130), (44, 130)], fill="white"); d.text((10, 8), name, fill="white")
+    b = io.BytesIO(); im.save(b, "JPEG"); return b.getvalue()
+def suggested(desc):
+    words = [w for w in desc.split(",")[0].split() if w.lower() not in ("a", "an", "the")][:3]
+    return " ".join(words).capitalize() or "Asset"
 assets, models = {}, {}
 ids = itertools.count(1)
 def png(label, color):
@@ -35,7 +63,9 @@ def asset_view(a):
                 name = f"{s['id']}-{lab}.png"; FILES[name] = png(lab, color)
                 s["views"].append({"label": lab, "image_id": "img_" + name, "url": f"{BASE}/files/{name}", "width": 300, "height": 600})
     for m in [models[k] for k in a["models"]]:
-        if m["status"] == "running" and now - m["t"] > 8:
+        if m["status"] == "queued" and now - m["t"] > 20:
+            m["status"] = "running"; m.pop("note", None)
+        if m["status"] == "running" and now - m["t"] > (28 if m["engine"] == "wundur" else 8):
             m["status"] = "succeeded"; m["preview_url"] = f"{BASE}/files/preview.glb"
     out = {k: v for k, v in a.items() if k != "models"}
     out["sets"] = [{k: v for k, v in s.items() if k != "t"} for s in a["sets"]]
@@ -56,6 +86,7 @@ class H(BaseHTTPRequestHandler):
         if p[:1] == ["files"]:
             return self.send(200, raw=FILES.get(p[1], b"glTF-test"), ctype="application/octet-stream")
         if p == ["v1", "catalog"]: return self.send(200, CATALOG)
+        if p[:3] == ["v1", "catalog", "styles"]: return self.send(200, raw=style_jpg(p[3].rsplit(".", 1)[0]), ctype="image/jpeg")
         if p == ["v1", "me"]: return self.send(200, {"plan": "free", "allowance": {"images": {"used": 1, "limit": 5, "left": 4}, "model_credits": {"used": 0, "limit": 3, "left": 3}}})
         if p[:2] == ["v1", "assets"] and len(p) == 3 and p[2] in assets: return self.send(200, asset_view(assets[p[2]]))
         self.send(404, {"error": {"code": "not_found", "message": "No such thing."}})
@@ -67,7 +98,7 @@ class H(BaseHTTPRequestHandler):
             for n, r in enumerate(refs):
                 try: FILES[f"ref-{n}.png"] = __import__("base64").b64decode(r.split(",")[-1])
                 except Exception: return self.send(400, {"error": {"code": "bad_image", "message": "Unreadable."}})
-            a = {"id": f"as_{next(ids)}", "kind": b["kind"], "name": b["name"], "description": b["description"], "fields": b.get("fields", {}), "sets": [], "models": [],
+            a = {"id": f"as_{next(ids)}", "kind": b["kind"], "name": b.get("name") or suggested(b["description"]), "description": b["description"], "fields": b.get("fields", {}), "sets": [], "models": [],
                  "references": [{"image_id": f"img_ref{n}", "url": f"{BASE}/files/ref-{n}.png"} for n in range(len(refs))]}
             assets[a["id"]] = a; new_set(a, {"kind": "new"}); return self.send(202, asset_view(a))
         if p[:2] == ["v1", "assets"] and len(p) >= 4:
@@ -85,7 +116,15 @@ class H(BaseHTTPRequestHandler):
                 approved["attempts_left"] -= 1
                 engine = b.get("engine") or "trellis2"
                 credits = {"trellis2": 1, "tripo_hd": 3}.get(engine, 1)
-                m = {"id": f"job_{next(ids)}", "asset_id": a["id"], "set_id": approved["id"], "engine": engine, "status": "running", "imported": False, "credits": credits, "t": time.time()}
+                finishes = next(e["finishes"] for e in CATALOG["engines"] if e["id"] == engine)
+                if b.get("finish") and b["finish"] not in finishes: return self.send(422, {"error": {"code": "unknown_finish", "message": "That engine has no finishes."}})
+                detail = b.get("detail") or CATALOG["default_detail"]
+                if detail not in TRIANGLES: return self.send(422, {"error": {"code": "unknown_detail", "message": "No such detail."}})
+                m = {"id": f"job_{next(ids)}", "asset_id": a["id"], "set_id": approved["id"], "engine": engine, "status": "running", "imported": False, "credits": credits, "t": time.time(),
+                     "detail": detail, "face_limit": TRIANGLES[detail], "finish": (b.get("finish") or (finishes[0] if finishes else None))}
+                # The Wundur engine's GPU is asleep: queued a while, with the service's note.
+                if engine == "wundur":
+                    m["status"] = "queued"; m["note"] = "Starting the GPU: the first model after a quiet spell takes about 10 minutes."
                 models[m["id"]] = m; a["models"].append(m["id"]); return self.send(202, {k: v for k, v in m.items() if k != "t"})
             if p[3] == "models" and len(p) == 6:
                 m = models[p[4]]
