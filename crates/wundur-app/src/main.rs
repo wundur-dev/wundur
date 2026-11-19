@@ -308,6 +308,22 @@ fn main() {
             gpui_kit::base::dock::pin_panels(&["Chat"]);
             // The chat's group is fixed: nothing docks into it, it is not dragged.
             gpui_kit::base::dock::pin_panels(&[dock_skin::CHAT]);
+            // Every quote in Markdown copies on its own (often text to pass on: a message, a
+            // commit message), as Markdown without its `>` markers.
+            gpui_kit::base::text::set_default_quote_actions(|text, _, cx| {
+                use gpui_kit::component::{ActiveTheme, Sizable, button::{Button, ButtonVariants}};
+                let text = text.to_string();
+                Button::new("copy-quote")
+                    .xsmall()
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::Copy)
+                    .tooltip("Copy the quote")
+                    .text_color(cx.theme().muted_foreground)
+                    .on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
+                        gpui_kit::component::WindowExt::push_notification(window, "Copied", cx);
+                    })
+            });
             cx.set_global(AppSettings(Rc::new(RefCell::new(settings))));
             settings_account::init(cx);
             cx.set_window_appearance(forced);

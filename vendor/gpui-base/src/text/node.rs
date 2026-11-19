@@ -20,7 +20,7 @@ use crate::{
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
-        MarkdownNode, TableActionsFn, TaskToggleEvent, TaskToggleHandlerFn,
+        MarkdownNode, QuoteActionsFn, TableActionsFn, TaskToggleEvent, TaskToggleHandlerFn,
         document::{NodeRenderOptions, PrevBlock, flow_position},
         inline::{
             Inline, InlineHighlight, InlineState, code_insets, combine_highlights, fade_highlights,
@@ -2756,6 +2756,8 @@ pub(crate) struct NodeContext {
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
+    /// Wundur patch: what shows at a blockquote's top right on hover.
+    pub(crate) quote_actions: Option<Arc<QuoteActionsFn>>,
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,
     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     pub(crate) task_toggle_handler: Option<Arc<TaskToggleHandlerFn>>,
@@ -4541,6 +4543,20 @@ impl BlockNode {
             BlockNode::Blockquote { children, .. } => gapped(
                 div()
                     .w_full()
+                    // Wundur patch: the quote's actions (a copy button), at its top right
+                    // while the pointer is over it.
+                    .relative()
+                    .group("wundur-quote")
+                    .children(node_cx.quote_actions.clone().map(|f| {
+                        let text = children.iter().map(|c| c.to_markdown()).collect::<Vec<_>>().join("\n\n");
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .opacity(0.)
+                            .group_hover("wundur-quote", |s| s.opacity(1.))
+                            .child(f(&text, window, cx))
+                    }))
                     .text_color(node_cx.style.muted_foreground())
                     .border_l_2()
                     .border_color(node_cx.style.border())
