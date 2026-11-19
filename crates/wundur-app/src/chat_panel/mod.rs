@@ -924,6 +924,28 @@ impl ChatPanel {
                         }),
                 )
             })
+            // Create: the ways to make something in this chat (it lands here as a card).
+            .child({
+                let weak = cx.entity().downgrade();
+                Button::new("chat-create")
+                    .icon(Icon::new(gpui_kit::assets::IconName::Sparkles))
+                    .xsmall()
+                    .ghost()
+                    .tab_stop(false)
+                    .tooltip("Create: a 3D asset, an image or a sound effect")
+                    .dropdown_menu(move |menu, _, _| {
+                        use gpui_kit::component::menu::PopupMenuItem;
+                        let on = |f: fn(&mut ChatPanel, &mut Context<ChatPanel>)| {
+                            let weak = weak.clone();
+                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, f);
+                            }
+                        };
+                        menu.item(PopupMenuItem::new("3D asset…").icon(gpui_kit::assets::IconName::Box).on_click(on(|p, cx| p.start_asset_form(cx))))
+                            .item(PopupMenuItem::new("Image…").icon(gpui_kit::assets::IconName::Image).on_click(on(|p, cx| p.start_make(MakeKind::Image, cx))))
+                            .item(PopupMenuItem::new("Sound effect…").icon(gpui_kit::assets::IconName::AudioLines).on_click(on(|p, cx| p.start_make(MakeKind::Sound, cx))))
+                    })
+            })
             .child(
                 Button::new("chat-find")
                     .icon(IconName::Search)
@@ -962,12 +984,6 @@ impl ChatPanel {
                                     let _ = session.update(cx, |s, cx| s.compact(cx));
                                 },
                             ))
-                        })
-                        .item({
-                            let panel = panel.clone();
-                            gpui_kit::component::menu::PopupMenuItem::new("New game asset…").on_click(move |_, _, cx| {
-                                let _ = panel.update(cx, |p, cx| p.start_asset_form(cx));
-                            })
                         })
                         .item({
                             let panel = panel.clone();

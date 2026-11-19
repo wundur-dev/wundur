@@ -71,7 +71,9 @@ fi
 if [ -z "$NO_BUILD" ]; then
     # The external drive's AppleDouble files (._*) break the build.
     (cd "$REPO" && find . -name '._*' -type f -not -path './target/*' -delete 2>/dev/null)
-    CARGO_TARGET_DIR="$TARGET" cargo build --manifest-path "$REPO/Cargo.toml" -p wundur-app --release || exit 1
+    # Run cargo from the repo: rustup picks the toolchain from the working directory (rust-toolchain.toml
+    # pins 1.99.0), so building from elsewhere uses the default stable, which cannot read resolver = "3".
+    (cd "$REPO" && CARGO_TARGET_DIR="$TARGET" cargo build --manifest-path "$REPO/Cargo.toml" -p wundur-app --release) || exit 1
 fi
 
 # The running app: processes of exactly this binary, else of the one from before the rename.
