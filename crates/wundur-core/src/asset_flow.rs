@@ -270,6 +270,17 @@ pub fn low_poly(style: Option<&str>) -> bool {
     style.is_some_and(|s| s.eq_ignore_ascii_case("low poly"))
 }
 
+/// The looks the form offers, of the catalog's styles: the image engines draw realistic and
+/// stylized well; low poly and toon are better made from the model (the Faceted finish, a toon
+/// shader in the engine). A catalog offering neither keeps all of its own.
+pub const LOOKS: [&str; 2] = ["stylized", "realistic"];
+
+/// The options of a style field the form shows (see [`LOOKS`]).
+pub fn looks(field: &Field) -> Vec<String> {
+    let shown: Vec<String> = field.options.iter().filter(|o| LOOKS.iter().any(|l| o.eq_ignore_ascii_case(l))).cloned().collect();
+    if shown.is_empty() { field.options.clone() } else { shown }
+}
+
 /// The finish to start with on `engine`: faceted for a low-poly asset, smooth otherwise, when
 /// the engine offers it (else its first); none on an engine without finishes.
 pub fn default_finish(engine: &Engine, low_poly: bool) -> Option<String> {
@@ -573,6 +584,19 @@ pub struct Record {
     /// The reference pictures it was described with: files in the folder.
     #[serde(deserialize_with = "list")]
     pub references: Vec<String>,
+    /// Folded to one line in the chat (`None`: by what it's at; see [`Record::folded`]).
+    pub collapsed: Option<bool>,
+    /// The person stopped waiting on it: the app no longer asks the service about it (what was
+    /// started there still finishes; the service has no way to stop a job yet).
+    pub cancelled: bool,
+}
+
+impl Record {
+    /// Whether its card is folded to one line: as the person left it, else once it's done
+    /// (imported) or cancelled.
+    pub fn folded(&self) -> bool {
+        self.collapsed.unwrap_or(self.cancelled || self.imported.is_some())
+    }
 }
 
 /// At most this many reference pictures go with a new asset, each at most [`REFERENCE_BYTES`].
@@ -918,6 +942,26 @@ mod tests {
         let switch = [Field { id: "tail".into(), label: "Tail".into(), kind: "bool".into(), ..Default::default() }];
         assert_eq!(settings_summary(&switch, &none, &[("tail".to_string(), true)].into_iter().collect()), "Tail");
         assert_eq!(settings_summary(&[], &none, &off), "");
+    }
+
+    #[test]
+    fn the_form_offers_stylized_and_realistic_only() {
+        let f = Field { id: "style".into(), kind: "enum".into(), options: vec!["stylized".into(), "realistic".into(), "low poly".into(), "toon".into()], ..Default::default() };
+        assert_eq!(looks(&f), vec!["stylized".to_string(), "realistic".to_string()]);
+        let other = Field { options: vec!["ink".into(), "clay".into()], ..f };
+        assert_eq!(looks(&other), vec!["ink".to_string(), "clay".to_string()], "a catalog with neither keeps its own");
+    }
+
+    #[test]
+    fn a_card_folds_once_done_or_cancelled_unless_opened() {
+        let mut r = Record::default();
+        assert!(!r.folded());
+        r.imported = Some("md_1".into());
+        assert!(r.folded());
+        r.collapsed = Some(false);
+        assert!(!r.folded(), "opened by the person");
+        let r = Record { cancelled: true, ..Record::default() };
+        assert!(r.folded());
     }
 
     #[test]
