@@ -245,6 +245,9 @@ pub struct Conversation {
     pub cwd: String,
     /// A turn is in flight.
     pub busy: bool,
+    /// The person pressed Stop on the turn in flight: the error the agent ends it with (Claude
+    /// Code's `error_during_execution`) is their stop, not a failure.
+    pub stop_requested: bool,
     /// A message was refused for want of a sign-in: once signed in it can be sent again.
     pub refused_signed_out: bool,
     /// The usage limit is reached: when it resets (Unix time; `Some(None)`: not said).
@@ -760,7 +763,7 @@ impl Conversation {
         // The agent working (thinking, writing, calling a tool, asking) has the message; a turn
         // that fails before any of it did not take it.
         match &event {
-            Event::TurnEnded { error: Some(_), .. } => self.not_delivered(),
+            Event::TurnEnded { error: Some(_), .. } if !self.stop_requested => self.not_delivered(),
             Event::Status(_)
             | Event::TextStart
             | Event::TextDelta(_)
@@ -968,7 +971,8 @@ impl Conversation {
                 self.finish_streaming();
                 self.busy = false;
                 self.status = None;
-                self.items.push(Item::Notice("Interrupted".into()));
+                self.stop_requested = false;
+                self.items.push(Item::Notice("Stopped".into()));
                 applied.turn_ended = true;
             }
             Event::SubagentBackground { id, agent_id } => {
@@ -1054,7 +1058,10 @@ impl Conversation {
                 self.last_turn_tokens = Some((input_tokens, output_tokens));
                 self.last_turn_ms = duration_ms;
                 self.close_turn();
-                if let Some(e) = error {
+                // Stopped by the person: say so quietly, whatever the agent called it.
+                if std::mem::take(&mut self.stop_requested) && error.is_some() {
+                    self.items.push(Item::Notice("Stopped".into()));
+                } else if let Some(e) = error {
                     self.items.push(Item::Error(format!("The turn ended with an error: {}", one_line(&e, 300))));
                 }
             }
@@ -1607,6 +1614,32 @@ mod tests {
              *Turn took 3s*\n"
         );
     }
+
+    #[test]
+    fn a_turn_the_person_stopped_says_stopped_not_error() {
+        let ended = |error: Option<&str>| Event::TurnEnded {
+            error: error.map(str::to_string),
+            cost_total_usd: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            duration_ms: None,
+            session_id: None,
+        };
+        let mut chat = Conversation::new("/p");
+        chat.push_user("do the thing");
+        chat.apply(Event::TextDelta("on it".into()));
+        chat.stop_requested = true;
+        chat.apply(ended(Some("error_during_execution")));
+        assert!(matches!(chat.items.last(), Some(Item::Notice(n)) if n == "Stopped"));
+        assert!(!chat.items.iter().any(|i| matches!(i, Item::Error(_))), "a stop isn't an error");
+        assert_ne!(chat.delivery, Some(Delivery::Failed), "the message was taken");
+        assert!(!chat.stop_requested, "spent on that turn");
+        // A turn nobody stopped that fails still says so.
+        chat.push_user("again");
+        chat.apply(Event::TextDelta("hm".into()));
+        chat.apply(ended(Some("error_during_execution")));
+        assert!(matches!(chat.items.last(), Some(Item::Error(e)) if e.contains("error_during_execution")));
+    }
 }
 
 /// Letters and digits only, lower case: a reply as Markdown and as the screen shows it compare
@@ -1682,4 +1715,5 @@ mod shell_command_tests {
         });
         assert_eq!(chat.delivery, Some(Delivery::Failed));
     }
+
 }

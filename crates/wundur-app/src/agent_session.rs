@@ -2155,6 +2155,10 @@ impl AgentSession {
 
     /// Stop the current turn, keeping the agent.
     fn stop_turn(&mut self, cx: &mut Context<Self>) {
+        // The turn ending in an error now is this stop, not a failure.
+        if self.chat.busy {
+            self.chat.stop_requested = true;
+        }
         if self.interactive() {
             if let Some(pty) = self.terminal.as_ref().and_then(|t| t.view.read(cx).pty.clone()) {
                 pty.write(self.backend.terminal_interrupt());
