@@ -129,6 +129,9 @@ pub enum Item {
     ToolRun { id: u64, tool: String, command: String, state: SendState },
     /// The agent is not signed in: the card offering its own sign-in, and where that is.
     SignIn(SignIn),
+    /// The agent is not installed on this machine: the card offering its own installer, and
+    /// where that is (the same three steps as signing in: needed, running, done).
+    Install(SignIn),
 }
 
 /// Where signing the agent in is (see [`Item::SignIn`]).
@@ -1171,7 +1174,7 @@ pub fn to_markdown(items: &[Item], agent: &str) -> String {
             Item::Outgoing { to, text, .. } => format!("**To {to}:** {}", text.trim()),
             Item::ToolRun { tool, command, .. } => format!("**Tool {tool}:** `{command}`"),
             // Wundur's own cards, not part of the conversation.
-            Item::SignIn(_) | Item::NewAsset | Item::Make(_) => continue,
+            Item::SignIn(_) | Item::Install(_) | Item::NewAsset | Item::Make(_) => continue,
             Item::Asset(dir) => format!("*[Game asset: {}]*", dir.display()),
             Item::Compacted { trigger, tokens, .. } => {
                 let mut facts: Vec<String> = trigger.iter().cloned().collect();

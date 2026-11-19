@@ -393,6 +393,22 @@ pub trait Backend: Send + Sync {
         Vec::new()
     }
 
+    /// The program the agent runs as (`claude`): looked for to tell whether it is installed.
+    fn program(&self) -> Option<String> {
+        None
+    }
+
+    /// The agent's own installer, for when its program is not on the machine.
+    fn install(&self) -> Option<Install> {
+        None
+    }
+
+    /// Whether the agent is installed on `host`; `None`: not known (it names no program, or the
+    /// host can't tell), taken as installed.
+    fn installed(&self, host: &dyn Host) -> Option<bool> {
+        host.has_program(&self.program()?)
+    }
+
     /// The agent's own sign-in, run in a terminal (it may open a browser, or ask for a code).
     fn sign_in(&self) -> Option<crate::host::ProgramSpec> {
         None
@@ -607,6 +623,15 @@ pub trait Backend: Send + Sync {
     }
 }
 
+/// How to install an agent that is not on the machine: its own installer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Install {
+    /// The command line that installs it, to run in a terminal.
+    pub command: String,
+    /// The agent's install page (other ways to install it, help when it fails).
+    pub page: String,
+}
+
 /// The backends a window can start sessions with.
 #[derive(Clone, Default)]
 pub struct Registry {
@@ -629,6 +654,12 @@ impl Registry {
     /// The first backend: the default for new sessions.
     pub fn default_backend(&self) -> Option<Arc<dyn Backend>> {
         self.backends.first().cloned()
+    }
+
+    /// The first backend installed on `host` (or that can't tell), else the first: the default
+    /// for a new session there.
+    pub fn default_installed(&self, host: &dyn Host) -> Option<Arc<dyn Backend>> {
+        self.backends.iter().find(|b| b.installed(host) != Some(false)).cloned().or_else(|| self.default_backend())
     }
 }
 
@@ -679,5 +710,63 @@ mod launch_tests {
         // With a conversation: continue it, or a copy.
         assert_eq!(Launch::decide(true, true, false), Launch::Resume);
         assert_eq!(Launch::decide(true, true, true), Launch::Fork);
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+    use crate::host::LocalHost;
+
+    /// A backend that runs as `program` (or names none).
+    struct Named(&'static str, Option<&'static str>);
+
+    impl Backend for Named {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+        fn new_agent(&self) -> Box<dyn Agent> {
+            unimplemented!("not started in these tests")
+        }
+        fn program(&self) -> Option<String> {
+            self.1.map(str::to_string)
+        }
+    }
+
+    const GONE: &str = "wundur-no-such-agent-program";
+
+    #[test]
+    fn an_agent_is_installed_when_its_program_is_found() {
+        assert_eq!(Named("a", Some("sh")).installed(&LocalHost), Some(true));
+        assert_eq!(Named("b", Some(GONE)).installed(&LocalHost), Some(false));
+        // Naming no program: not known.
+        assert_eq!(Named("c", None).installed(&LocalHost), None);
+    }
+
+    #[test]
+    fn the_default_is_the_first_installed_agent() {
+        let reg = Registry::new(vec![Arc::new(Named("gone", Some(GONE))), Arc::new(Named("here", Some("sh")))]);
+        assert_eq!(reg.default_installed(&LocalHost).unwrap().id(), "here");
+        // One that can't tell counts as installed.
+        let reg = Registry::new(vec![Arc::new(Named("gone", Some(GONE))), Arc::new(Named("unknown", None))]);
+        assert_eq!(reg.default_installed(&LocalHost).unwrap().id(), "unknown");
+        // None installed: the first, which then offers its installer.
+        let reg = Registry::new(vec![Arc::new(Named("gone", Some(GONE))), Arc::new(Named("also", Some(GONE)))]);
+        assert_eq!(reg.default_installed(&LocalHost).unwrap().id(), "gone");
+    }
+
+    #[test]
+    fn both_agents_name_their_program_and_installer() {
+        for b in [&crate::backends::claude::ClaudeBackend as &dyn Backend, &crate::backends::cursor::CursorBackend::default()] {
+            assert!(b.program().is_some(), "{} names no program", b.name());
+            let install = b.install().unwrap_or_else(|| panic!("{} has no installer", b.name()));
+            assert!(install.page.starts_with("https://") && install.command.contains("https://"), "{install:?}");
+        }
     }
 }

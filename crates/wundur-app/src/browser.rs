@@ -74,6 +74,10 @@ pub struct Browser {
     host: Arc<dyn Host>,
     backends: Vec<Arc<dyn Backend>>,
     backend: Arc<dyn Backend>,
+    /// The agents not installed on the host, by id (`None` until looked for).
+    missing: Option<Vec<String>>,
+    /// The person chose the agent: it is not switched for an installed one.
+    picked: bool,
     /// The folder whose folders show under "Inside".
     dir: PathBuf,
     subfolders: Vec<PathBuf>,
@@ -161,6 +165,8 @@ impl Browser {
             host,
             backends,
             backend,
+            missing: None,
+            picked: false,
             dir: dir.clone(),
             subfolders: Vec::new(),
             recent,
@@ -187,6 +193,7 @@ impl Browser {
         this.select(dir, cx);
         this.drop_missing_recent(cx);
         this.watch_running(cx);
+        this.watch_installed(cx);
         this
     }
 
@@ -435,6 +442,11 @@ impl Browser {
             cx.notify();
             return;
         };
+        if self.is_missing(self.backend.id()) {
+            self.error = Some(format!("Install {} first, or choose another agent.", self.backend.name()));
+            cx.notify();
+            return;
+        }
         let worktree = match (&self.worktree_name, self.worktree) {
             (Some((input, _)), true) => {
                 let name = input.read(cx).value().trim().to_string();
@@ -504,7 +516,50 @@ impl Browser {
         cx.emit(BrowserEvent::Resume { host: self.host.clone(), root, backend: self.backend.clone(), id, fork: false, wait_for, name: None });
     }
 
+    /// Whether `id` is known not to be installed on the host.
+    fn is_missing(&self, id: &str) -> bool {
+        self.missing.as_ref().is_some_and(|m| m.iter().any(|x| x == id))
+    }
+
+    /// Which agents are installed on the host, looked for again every few seconds (one
+    /// installed while this shows is offered at once). Until the person picks one, an agent that
+    /// is not installed gives way to the first that is.
+    fn watch_installed(&mut self, cx: &mut Context<Self>) {
+        let (host, backends) = (self.host.clone(), self.backends.clone());
+        let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                let (h, all) = (host.clone(), backends.clone());
+                let missing: Vec<String> = cx
+                    .background_spawn(async move { all.iter().filter(|b| b.installed(h.as_ref()) == Some(false)).map(|b| b.id().to_string()).collect() })
+                    .await;
+                let alive = this.update(cx, |br, cx| {
+                    if br.missing.as_ref() != Some(&missing) {
+                        br.missing = Some(missing.clone());
+                        if br.is_missing(br.backend.id()) && !br.picked {
+                            let other = br.backends.iter().find(|b| !missing.iter().any(|m| m == b.id())).cloned();
+                            if let Some(other) = other {
+                                br.switch_backend(other, cx);
+                            }
+                        }
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+            }
+        });
+        self._tasks.push(task);
+    }
+
     fn choose_backend(&mut self, backend: Arc<dyn Backend>, cx: &mut Context<Self>) {
+        self.picked = true;
+        self.switch_backend(backend, cx);
+    }
+
+    fn switch_backend(&mut self, backend: Arc<dyn Backend>, cx: &mut Context<Self>) {
+        self.error = None;
         if backend.id() == self.backend.id() {
             return;
         }
@@ -754,6 +809,7 @@ impl Browser {
         let me = cx.entity().downgrade();
         let backends = self.backends.clone();
         let chosen = self.backend.id().to_string();
+        let missing = self.missing.clone().unwrap_or_default();
         let agent = Button::new("agent")
             .outline()
             .w_full()
@@ -762,7 +818,8 @@ impl Browser {
             .dropdown_menu(move |mut menu, _, _| {
                 for b in backends.iter() {
                     let (me, b2) = (me.clone(), b.clone());
-                    menu = menu.item(PopupMenuItem::new(b.name()).checked(b.id() == chosen).on_click(move |_, _, cx| {
+                    let label = if missing.iter().any(|m| m == b.id()) { format!("{} (not installed)", b.name()) } else { b.name().to_string() };
+                    menu = menu.item(PopupMenuItem::new(label).checked(b.id() == chosen).on_click(move |_, _, cx| {
                         let _ = me.update(cx, |br, cx| br.choose_backend(b2.clone(), cx));
                     }));
                 }
@@ -783,6 +840,7 @@ impl Browser {
                     .child(Input::new(&self.name)),
             )
             .child(div().w(px(220.)).flex_none().flex().flex_col().gap_2().child(label("Agent", false)).child(agent));
+        let not_installed = self.render_not_installed(cx);
         // The worktree: for a git folder; else said why not.
         let git = self.is_git();
         let loading = self.detail.as_ref().is_none_or(|d| d.loading);
@@ -852,7 +910,7 @@ impl Browser {
                     .label("Create session")
                     .icon(gpui_kit::assets::IconName::CornerDownLeft)
                     .loading(self.creating)
-                    .disabled(self.selected.is_none())
+                    .disabled(self.selected.is_none() || self.is_missing(self.backend.id()))
                     .on_click(cx.listener(|b, _, window, cx| b.create(false, window, cx))),
             );
         div()
@@ -869,9 +927,65 @@ impl Browser {
             )
             .child(place)
             .child(fields)
+            .children(not_installed)
             .child(worktree)
             .child(actions)
             .into_any_element()
+    }
+
+    /// The chosen agent is not installed on the host: its installer, to copy into a terminal,
+    /// and its page. The agent is offered as soon as it is installed.
+    fn render_not_installed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_missing(self.backend.id()) {
+            return None;
+        }
+        let install = self.backend.install();
+        let mono = crate::fonts::code(cx);
+        let theme = cx.theme();
+        let (fg, muted, border, warning, code_bg) = (theme.foreground, theme.muted_foreground, theme.border, theme.warning, theme.muted);
+        let name = self.backend.name();
+        let place = if self.host.is_remote() { self.host.label() } else { "this machine".to_string() };
+        let others: Vec<&str> = self.backends.iter().filter(|b| !self.is_missing(b.id()) && b.id() != self.backend.id()).map(|b| b.name()).collect();
+        let mut note = "Run this in a terminal; Wundur offers it as soon as it is installed.".to_string();
+        if !others.is_empty() {
+            note += &format!(" Or choose {}.", others.join(" or "));
+        }
+        let (command, page) = (install.as_ref().map(|i| i.command.clone()), install.as_ref().map(|i| i.page.clone()));
+        let copy = command.clone();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(border)
+                .bg(warning.opacity(0.06))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().size(px(7.)).rounded_full().bg(warning))
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("{name} isn't installed on {place}"))),
+                )
+                .child(div().text_sm().text_color(muted).child(note))
+                .children(command.map(|c| div().px_2().py_1().rounded_sm().bg(code_bg).font_family(mono).text_sm().text_color(fg).child(c)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(copy.map(|c| {
+                            Button::new("install-copy").small().label("Copy command").icon(IconName::Copy).on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(c.clone()));
+                            })
+                        }))
+                        .children(page.map(|url| Button::new("install-page").small().ghost().label("Install page").on_click(move |_, _, cx| cx.open_url(&url)))),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The folder's previous sessions: running elsewhere first, then the recent ones.

@@ -164,6 +164,11 @@ pub trait Host: Send + Sync {
     /// What `git <args>` prints, run in `dir` without taking git's optional locks (the agent
     /// may be running git itself); `None` when it fails or there is no git.
     fn git(&self, dir: &Path, args: &[&str]) -> Option<Vec<u8>>;
+    /// Whether a program is installed here (on PATH, or where installers put it), as
+    /// [`Host::program_command`] would find it; `None`: this host can't tell.
+    fn has_program(&self, _name: &str) -> Option<bool> {
+        None
+    }
 }
 
 /// The shell script running `git <args>` in `dir` (how a remote host runs it).
@@ -279,6 +284,10 @@ mod shared_watch {
 pub struct LocalHost;
 
 impl Host for LocalHost {
+    fn has_program(&self, name: &str) -> Option<bool> {
+        Some(find_program(name).is_some())
+    }
+
     fn git(&self, dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
         let out = crate::platform::command("git")
             .arg("-C")
@@ -578,6 +587,17 @@ fn q(path: &Path) -> String {
 }
 
 impl Host for SshHost {
+    /// `command -v` in a login shell (the PATH the agent would start with).
+    fn has_program(&self, name: &str) -> Option<bool> {
+        let probe = format!("command -v {} >/dev/null 2>&1 && echo yes || echo no", shell_quote(name));
+        let out = self.run(&format!("exec \"$SHELL\" -lc {}", shell_quote(&probe)), None).ok()?;
+        match String::from_utf8_lossy(&out).trim() {
+            "yes" => Some(true),
+            "no" => Some(false),
+            _ => None,
+        }
+    }
+
     fn label(&self) -> String {
         self.destination.clone()
     }
