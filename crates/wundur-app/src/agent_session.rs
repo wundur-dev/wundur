@@ -453,6 +453,9 @@ impl AgentSession {
     /// goes first once the turn has been stopped.
     pub fn send_waiting_now(&mut self, id: u64, cx: &mut Context<Self>) {
         self.outbox_paused = false;
+        if self.outbox.editing() == Some(id) {
+            self.outbox.set_editing(None);
+        }
         match SendNow::decide(self.chat.busy, self.takes_mid_turn()) {
             SendNow::Now if self.chat.busy => {
                 if let Some(w) = self.outbox.remove(id) {
@@ -469,6 +472,32 @@ impl AgentSession {
                 }
             }
         }
+        cx.notify();
+    }
+
+    /// The waiting message being changed, if one is.
+    pub fn editing_waiting(&self) -> Option<u64> {
+        self.outbox.editing()
+    }
+
+    /// Start changing waiting message `id`: it stays in its place and doesn't go until the
+    /// change is saved or given up. False when it has gone already.
+    pub fn start_editing_waiting(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let held = self.outbox.set_editing(Some(id));
+        cx.notify();
+        held
+    }
+
+    /// Finish changing waiting message `id`: its new text (`None` keeps it as it was). Then
+    /// what waits goes as usual (the turn may have ended meanwhile).
+    pub fn finish_editing_waiting(&mut self, id: u64, text: Option<String>, cx: &mut Context<Self>) {
+        if let Some(text) = text {
+            self.outbox.edit(id, text);
+        }
+        if self.outbox.editing() == Some(id) {
+            self.outbox.set_editing(None);
+        }
+        self.send_waiting(cx);
         cx.notify();
     }
 

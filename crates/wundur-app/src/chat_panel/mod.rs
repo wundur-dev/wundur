@@ -73,6 +73,8 @@ pub struct ChatPanel {
     /// is kept under it (see `wundur_core::drafts`), and the pending save of it.
     draft: Option<usize>,
     draft_save: Option<Task<()>>,
+    /// The waiting message being changed (its id) and the box it's changed in.
+    waiting_edit: Option<(u64, Entity<TextareaState>, Subscription)>,
     /// Set when this panel watches one subagent (its tool call id): it shows that subagent's
     /// items instead of the conversation, with no message box.
     pub agent: Option<String>,
@@ -315,6 +317,7 @@ impl ChatPanel {
             number: 0,
             draft: None,
             draft_save: None,
+            waiting_edit: None,
             agent: None,
             focus: cx.focus_handle(),
             input,

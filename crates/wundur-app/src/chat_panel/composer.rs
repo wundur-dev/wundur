@@ -757,8 +757,39 @@ impl ChatPanel {
             .into_any_element()
     }
 
+    /// Change waiting message `id` in its place: a box with its text, where Enter saves. It
+    /// doesn't go until the change is saved or given up.
+    fn edit_waiting(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.session.read(cx).waiting().find(|w| w.id == id).map(|w| w.text.clone()) else { return };
+        if !self.session.update(cx, |s, cx| s.start_editing_waiting(id, cx)) {
+            return;
+        }
+        let input = cx.new(|cx| {
+            let mut i = TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(true);
+            i.set_value(text, window, cx);
+            i
+        });
+        let sub = cx.subscribe_in(&input, window, move |p, _, ev: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { shift: false, .. } = ev {
+                p.finish_waiting_edit(true, cx);
+            }
+        });
+        input.update(cx, |i, cx| i.focus(window, cx));
+        self.waiting_edit = Some((id, input, sub));
+        cx.notify();
+    }
+
+    /// Finish changing the waiting message: its new text when `save`, else as it was.
+    fn finish_waiting_edit(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some((id, input, _)) = self.waiting_edit.take() else { return };
+        let text = save.then(|| input.read(cx).value().to_string());
+        self.session.update(cx, |s, cx| s.finish_editing_waiting(id, text, cx));
+        cx.notify();
+    }
+
     /// The messages sent while the agent works, in the order they go: each with its first
-    /// line (and its images), Send now and Remove. Each shows in the chat when it goes.
+    /// line (and its images), Edit, Send now and Remove. Each shows in the chat when it goes;
+    /// one being changed waits until the change is saved.
     fn render_waiting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self.session.read(cx);
         session.waiting().next()?;
@@ -791,8 +822,50 @@ impl ChatPanel {
             .when(session.waiting_paused(), |d| {
                 d.child(div().px_3().py(px(2.)).text_xs().text_color(muted).child("Stopped: these wait until you send one, or a new message."))
             });
+        let editing = session.editing_waiting();
         for w in session.waiting() {
             let (id, n) = (w.id, w.id as usize);
+            // Being changed: its box, with Save and Cancel (Enter saves, Esc gives up).
+            if editing == Some(id)
+                && let Some((_, input, _)) = self.waiting_edit.as_ref().filter(|(e, _, _)| *e == id)
+            {
+                panel = panel.child(
+                    div()
+                        .id(("waiting-edit", n))
+                        .w_full()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .pl_3()
+                        .pr_1()
+                        .py_1()
+                        .on_key_down(cx.listener(|p, ev: &KeyDownEvent, _, cx| {
+                            if ev.keystroke.key == "escape" {
+                                p.finish_waiting_edit(false, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(div().pt(px(6.)).child(Icon::new(gpui_kit::assets::IconName::Pencil).xsmall().text_color(muted)))
+                        .child(div().flex_1().min_w_0().child(Textarea::new(input).small()))
+                        .child(
+                            Button::new(("waiting-cancel", n))
+                                .xsmall()
+                                .ghost()
+                                .label("Cancel")
+                                .tooltip("Keep it as it was (Esc)")
+                                .on_click(cx.listener(|p, _, _, cx| p.finish_waiting_edit(false, cx))),
+                        )
+                        .child(
+                            Button::new(("waiting-save", n))
+                                .xsmall()
+                                .primary()
+                                .label("Save")
+                                .tooltip("Save the change (Enter)")
+                                .on_click(cx.listener(|p, _, _, cx| p.finish_waiting_edit(true, cx))),
+                        ),
+                );
+                continue;
+            }
             let images = w.images.len();
             let text = w.preview(200);
             let label = match (text.is_empty(), images) {
@@ -833,6 +906,14 @@ impl ChatPanel {
                     .child(Icon::new(gpui_kit::assets::IconName::CornerDownRight).xsmall().text_color(muted))
                     .children(thumb)
                     .child(div().flex_1().min_w_0().truncate().text_color(fg).child(label))
+                    .child(
+                        Button::new(("waiting-edit-button", n))
+                            .xsmall()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .tooltip("Edit it before it goes")
+                            .on_click(cx.listener(move |p, _, window, cx| p.edit_waiting(id, window, cx))),
+                    )
                     .child(
                         Button::new(("waiting-send", n))
                             .xsmall()

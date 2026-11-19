@@ -53,6 +53,9 @@ impl SendNow {
 pub struct Outbox {
     items: VecDeque<Waiting>,
     next_id: u64,
+    /// The message the person is changing: it doesn't go (nor anything behind it, when it's
+    /// next) until they've finished.
+    editing: Option<u64>,
 }
 
 impl Outbox {
@@ -78,7 +81,38 @@ impl Outbox {
     /// Take message `id` out (sent now, or dropped).
     pub fn remove(&mut self, id: u64) -> Option<Waiting> {
         let i = self.items.iter().position(|w| w.id == id)?;
+        if self.editing == Some(id) {
+            self.editing = None;
+        }
         self.items.remove(i)
+    }
+
+    /// The message being changed, if one is.
+    pub fn editing(&self) -> Option<u64> {
+        self.editing
+    }
+
+    /// Hold message `id` while the person changes it (or none, `None`). False when there is no
+    /// such message.
+    pub fn set_editing(&mut self, id: Option<u64>) -> bool {
+        if id.is_some_and(|id| !self.items.iter().any(|w| w.id == id)) {
+            return false;
+        }
+        self.editing = id;
+        true
+    }
+
+    /// Message `id`'s text changed to `text`, in its place; one left with no text and no
+    /// images is dropped. False when there is no such message.
+    pub fn edit(&mut self, id: u64, text: impl Into<String>) -> bool {
+        let Some(i) = self.items.iter().position(|w| w.id == id) else { return false };
+        let text = text.into();
+        if text.trim().is_empty() && self.items[i].images.is_empty() {
+            self.remove(id);
+        } else {
+            self.items[i].text = text;
+        }
+        true
     }
 
     /// Put message `id` first, to go next. False when there is no such message.
@@ -92,9 +126,10 @@ impl Outbox {
         }
     }
 
-    /// The message to send now: the first, once the agent is free (`busy`: a turn runs).
+    /// The message to send now: the first, once the agent is free (`busy`: a turn runs), and
+    /// unless the person is changing it.
     pub fn next(&mut self, busy: bool) -> Option<Waiting> {
-        if busy { None } else { self.items.pop_front() }
+        if busy || self.items.front().is_some_and(|w| Some(w.id) == self.editing) { None } else { self.items.pop_front() }
     }
 }
 
@@ -119,6 +154,31 @@ mod tests {
         let two = o.next(false).unwrap();
         assert_eq!((two.text.as_str(), two.images.len()), ("two", 1));
         assert_eq!(texts(&o), ["three"]);
+    }
+
+    #[test]
+    fn a_message_being_changed_waits_and_keeps_its_place() {
+        let mut o = Outbox::default();
+        let a = o.push("a", Vec::new());
+        let b = o.push("b", Vec::new());
+        assert!(o.set_editing(Some(a)));
+        // The turn ended, but the first is being changed: nothing goes, not even the second.
+        assert_eq!(o.next(false), None);
+        assert!(o.edit(a, "a, better"));
+        assert!(o.set_editing(None));
+        assert_eq!(o.next(false).map(|w| w.text), Some("a, better".into()));
+        // One behind the first being changed doesn't hold the first up.
+        o.push("c", Vec::new());
+        assert!(o.set_editing(Some(b)) && o.next(false).is_none());
+        o.set_editing(None);
+        let c = o.items().nth(1).unwrap().id;
+        assert!(o.set_editing(Some(c)));
+        assert_eq!(o.next(false).map(|w| w.text), Some("b".into()));
+        // Emptied, a message without images goes; removing one being changed ends the change.
+        let d = o.push("d", Vec::new());
+        assert!(o.edit(d, "  "));
+        assert!(o.items().all(|w| w.id != d));
+        assert!(!o.set_editing(Some(999)));
     }
 
     #[test]
