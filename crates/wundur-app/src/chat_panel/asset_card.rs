@@ -124,6 +124,7 @@ impl ChatPanel {
     pub(super) fn ensure_asset_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_hosted_form(window, cx);
         self.ensure_make_fields(window, cx);
+        self.claim_assets(cx);
         let (dirs, form): (Vec<PathBuf>, bool) = {
             let chat = &self.session.read(cx).chat;
             (
@@ -149,6 +150,40 @@ impl ChatPanel {
         if revision != self.asset_revision {
             self.asset_revision = revision;
             self.list.remeasure();
+        }
+    }
+
+    /// Tell each card in the chat which chat it's in, once the chat has an id: a card made
+    /// before (a new chat's first thing) wouldn't know, and would be gone when the chat is read
+    /// in again (reopened, resumed, restarted). One in the turn still running waits for it to
+    /// end, when the turn's key settles.
+    fn claim_assets(&mut self, cx: &mut Context<Self>) {
+        let wanted: Vec<(PathBuf, wundur_core::assets::Origin)> = {
+            let s = self.session.read(cx);
+            let chat = &s.chat;
+            let Some(id) = chat.session_id.clone() else { return };
+            if s.host().is_remote() {
+                return;
+            }
+            let last_turn = chat.items.iter().rposition(|i| matches!(i, Item::User(_)));
+            chat.items
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, i)| match i {
+                    Item::Asset(d) if !self.claimed_assets.contains(d) => Some((ix, d)),
+                    _ => None,
+                })
+                .filter(|(ix, _)| !(chat.busy && last_turn.is_some_and(|t| t < *ix)))
+                .map(|(ix, d)| (d.clone(), wundur_core::assets::Origin { session: id.clone(), turn: chat.turn_key_before(ix) }))
+                .collect()
+        };
+        for (dir, origin) in wanted {
+            if crate::hosted_store::is_hosted(&dir) {
+                crate::hosted_store::claim(&dir, &origin, cx);
+            } else {
+                asset_store::claim(&dir, &origin, cx);
+            }
+            self.claimed_assets.insert(dir);
         }
     }
 

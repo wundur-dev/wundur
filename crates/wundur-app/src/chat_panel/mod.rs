@@ -147,6 +147,8 @@ pub struct ChatPanel {
     hosted_form: Option<hosted_card::HostedForm>,
     /// Each hosted asset card's "Refine" box, by the asset's folder.
     refine_notes: HashMap<PathBuf, Entity<gpui_kit::component::input::TextareaState>>,
+    /// The asset cards told which chat they're in (see `claim_assets`).
+    claimed_assets: HashSet<PathBuf>,
     /// Hosted cards whose Asset brief is open (it starts folded to one line).
     open_briefs: std::collections::HashSet<PathBuf>,
     makes: HashMap<u64, make_card::MakeCard>,
@@ -357,6 +359,7 @@ impl ChatPanel {
             new_asset: None,
             hosted_form: None,
             refine_notes: HashMap::new(),
+            claimed_assets: HashSet::new(),
             open_briefs: Default::default(),
             makes: HashMap::new(),
             asset_revision: 0,

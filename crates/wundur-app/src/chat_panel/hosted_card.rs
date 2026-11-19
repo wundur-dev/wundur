@@ -123,6 +123,9 @@ fn reference_paste(item: &ClipboardItem, panel: &WeakEntity<ChatPanel>, window: 
 
 /// The width of two view tiles side by side (a tile is 0.62 of its picture's height, plus its
 /// border) and the gap between: four views wrap into two rows of two.
+/// A view tile's height on the Views step (made and being made).
+const TILE_HEIGHT: f32 = 200.;
+
 fn two_wide(height: f32) -> f32 {
     // Two points to spare: rounding never pushes a tile onto a third row.
     2. * (height * 0.62 + 2.) + 8. + 2.
@@ -236,7 +239,7 @@ impl ChatPanel {
         for dir in dirs {
             self.refine_notes
                 .entry(dir)
-                .or_insert_with(|| cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 5).placeholder("What to change, e.g. keep the silhouette, make the hood darker")));
+                .or_insert_with(|| cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 5).placeholder("What would you change? e.g. broader shoulders, less armor")));
         }
         if !wanted {
             self.hosted_form = None;
@@ -472,9 +475,17 @@ impl ChatPanel {
                     .child(div().text_sm().text_color(muted).child("You'll be able to review and refine them here.")),
             )
             .children(version.map(|v| div().text_sm().text_color(muted).child(format!("v{v}"))));
-        let mut tiles = div().flex().flex_wrap().gap_3();
-        for label in labels {
-            tiles = tiles.child(
+        let tiles = labels.iter().map(|l| (l.clone(), gpui_kit::component::skeleton::Skeleton::new().size_full().rounded(px(12.)).into_any_element())).collect();
+        div().flex().flex_col().gap_4().child(status).child(self.hosted_tiles(tiles, cx)).into_any_element()
+    }
+
+    /// The views across the card, each a tile with its label under it: placeholders while
+    /// they're made, the pictures once they're in (the same tiles, so the card doesn't jump).
+    fn hosted_tiles(&self, tiles: Vec<(String, AnyElement)>, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let mut row = div().flex().flex_wrap().gap_3();
+        for (label, body) in tiles {
+            row = row.child(
                 div()
                     .flex_1()
                     .min_w(px(110.))
@@ -482,11 +493,11 @@ impl ChatPanel {
                     .flex_col()
                     .items_center()
                     .gap_2()
-                    .child(gpui_kit::component::skeleton::Skeleton::new().w_full().h(px(200.)).rounded(px(12.)))
-                    .child(div().text_sm().text_color(muted).child(label.clone())),
+                    .child(div().w_full().h(px(TILE_HEIGHT)).child(body))
+                    .child(div().text_sm().text_color(muted).child(label)),
             );
         }
-        div().flex().flex_col().gap_4().child(status).child(tiles).into_any_element()
+        row.into_any_element()
     }
 
     /// The brief the views are made from, folded to one line (its description) until opened:
@@ -1279,121 +1290,149 @@ impl ChatPanel {
         let v = version(asset, &set.id);
         let generating = asset.sets.iter().any(Set::is_generating);
         let busy = e.working.is_some() || generating;
-        // The set shown, large.
+        let approved = asset.approved_set().map(|s| s.id.clone());
+        let this_approved = approved.as_deref() == Some(set.id.as_str());
+        // Above the views: which version and where it's at, and that a view opens large.
+        let state = if this_approved {
+            "Approved"
+        } else if set.is_ready() {
+            "Ready to review"
+        } else {
+            "Didn't come out"
+        };
+        let heading = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(self.hosted_heading(&format!("Views v{v}"), cx).text_base())
+            .child(div().text_sm().text_color(muted).child("·"))
+            .child(div().flex_1().min_w_0().truncate().text_sm().text_color(muted).child(state))
+            .when(set.is_ready(), |d| d.child(div().flex_none().text_xs().text_color(muted).child("Click a view to inspect")));
+        // The set shown, across the card.
         let main: AnyElement = if set.is_ready() {
-            let labels: Vec<String> = set.views.iter().map(|v| v.label.clone()).collect();
-            self.hosted_view_row(dir, saved.as_deref().unwrap_or_default(), &labels, 180., cx)
+            let files = saved.unwrap_or_default();
+            let tiles = set
+                .views
+                .iter()
+                .zip(&files)
+                .map(|(view, file)| {
+                    let path = dir.join(file);
+                    let full = path.clone();
+                    let tile = div()
+                        .id(SharedString::from(format!("hosted-view-{}", path.display())))
+                        .size_full()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(border)
+                        .bg(ground)
+                        .overflow_hidden()
+                        .cursor_pointer()
+                        .child(img(path).size_full().object_fit(ObjectFit::Contain))
+                        .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx));
+                    (view.label.clone(), tile.into_any_element())
+                })
+                .collect();
+            self.hosted_tiles(tiles, cx)
         } else {
             div().text_xs().text_color(danger).child(set.error.as_ref().map_or("These views didn't come out (not counted); try another direction.".to_string(), |er| er.message.clone())).into_any_element()
         };
-        // The versions: every set, the shown one marked.
-        let mut strip = div().flex().flex_wrap().items_end().gap_2();
-        for (n, s) in asset.sets.iter().enumerate() {
-            let on = s.id == set.id;
-            let thumb = e.record.views.get(&s.id).and_then(|f| f.first()).map(|f| dir.join(f));
-            let (folder, sid) = (dir.to_path_buf(), s.id.clone());
-            let caption = format!("v{}{}", n + 1, if s.approved { " · Approved" } else if on { " · Shown" } else { "" });
-            strip = strip.child(
-                div()
-                    .id(SharedString::from(format!("hosted-version-{}-{}", s.id, dir.display())))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .on_click(move |_, _, cx| hosted_store::show_set(&folder, Some(sid.clone()), cx))
-                    .child(
-                        div()
-                            .size(px(56.))
-                            .rounded(px(8.))
-                            .overflow_hidden()
-                            .bg(ground)
-                            .border_2()
-                            .border_color(if on { ring } else { border.opacity(0.0) })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(match (&thumb, s.status.as_str()) {
-                                (Some(p), _) => img(p.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                                (None, "failed") => div().text_xs().text_color(danger).child("failed").into_any_element(),
-                                _ => gpui_kit::component::spinner::Spinner::new().color(muted).into_any_element(),
-                            }),
-                    )
-                    .child(div().text_xs().text_color(if on { ring } else { muted }).child(caption)),
-            );
+        let mut left = div().flex().flex_col().gap_4().child(div().flex().flex_col().gap_3().child(heading).child(main));
+        // The versions, once there's more than one: every set, the shown one marked.
+        if asset.sets.len() > 1 {
+            let mut strip = div().flex().flex_wrap().items_end().gap_2();
+            for (n, s) in asset.sets.iter().enumerate() {
+                let on = s.id == set.id;
+                let thumb = e.record.views.get(&s.id).and_then(|f| f.first()).map(|f| dir.join(f));
+                let (folder, sid) = (dir.to_path_buf(), s.id.clone());
+                let caption = format!("v{}{}", n + 1, if s.approved { " · Approved" } else { "" });
+                strip = strip.child(
+                    div()
+                        .id(SharedString::from(format!("hosted-version-{}-{}", s.id, dir.display())))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_1()
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| hosted_store::show_set(&folder, Some(sid.clone()), cx))
+                        .child(
+                            div()
+                                .size(px(48.))
+                                .rounded(px(8.))
+                                .overflow_hidden()
+                                .bg(ground)
+                                .border_2()
+                                .border_color(if on { ring } else { border.opacity(0.0) })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(match (&thumb, s.status.as_str()) {
+                                    (Some(p), _) => img(p.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                                    (None, "failed") => div().text_xs().text_color(danger).child("failed").into_any_element(),
+                                    _ => gpui_kit::component::spinner::Spinner::new().color(muted).into_any_element(),
+                                }),
+                        )
+                        .child(div().text_xs().text_color(if on { ring } else { muted }).child(caption)),
+                );
+            }
+            left = left.child(div().flex().items_center().gap_3().child(div().text_xs().text_color(muted).child("Versions")).child(strip));
         }
-        frame.left = div().flex().flex_col().gap_3().child(main).child(strip).child(self.hosted_brief(dir, e, cx)).into_any_element();
-        // Refine, try again, and the brief.
-        let mut right = div().flex().flex_col().gap_2().child(self.hosted_heading(&format!("Refine v{v}"), cx));
-        if let Some(note) = self.refine_notes.get(dir) {
-            let (d1, n) = (dir.to_path_buf(), note.clone());
-            right = right.child(Textarea::new(note)).child(
-                Button::new(id("change"))
-                    .small()
-                    .outline()
-                    .w_full()
-                    .icon(Lucide::Sparkles)
-                    .label("Make a revision")
-                    .disabled(busy || !set.is_ready())
-                    .on_click(move |_, window, cx| {
-                        let text = n.read(cx).value().trim().to_string();
-                        if !text.is_empty() {
-                            n.update(cx, |i, cx| i.set_value("", window, cx));
-                            hosted_store::change(&d1, &text, cx);
-                        }
-                    }),
-            );
-        }
-        let d2 = dir.to_path_buf();
-        right = right
-            .child(div().text_xs().text_color(muted).child("A new version from this one; earlier versions are kept. One image."))
-            .child(Button::new(id("retry")).small().outline().w_full().icon(Lucide::RefreshCw).label("Try another direction").disabled(busy).on_click(move |_, _, cx| hosted_store::retry(&d2, cx)))
-            .child(div().h(px(1.)).bg(border).my_1())
-            .child(
+        // Refine: what to change (a new version from this one), or another direction.
+        let looking_back = three_d && reached >= 3 && this_approved;
+        if !looking_back {
+            let d2 = dir.to_path_buf();
+            let mut refine = div().flex().flex_col().gap_2().child(
                 div()
-                    .mt_1()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(border)
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(Icon::new(Lucide::Layers).small().text_color(muted))
-                    .child(div().text_xs().text_color(muted).child(format!("{} version{} saved", asset.sets.len(), if asset.sets.len() == 1 { "" } else { "s" }))),
+                    .child(div().flex_1().child(self.hosted_heading(&format!("Refine v{v}"), cx).text_base()))
+                    .child(Button::new(id("retry")).small().ghost().icon(Lucide::RefreshCw).label("Try another direction").disabled(busy).on_click(move |_, _, cx| hosted_store::retry(&d2, cx))),
             );
-        frame.right = Some(right.into_any_element());
+            if let Some(note) = self.refine_notes.get(dir) {
+                let (d1, n) = (dir.to_path_buf(), note.clone());
+                refine = refine.child(
+                    div().flex().items_start().gap_3().child(div().flex_1().min_w_0().child(Textarea::new(note))).child(
+                        Button::new(id("change"))
+                            .outline()
+                            .icon(Lucide::Sparkles)
+                            .label("Make revision")
+                            .disabled(busy || !set.is_ready())
+                            .on_click(move |_, window, cx| {
+                                let text = n.read(cx).value().trim().to_string();
+                                if !text.is_empty() {
+                                    n.update(cx, |i, cx| i.set_value("", window, cx));
+                                    hosted_store::change(&d1, &text, cx);
+                                }
+                            }),
+                    ),
+                );
+            }
+            left = left.child(refine.child(div().text_xs().text_color(muted).child("Creates a new version · 1 image. Earlier versions are kept.")));
+        }
+        frame.left = left.child(self.hosted_brief(dir, e, cx)).into_any_element();
         // The foot: approve the shown set.
-        let approved = asset.approved_set().map(|s| s.id.clone());
         if reached >= 3 {
             let d = dir.to_path_buf();
             frame.back = Some(Button::new(id("to-model")).small().ghost().label(if reached == 4 { "Back to the import" } else { "Back to the model" }).on_click(move |_, _, cx| hosted_store::show_step(&d, None, cx)).into_any_element());
         }
-        frame.status = match (&approved, set.attempts_left) {
-            (Some(a), _) if *a == set.id => format!("Views v{v} approved"),
-            (Some(a), _) => format!("Views v{} approved; approving v{v} models from it instead", version(asset, a)),
-            (None, _) => "Views not yet approved".into(),
+        frame.status = match &approved {
+            Some(_) if this_approved => format!("Views v{v} approved"),
+            Some(a) => format!("Views v{} approved; approving v{v} models from it instead", version(asset, a)),
+            None if three_d => "Next: choose model settings".into(),
+            None => "Views not yet approved".into(),
         };
         // Looking back at the approved set: nothing to do here but go back.
-        if three_d && reached >= 3 && approved.as_deref() == Some(set.id.as_str()) {
+        if looking_back {
             return;
         }
-        if !three_d && approved.as_deref() == Some(set.id.as_str()) {
+        if !three_d && this_approved {
             frame.status = format!("Approved and saved in the asset's folder. 3D isn't available for {} yet.", kind_label.to_lowercase());
             return;
         }
         let (d3, set_id) = (dir.to_path_buf(), set.id.clone());
-        let label = if three_d { "Use these views & build model →" } else { "Approve these views" };
-        frame.primary = Some(
-            Button::new(id("approve"))
-                .small()
-                .primary()
-                .label(label)
-                .disabled(busy || !set.is_ready())
-                .on_click(move |_, _, cx| hosted_store::approve(&d3, &set_id, cx))
-                .into_any_element(),
-        );
+        let primary = Button::new(id("approve")).primary().disabled(busy || !set.is_ready()).on_click(move |_, _, cx| hosted_store::approve(&d3, &set_id, cx));
+        let primary = if three_d { primary.label("Approve views & continue").child(Icon::new(IconName::ArrowRight).small()) } else { primary.label("Approve these views") };
+        frame.primary = Some(primary.into_any_element());
     }
 
     // ----- step 3: model -----
