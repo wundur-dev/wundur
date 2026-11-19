@@ -128,11 +128,6 @@ fn two_wide(height: f32) -> f32 {
     2. * (height * 0.62 + 2.) + 8. + 2.
 }
 
-/// [`two_wide`] for the placeholders (`asset_making` draws squares).
-fn two_wide_placeholders(height: f32) -> f32 {
-    2. * height + 8. + 2.
-}
-
 /// "1 credit", "3 credits".
 fn credits(n: u32) -> String {
     format!("{n} credit{}", if n == 1 { "" } else { "s" })
@@ -327,7 +322,6 @@ impl ChatPanel {
         let (fg, muted, border, bg, green) = (theme.foreground, theme.muted_foreground, theme.border, theme.background, theme.green);
         // One band: what it is (and the form's kinds), and what can be done to the card; the
         // steps are tabs under it.
-        let busy = f.dir.as_deref().and_then(|d| hosted_store::entry(d, cx)).is_some_and(|e| e.cancellable());
         let header = div()
             .px_4()
             .py_3()
@@ -354,23 +348,13 @@ impl ChatPanel {
             )
             .child(div().flex_1().min_w_0().flex().justify_center().children(f.header_mid))
             .when_some(f.dir.clone(), |d, dir| {
-                let (fold, cancel) = (dir.clone(), dir.clone());
+                let fold = dir.clone();
                 d.child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
                         .child(div().flex().items_center().gap_1().text_xs().text_color(muted).child(Icon::new(Lucide::CircleCheck).small().text_color(green)).child("Saved"))
-                        .when(busy, |d| {
-                            d.child(
-                                Button::new(SharedString::from(format!("{}-cancel", f.id)))
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Cancel job")
-                                    .tooltip(CANCEL_TIP)
-                                    .on_click(move |_, _, cx| hosted_store::cancel(&cancel, cx)),
-                            )
-                        })
                         .child(
                             Button::new(SharedString::from(format!("{}-open", f.id)))
                                 .xsmall()
@@ -383,8 +367,8 @@ impl ChatPanel {
                             Button::new(SharedString::from(format!("{}-fold", f.id)))
                                 .xsmall()
                                 .ghost()
-                                .icon(Lucide::ChevronUp)
-                                .tooltip("Fold to one line")
+                                .icon(IconName::Close)
+                                .tooltip("Close the card (it stays as one line; what's being made carries on)")
                                 .on_click(move |_, _, cx| hosted_store::fold(&fold, true, cx)),
                         ),
                 )
@@ -458,17 +442,112 @@ impl ChatPanel {
             .into_any_element()
     }
 
+    /// The app's spinner, card-sized (the system's where there is one).
+    fn hosted_spinner(&self, color: Hsla) -> AnyElement {
+        if crate::native_spinner::NativeSpinner::available() {
+            let native = self.card_spinner.clone();
+            div().size(px(24.)).flex_none().child(canvas(|_, _, _| {}, move |b, _, window, _| native.paint(b, color, window)).size_full()).into_any_element()
+        } else {
+            Icon::new(IconName::LoaderCircle).text_color(color).into_any_element()
+        }
+    }
+
+    /// While a set of views is being made: the spinner and what's happening (its version at
+    /// the right), then a placeholder for each view across the card, labelled.
+    fn hosted_generating(&self, what: &str, version: Option<usize>, labels: &[String], cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted) = (theme.foreground, theme.muted_foreground);
+        let status = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(self.hosted_spinner(muted))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("{what}…")))
+                    .child(div().text_sm().text_color(muted).child("You'll be able to review and refine them here.")),
+            )
+            .children(version.map(|v| div().text_sm().text_color(muted).child(format!("v{v}"))));
+        let mut tiles = div().flex().flex_wrap().gap_3();
+        for label in labels {
+            tiles = tiles.child(
+                div()
+                    .flex_1()
+                    .min_w(px(110.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
+                    .child(gpui_kit::component::skeleton::Skeleton::new().w_full().h(px(200.)).rounded(px(12.)))
+                    .child(div().text_sm().text_color(muted).child(label.clone())),
+            );
+        }
+        div().flex().flex_col().gap_4().child(status).child(tiles).into_any_element()
+    }
+
+    /// The brief the views are made from, folded to one line (its description) until opened:
+    /// the description, the references and the settings.
+    fn hosted_brief(&self, dir: &Path, e: &hosted_store::Entry, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, ground) = (theme.foreground, theme.muted_foreground, theme.secondary);
+        let open = self.open_briefs.contains(dir);
+        let folder = dir.to_path_buf();
+        let toggle = div()
+            .id(SharedString::from(format!("hosted-brief-{}", dir.display())))
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .child(Icon::new(if open { Lucide::ChevronDown } else { Lucide::ChevronRight }).small().text_color(muted))
+            .child(div().flex_none().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Asset brief"))
+            .when(!open, |d| d.child(div().flex_1().min_w_0().truncate().text_sm().text_color(muted).child(e.record.description.clone())))
+            .on_click(cx.listener(move |p, _, _, cx| {
+                if !p.open_briefs.remove(&folder) {
+                    p.open_briefs.insert(folder.clone());
+                }
+                p.list.remeasure();
+                cx.notify();
+            }));
+        let mut brief = div().flex().flex_col().gap_2().child(toggle);
+        if open {
+            let mut body = div().pl(px(22.)).flex().flex_col().gap_2().child(div().text_sm().text_color(fg).child(e.record.description.clone()));
+            if !e.record.references.is_empty() {
+                let mut row = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child("References"));
+                for f in &e.record.references {
+                    let (path, full) = (dir.join(f), dir.join(f));
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("hosted-ref-{}", path.display())))
+                            .size(px(40.))
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .bg(ground)
+                            .cursor_pointer()
+                            .child(img(path).size_full().object_fit(ObjectFit::Cover))
+                            .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
+                    );
+                }
+                body = body.child(row);
+            }
+            if !e.record.fields.is_empty() {
+                let summary = e.record.fields.iter().map(|(k, v)| format!("{}: {}", capitalised(k), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" · ");
+                body = body.child(div().text_xs().text_color(muted).child(summary));
+            }
+            brief = brief.child(body);
+        }
+        brief.into_any_element()
+    }
+
     /// What's laid over a card while its model is being made: the card greyed, the app's
     /// spinner and what's happening in the middle; scrolling the chat still works.
     fn hosted_busy_overlay(&self, title: String, detail: String, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted, bg, border) = (theme.foreground, theme.muted_foreground, theme.background, theme.border);
-        let spinner = if crate::native_spinner::NativeSpinner::available() {
-            let native = self.card_spinner.clone();
-            div().size(px(24.)).child(canvas(|_, _, _| {}, move |b, _, window, _| native.paint(b, muted, window)).size_full()).into_any_element()
-        } else {
-            Icon::new(IconName::LoaderCircle).text_color(muted).into_any_element()
-        };
+        let spinner = self.hosted_spinner(muted);
         div()
             .id("hosted-busy")
             .absolute()
@@ -580,17 +659,6 @@ impl ChatPanel {
                 d.child(Button::new(SharedString::from(format!("{id}-upgrade"))).xsmall().outline().label("Upgrade").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
             })
             .into_any_element()
-    }
-
-    /// Placeholders while a set is on its way (four as two rows of two).
-    fn hosted_waiting(&self, what: &str, views: u32, height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let height = if views == 4 { height * 0.85 } else { height };
-        let mut row = div().flex().flex_wrap().gap_2().when(views == 4, |d| d.w(px(two_wide_placeholders(height))));
-        for _ in 0..views {
-            row = row.child(self.asset_making(height, None, cx));
-        }
-        div().flex().flex_col().gap_2().child(row).child(div().text_xs().text_color(muted).child(format!("{what}…"))).into_any_element()
     }
 
     /// A set's views, from the asset's folder, labelled; a click shows one large.
@@ -1180,28 +1248,39 @@ impl ChatPanel {
     #[allow(clippy::too_many_arguments)]
     fn hosted_views(&self, dir: &Path, e: &hosted_store::Entry, kind: Option<&Kind>, kind_label: &str, reached: u8, id: &dyn Fn(&str) -> SharedString, frame: &mut Frame, cx: &mut Context<Self>) {
         let theme = cx.theme();
-        let (muted, fg, danger, border, ring, ground) = (theme.muted_foreground, theme.foreground, theme.danger, theme.border, theme.ring, theme.secondary);
+        let (muted, danger, border, ring, ground) = (theme.muted_foreground, theme.danger, theme.border, theme.ring, theme.secondary);
         let views = kind.map_or(3, |k| k.views.max(1));
         let three_d = kind.is_none_or(|k| k.supports_3d);
-        frame.intro = "Check the silhouette, outfit and scale before building the model.".into();
-        let Some(asset) = &e.asset else {
-            frame.left = self.hosted_waiting(e.working.unwrap_or("Making the views"), views, 200., cx);
-            frame.status = "One image for the whole set".into();
+        // What it is and how it looks: "Humanoid · Stylized".
+        let look = e.record.fields.get(flow::STYLE_FIELD).and_then(Value::as_str).map(capitalised);
+        frame.subtitle = [Some(kind_label.to_string()), look].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let set = e.asset.as_ref().and_then(|a| shown_set(e, a).cloned());
+        let saved = set.as_ref().and_then(|s| e.record.views.get(&s.id).cloned());
+        // Being made (or fetched): the card is the wait, across its width, and says that
+        // closing it doesn't stop anything.
+        if set.as_ref().is_none_or(|s| s.is_generating() || (s.is_ready() && saved.is_none())) {
+            let count = set.as_ref().map_or(0, |s| s.views.len() as u32).max(views) as usize;
+            let labels: Vec<String> = (0..count).map(|n| set.as_ref().and_then(|s| s.views.get(n)).map(|v| v.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("View {}", n + 1))).collect();
+            let v = match (&e.asset, &set) {
+                (Some(a), Some(s)) => version(a, &s.id),
+                _ => 1,
+            };
+            let what = match e.working {
+                Some("Making the views") | None => "Generating views",
+                Some(w) => w,
+            };
+            frame.left = div().flex().flex_col().gap_4().child(self.hosted_generating(what, Some(v), &labels, cx)).child(self.hosted_brief(dir, e, cx)).into_any_element();
+            frame.status = "Generation continues when this card is closed.".into();
+            let d = dir.to_path_buf();
+            frame.secondary = Some(Button::new(id("close")).small().outline().label("Close card").on_click(move |_, _, cx| hosted_store::fold(&d, true, cx)).into_any_element());
             return;
-        };
-        let Some(set) = shown_set(e, asset).cloned() else {
-            frame.left = self.hosted_waiting(e.working.unwrap_or("Making the views"), views, 200., cx);
-            return;
-        };
+        }
+        let (Some(asset), Some(set)) = (&e.asset, set) else { return };
         let v = version(asset, &set.id);
-        frame.subtitle = format!("{kind_label} · Views v{v}");
         let generating = asset.sets.iter().any(Set::is_generating);
         let busy = e.working.is_some() || generating;
-        let saved = e.record.views.get(&set.id).cloned();
         // The set shown, large.
-        let main: AnyElement = if set.is_generating() || (set.is_ready() && saved.is_none()) {
-            self.hosted_waiting(e.working.unwrap_or("Making the views"), (set.views.len() as u32).max(views), 180., cx)
-        } else if set.is_ready() {
+        let main: AnyElement = if set.is_ready() {
             let labels: Vec<String> = set.views.iter().map(|v| v.label.clone()).collect();
             self.hosted_view_row(dir, saved.as_deref().unwrap_or_default(), &labels, 180., cx)
         } else {
@@ -1243,7 +1322,7 @@ impl ChatPanel {
                     .child(div().text_xs().text_color(if on { ring } else { muted }).child(caption)),
             );
         }
-        frame.left = div().flex().flex_col().gap_3().child(main).child(strip).into_any_element();
+        frame.left = div().flex().flex_col().gap_3().child(main).child(strip).child(self.hosted_brief(dir, e, cx)).into_any_element();
         // Refine, try again, and the brief.
         let mut right = div().flex().flex_col().gap_2().child(self.hosted_heading(&format!("Refine v{v}"), cx));
         if let Some(note) = self.refine_notes.get(dir) {
@@ -1270,30 +1349,6 @@ impl ChatPanel {
             .child(div().text_xs().text_color(muted).child("A new version from this one; earlier versions are kept. One image."))
             .child(Button::new(id("retry")).small().outline().w_full().icon(Lucide::RefreshCw).label("Try another direction").disabled(busy).on_click(move |_, _, cx| hosted_store::retry(&d2, cx)))
             .child(div().h(px(1.)).bg(border).my_1())
-            .child(self.hosted_heading("Asset brief", cx))
-            .child(div().text_sm().text_color(fg).child(e.record.description.clone()))
-            .when(!e.record.references.is_empty(), |d| {
-                let mut row = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child("References"));
-                for f in &e.record.references {
-                    let (path, full) = (dir.join(f), dir.join(f));
-                    row = row.child(
-                        div()
-                            .id(SharedString::from(format!("hosted-ref-{}", path.display())))
-                            .size(px(40.))
-                            .rounded(px(6.))
-                            .overflow_hidden()
-                            .bg(ground)
-                            .cursor_pointer()
-                            .child(img(path).size_full().object_fit(ObjectFit::Cover))
-                            .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
-                    );
-                }
-                d.child(row)
-            })
-            .when(!e.record.fields.is_empty(), |d| {
-                let summary = e.record.fields.iter().map(|(k, v)| format!("{k}: {}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" · ");
-                d.child(div().text_xs().text_color(muted).child(summary))
-            })
             .child(
                 div()
                     .mt_1()
