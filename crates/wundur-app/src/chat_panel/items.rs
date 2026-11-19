@@ -453,7 +453,7 @@ impl ChatPanel {
                 Item::Error(e) => Some(e.as_str()),
                 _ => None,
             }) == Some(text)
-            && !since_user.iter().any(|i| matches!(i, Item::SignIn(_)))
+            && !since_user.iter().any(|i| matches!(i, Item::SignIn(_) | Item::Install(_)))
             && since_user.iter().any(|i| matches!(i, Item::User(_)));
         let limit = chat.limit_reached;
         let scheduled = session.scheduled_retry;
@@ -543,6 +543,66 @@ impl ChatPanel {
             .bg(tone.opacity(0.06))
             .child(div().flex().items_center().gap_2().child(div().size(px(7.)).rounded_full().bg(tone)).child(div().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title)))
             .child(div().text_xs().text_color(muted).child(note))
+            .child(buttons)
+            .into_any_element()
+    }
+
+    /// The agent is not installed: its own installer, run in a terminal here, and its page;
+    /// the card turns green once Wundur finds the agent.
+    pub(super) fn render_install(&self, state: wundur_core::conversation::SignIn, cx: &mut Context<Self>) -> AnyElement {
+        use wundur_core::conversation::SignIn;
+        let mono = crate::fonts::code(cx);
+        let theme = cx.theme();
+        let (fg, muted, border, warning, green, code_bg) = (theme.foreground, theme.muted_foreground, theme.border, theme.warning, theme.green, theme.muted);
+        let session = self.session.read(cx);
+        let agent = session.backend.name();
+        let install = session.backend.install();
+        let (title, note, tone) = match state {
+            SignIn::Needed => (
+                format!("{agent} isn't installed on this machine"),
+                "Install it with its own installer, in a terminal here. Installed another way, this card notices on its own.".to_string(),
+                warning,
+            ),
+            SignIn::Waiting => (format!("Installing {agent}…"), "Finish in the terminal. This card turns green once Wundur finds it.".to_string(), warning),
+            SignIn::Done => (
+                format!("{agent} is installed"),
+                "It starts with your next message.".to_string(),
+                green,
+            ),
+        };
+        let session = self.session.clone();
+        let s1 = session;
+        let page = install.as_ref().map(|i| i.page.clone());
+        let command = install.as_ref().map(|i| i.command.clone()).filter(|_| state != SignIn::Done);
+        let buttons = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .when(state == SignIn::Needed && install.is_some(), |d| {
+                d.child(Button::new("install-start").xsmall().primary().label("Install").on_click(cx.listener(move |_, _, _, cx| {
+                    if let Some(line) = s1.update(cx, |s, cx| s.start_install(cx)) {
+                        cx.emit(ChatPanelEvent::RunCommand(line));
+                    }
+                })))
+            })
+            .when_some(page.filter(|_| state != SignIn::Done), |d, url| {
+                d.child(Button::new("install-page").xsmall().ghost().label("Install page").on_click(move |_, _, cx| cx.open_url(&url)))
+            })
+            ;
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .bg(tone.opacity(0.06))
+            .child(div().flex().items_center().gap_2().child(div().size(px(7.)).rounded_full().bg(tone)).child(div().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title)))
+            .child(div().text_xs().text_color(muted).child(note))
+            .children(command.map(|c| div().px_2().py_1().rounded_sm().bg(code_bg).font_family(mono).text_xs().text_color(fg).child(c)))
             .child(buttons)
             .into_any_element()
     }
@@ -1018,6 +1078,7 @@ impl ChatPanel {
                 Item::Outgoing { id, to, text, state } => self.render_outgoing(*id, to, text, state, cx),
                 Item::ToolRun { id, tool, command, state } => self.render_tool_run(*id, tool, command, state, cx),
                 Item::SignIn(state) => self.render_sign_in(*state, cx),
+                Item::Install(state) => self.render_install(*state, cx),
                 Item::TurnChanges(changes) => self.render_turn_changes(ix, changes, cx),
                 Item::Summary { state, .. } => self.render_summary(state, cx),
                 Item::Asset(dir) => self.render_asset_card(dir, cx),

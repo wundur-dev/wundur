@@ -47,6 +47,16 @@ impl Backend for CursorBackend {
         ID
     }
 
+    fn program(&self) -> Option<String> {
+        Some("cursor-agent".into())
+    }
+
+    /// Cursor's CLI installer (it puts `cursor-agent` and `agent` in `~/.local/bin`).
+    fn install(&self) -> Option<crate::agent::Install> {
+        let command = if cfg!(windows) { "irm 'https://cursor.com/install?win32=true' | iex" } else { "curl https://cursor.com/install -fsS | bash" };
+        Some(crate::agent::Install { command: command.into(), page: "https://cursor.com/docs/cli/installation".into() })
+    }
+
     /// `cursor-agent login`: it opens the browser.
     fn sign_in(&self) -> Option<ProgramSpec> {
         Some(ProgramSpec { program: "cursor-agent".into(), args: vec!["login".into()], ..Default::default() })

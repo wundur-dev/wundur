@@ -247,6 +247,8 @@ pub struct AgentSession {
     restart_after_turn: bool,
     /// A watch for the agent's sign-in runs (see `watch_sign_in`).
     sign_in_watching: bool,
+    /// A watch for the agent being installed runs (see `watch_install`).
+    install_watching: bool,
     /// Its conversation is being read (reopened from the last run): the chat shows its shape.
     pub loading_chat: bool,
     /// The person's last message is set to go again at this time (Unix), when the usage
@@ -360,6 +362,7 @@ impl AgentSession {
             pasted_images: Vec::new(),
             restart_after_turn: false,
             sign_in_watching: false,
+            install_watching: false,
             loading_chat: false,
             scheduled_retry: None,
             idle_gen: 0,
@@ -869,11 +872,102 @@ impl AgentSession {
         .detach();
     }
 
+    // ----- installing the agent -----
+
+    fn install_card(&self) -> Option<wundur_core::conversation::SignIn> {
+        self.chat.items.iter().rev().find_map(|i| match i {
+            wundur_core::conversation::Item::Install(st) => Some(*st),
+            _ => None,
+        })
+    }
+
+    fn set_install(&mut self, state: wundur_core::conversation::SignIn, cx: &mut Context<Self>) {
+        use wundur_core::conversation::Item;
+        if let Some(Item::Install(s)) = self.chat.items.iter_mut().rev().find(|i| matches!(i, Item::Install(_))) {
+            *s = state;
+        }
+        self.chat.revision += 1;
+        cx.notify();
+    }
+
+    /// The agent is not on this machine: the install card (one at a time), watched until it is.
+    pub fn show_install(&mut self, cx: &mut Context<Self>) {
+        use wundur_core::conversation::{Item, SignIn};
+        if self.install_card().is_none_or(|c| c == SignIn::Done) {
+            self.chat.items.push(Item::Install(SignIn::Needed));
+            self.chat.revision += 1;
+        }
+        self.watch_install(cx);
+        cx.notify();
+    }
+
+    /// Start the agent's own installer: the command line to run in a terminal (the chat runs
+    /// it), while Wundur looks for the agent every few seconds.
+    pub fn start_install(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let install = self.backend.install()?;
+        if self.install_card().is_none() {
+            self.chat.items.push(wundur_core::conversation::Item::Install(wundur_core::conversation::SignIn::Needed));
+        }
+        self.set_install(wundur_core::conversation::SignIn::Waiting, cx);
+        self.watch_install(cx);
+        Some(install.command)
+    }
+
+    /// While the install card is open, look for the agent: every few seconds once its installer
+    /// runs, less often while the card only waits, for up to an hour. Found (however it was
+    /// installed), the card says so, the agent starts afresh with the next message, and its
+    /// sign-in is asked.
+    fn watch_install(&mut self, cx: &mut Context<Self>) {
+        use wundur_core::conversation::SignIn;
+        if self.install_watching {
+            return;
+        }
+        self.install_watching = true;
+        let (backend, host) = (self.backend.clone(), self.host.clone());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+            while std::time::Instant::now() < until {
+                let (b, h) = (backend.clone(), host.clone());
+                let installed = cx.background_spawn(async move { b.installed(h.as_ref()) }).await;
+                let card = this
+                    .update(cx, |s, cx| {
+                        let card = s.install_card().filter(|c| *c != SignIn::Done);
+                        if installed != Some(false) && card.is_some() {
+                            s.stop(cx);
+                            s.set_install(SignIn::Done, cx);
+                            s.install_watching = false;
+                            s.check_sign_in(cx);
+                            return None;
+                        }
+                        card
+                    })
+                    .ok()
+                    .flatten();
+                let Some(card) = card else { break };
+                let pause = if card == SignIn::Waiting { 3 } else { 10 };
+                cx.background_executor().timer(std::time::Duration::from_secs(pause)).await;
+            }
+            let _ = this.update(cx, |s, cx| {
+                s.install_watching = false;
+                if s.install_card() == Some(SignIn::Waiting) {
+                    s.set_install(SignIn::Needed, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Ask the agent (its status command, off the window's thread) whether it is signed in;
     /// signed out, the chat shows the sign-in card at once.
+    /// Not installed, the install card shows instead (and the sign-in is asked once it is).
     pub fn check_sign_in(&mut self, cx: &mut Context<Self>) {
         let (backend, host) = (self.backend.clone(), self.host.clone());
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let (b, h) = (backend.clone(), host.clone());
+            if cx.background_spawn(async move { b.installed(h.as_ref()) }).await == Some(false) {
+                let _ = this.update(cx, |s, cx| s.show_install(cx));
+                return;
+            }
             let signed = cx.background_spawn(async move { backend.signed_in(host.as_ref()) }).await;
             if signed == Some(false) {
                 let _ = this.update(cx, |s, cx| {
@@ -1947,6 +2041,8 @@ impl AgentSession {
             && let Err(e) = self.start(cx)
         {
             self.chat.push_error(e.to_string());
+            // Most likely not installed (any more): the card says how to.
+            self.check_sign_in(cx);
             cx.notify();
             return;
         }

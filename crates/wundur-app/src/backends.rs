@@ -24,11 +24,12 @@ pub fn registry() -> Registry {
     Registry::new(all)
 }
 
-/// The backend saved as `id`, or the default when it is not available.
+/// The backend saved as `id`, or the default when it is not available: the first one
+/// installed on this machine (Claude Code when both are).
 pub fn backend(id: Option<&str>, cx: &App) -> Arc<dyn Backend> {
     let reg = &cx.global::<Backends>().0;
     id.and_then(|id| reg.get(id))
-        .or_else(|| reg.default_backend())
+        .or_else(|| reg.default_installed(&wundur_core::host::LocalHost))
         .expect("at least one backend is registered")
 }
 

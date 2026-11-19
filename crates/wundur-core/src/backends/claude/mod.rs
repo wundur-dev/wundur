@@ -60,6 +60,16 @@ impl Backend for ClaudeBackend {
         ID
     }
 
+    fn program(&self) -> Option<String> {
+        Some(self.program_name())
+    }
+
+    /// Its native installer (it updates itself after).
+    fn install(&self) -> Option<crate::agent::Install> {
+        let command = if cfg!(windows) { "irm https://claude.ai/install.ps1 | iex" } else { "curl -fsSL https://claude.ai/install.sh | bash" };
+        Some(crate::agent::Install { command: command.into(), page: "https://code.claude.com/docs/en/setup".into() })
+    }
+
     /// `claude auth login`: it opens the browser, and may ask for the code shown there.
     fn sign_in(&self) -> Option<crate::host::ProgramSpec> {
         Some(crate::host::ProgramSpec { program: self.program_name(), args: vec!["auth".into(), "login".into()], ..Default::default() })
