@@ -119,6 +119,16 @@ pub struct Field {
     /// A picture for each option (option → path under the API's base URL; public), for a
     /// choice shown as picture tiles (the art style). An option without one is a text tile.
     pub option_images: BTreeMap<String, String>,
+    /// A line on what each option does (option → "Adult proportions."), shown under the
+    /// choices for the one picked; without one the field's help is shown there.
+    pub option_help: BTreeMap<String, String>,
+}
+
+impl Field {
+    /// The line under the field's choices: what the picked option does, else the field's help.
+    pub fn help_for(&self, picked: &str) -> &str {
+        self.option_help.get(picked).map(String::as_str).filter(|h| !h.is_empty()).unwrap_or(&self.help)
+    }
 }
 
 /// Who may use something, and how its output may be used.
@@ -1101,5 +1111,13 @@ mod tests {
         let (a, b) = (idempotency_key(), idempotency_key());
         assert_eq!(a.len(), 32);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_field_explains_the_option_picked_else_itself() {
+        let mut f = Field { help: "How tall it stands.".into(), ..Default::default() };
+        f.option_help.insert("adult".into(), "Adult proportions.".into());
+        assert_eq!(f.help_for("adult"), "Adult proportions.");
+        assert_eq!(f.help_for("child"), "How tall it stands.");
     }
 }
