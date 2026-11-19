@@ -45,7 +45,31 @@ pub struct Entry {
     /// A model was asked for and the service hasn't listed it yet: the models it had then,
     /// and when (the card shows it building meanwhile, and the store keeps asking).
     pub building: Option<(usize, std::time::Instant)>,
+    /// Imported while the card was on screen: it stays open until the person folds it (or the
+    /// chat is read in again), so the result and the next step are still there.
+    pub just_done: bool,
     polling: bool,
+}
+
+impl Entry {
+    /// Whether its card is folded to one line (see [`flow::Record::folded`]).
+    pub fn folded(&self) -> bool {
+        match self.record.collapsed {
+            Some(c) => c,
+            None => !self.just_done && self.record.folded(),
+        }
+    }
+
+    /// Whether something is being made or asked for that the person is waiting on.
+    pub fn busy(&self) -> bool {
+        !self.record.cancelled && (self.working.is_some() || self.building.is_some() || self.asset.as_ref().is_some_and(Asset::busy))
+    }
+
+    /// Whether Cancel job is offered: something is being made, and it isn't an import (that is
+    /// paid for once asked, and brings the files whatever the card does).
+    pub fn cancellable(&self) -> bool {
+        self.busy() && self.working != Some("Importing")
+    }
 }
 
 #[derive(Default)]
@@ -230,6 +254,33 @@ fn update(dir: &Path, save: bool, cx: &mut App, f: impl FnOnce(&mut Entry)) {
 /// Show step `step` (1 describe … 4 rig), or the asset's own with `None`.
 pub fn show_step(dir: &Path, step: Option<u8>, cx: &mut App) {
     update(dir, false, cx, |e| e.step = step);
+}
+
+/// Fold the card to one line, or open it again. Opening a cancelled one picks it back up:
+/// whatever the service finished meanwhile is fetched.
+pub fn fold(dir: &Path, folded: bool, cx: &mut App) {
+    let resume = !folded && cx.try_global::<Store>().and_then(|s| s.entries.get(dir)).is_some_and(|e| e.record.cancelled);
+    update(dir, true, cx, |e| {
+        e.record.collapsed = Some(folded);
+        if resume {
+            e.record.cancelled = false;
+        }
+    });
+    if resume {
+        poll(dir, cx);
+    }
+}
+
+/// Stop waiting on it: no more asking the service, and the card folds. The service has no way
+/// to stop a job yet, so what was started there still finishes (the views' image is already
+/// spent; a model costs nothing unless imported); opening the card again fetches it.
+pub fn cancel(dir: &Path, cx: &mut App) {
+    update(dir, true, cx, |e| {
+        e.record.cancelled = true;
+        e.record.collapsed = Some(true);
+        e.building = None;
+        e.working = None;
+    });
 }
 
 /// Show set `set` of the views (a version), or the latest with `None`.
@@ -504,6 +555,7 @@ pub fn import(dir: &Path, model: &str, cx: &mut App) {
                 e.working = None;
                 match got {
                     Ok((model, saved)) => {
+                        e.just_done = true;
                         e.record.imported = Some(model);
                         e.record.files = saved;
                     }
@@ -567,7 +619,7 @@ pub fn preview(dir: &Path, model: &str, cx: &mut App, then: impl FnOnce(PathBuf,
 /// save each finished set of views into its folder, stop when nothing is left to wait for.
 fn poll(dir: &Path, cx: &mut App) {
     let Some(e) = cx.try_global::<Store>().and_then(|s| s.entries.get(dir)).cloned() else { return };
-    if e.polling || e.record.id.is_empty() {
+    if e.polling || e.record.id.is_empty() || e.record.cancelled {
         return;
     }
     update(dir, false, cx, |e| e.polling = true);
@@ -579,7 +631,8 @@ fn poll(dir: &Path, cx: &mut App) {
                 cx.background_executor().timer(POLL).await;
             }
             first = false;
-            let Some(record) = cx.update(|cx| cx.try_global::<Store>().and_then(|s| s.entries.get(&folder)).map(|e| e.record.clone())) else { break };
+            // Cancelled: the person stopped waiting on it.
+            let Some(record) = cx.update(|cx| cx.try_global::<Store>().and_then(|s| s.entries.get(&folder)).map(|e| e.record.clone()).filter(|r| !r.cancelled)) else { break };
             let into = folder.clone();
             let got = cx
                 .background_spawn(async move {

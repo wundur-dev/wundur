@@ -17,7 +17,10 @@ use wundur_core::asset_flow::{self as flow, Asset, Catalog, Field, Kind, Model, 
 use super::*;
 use crate::hosted_store;
 
-const STEPS: [&str; 4] = ["Describe", "Views", "Model", "Rig"];
+const STEPS: [&str; 3] = ["Brief", "Views", "Model"];
+
+/// What Cancel job does, since the service can't stop a job yet.
+const CANCEL_TIP: &str = "Stop waiting on it. What's started still finishes on Wundur (the views' image is already used; a model costs nothing unless imported). Open it again to see the result.";
 
 /// The name box's greyed text before there's a description to name it from.
 const NAME_PLACEHOLDER: &str = "Named from the description";
@@ -38,7 +41,12 @@ pub(super) struct HostedForm {
     pub references: Vec<PathBuf>,
     /// The name shown greyed in the name box, from the description (sent only if typed).
     pub suggested: String,
+    /// Rename was clicked: the name box is shown (it is too once a name is typed).
+    pub renaming: bool,
 }
+
+/// How wide the form's part names are ("Describe it"), so the parts line up.
+const FORM_LABEL: f32 = 92.;
 
 /// How wide a setting's name is on the form, so the choices and help line up.
 const FIELD_LABEL: f32 = 96.;
@@ -154,6 +162,8 @@ struct Frame {
     primary: Option<AnyElement>,
     /// Laid over the whole card (a model being made): it greys the card and takes its clicks.
     overlay: Option<AnyElement>,
+    /// The form's close button, at the header's end.
+    close: Option<AnyElement>,
 }
 
 /// Where the asset has got: 2 views, 3 model, 4 imported.
@@ -201,7 +211,7 @@ impl ChatPanel {
         let (catalog, _) = hosted_store::catalog(cx);
         if self.hosted_form.is_none() {
             let name = cx.new(|cx| InputState::new(window, cx).placeholder(NAME_PLACEHOLDER));
-            let description = cx.new(|cx| TextareaState::new(window, cx).auto_grow(4, 8).placeholder("e.g. A tiger raptor scout in a tactical vest"));
+            let description = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 8).placeholder("e.g. A tiger raptor scout in a tactical vest. Include its silhouette, materials and defining details."));
             self.hosted_form = Some(HostedForm {
                 kind: String::new(),
                 name,
@@ -213,6 +223,7 @@ impl ChatPanel {
                 options_open: false,
                 references: Vec::new(),
                 suggested: String::new(),
+                renaming: false,
             });
             self.list.remeasure();
         }
@@ -236,7 +247,16 @@ impl ChatPanel {
         for f in &kind.fields {
             match f.kind.as_str() {
                 "enum" => {
-                    form.choices.entry(f.id.clone()).or_insert_with(|| default_choice(f));
+                    let choice = form.choices.entry(f.id.clone()).or_insert_with(|| default_choice(f));
+                    // The look: one the form offers, if the catalog's default isn't.
+                    if f.id == flow::STYLE_FIELD {
+                        let looks = flow::looks(f);
+                        if !looks.contains(choice)
+                            && let Some(first) = looks.first()
+                        {
+                            *choice = first.clone();
+                        }
+                    }
                 }
                 "bool" => {
                     form.flags.entry(f.id.clone()).or_insert(matches!(f.default, Some(Value::Bool(true))));
@@ -262,36 +282,73 @@ impl ChatPanel {
 
     fn hosted_frame(&self, f: Frame, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (fg, muted, border, bg, ground, green) = (theme.foreground, theme.muted_foreground, theme.border, theme.background, theme.secondary, theme.green);
+        let (fg, muted, border, bg, green) = (theme.foreground, theme.muted_foreground, theme.border, theme.background, theme.green);
+        // One band: what it is, the steps, and what can be done to the card.
+        let busy = f.dir.as_deref().and_then(|d| hosted_store::entry(d, cx)).is_some_and(|e| e.cancellable());
         let header = div()
             .px_4()
-            .pt_4()
-            .pb_2()
+            .py_3()
+            .border_b_1()
+            .border_color(border)
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap_3()
-            .child(div().size(px(40.)).flex_none().rounded(px(10.)).bg(ground).flex().items_center().justify_center().child(Icon::new(Lucide::Box).text_color(muted)))
+            .gap_x_4()
+            .gap_y_2()
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
                     .flex()
-                    .flex_col()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(fg).truncate().child(f.title.clone()))
-                    .child(div().text_sm().text_color(muted).truncate().child(f.subtitle.clone())),
-            )
-            .when_some(f.dir.clone(), |d, dir| {
-                d.child(div().flex().items_center().gap_1().text_xs().text_color(muted).child(Icon::new(Lucide::CircleCheck).small().text_color(green)).child("Saved"))
-                    .child(div().w(px(1.)).h(px(18.)).bg(border))
+                    .items_center()
+                    .gap_3()
+                    .min_w_0()
+                    .child(Icon::new(Lucide::Box).text_color(muted))
                     .child(
-                        Button::new(SharedString::from(format!("{}-open", f.id)))
-                            .xsmall()
-                            .ghost()
-                            .icon(Lucide::Maximize2)
-                            .tooltip("Open the asset in a tab")
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(ChatPanelEvent::OpenAsset(dir.clone())))),
-                    )
-            });
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(fg).truncate().child(f.title.clone()))
+                            .when(!f.subtitle.is_empty(), |d| d.child(div().text_xs().text_color(muted).truncate().child(f.subtitle.clone()))),
+                    ),
+            )
+            .child(div().flex_1().flex().justify_center().child(self.hosted_steps(&f.id, f.shown, f.reached, f.dir.as_deref(), cx)))
+            .when_some(f.dir.clone(), |d, dir| {
+                let (fold, cancel) = (dir.clone(), dir.clone());
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex().items_center().gap_1().text_xs().text_color(muted).child(Icon::new(Lucide::CircleCheck).small().text_color(green)).child("Saved"))
+                        .when(busy, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("{}-cancel", f.id)))
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Cancel job")
+                                    .tooltip(CANCEL_TIP)
+                                    .on_click(move |_, _, cx| hosted_store::cancel(&cancel, cx)),
+                            )
+                        })
+                        .child(
+                            Button::new(SharedString::from(format!("{}-open", f.id)))
+                                .xsmall()
+                                .ghost()
+                                .icon(Lucide::Maximize2)
+                                .tooltip("Open the asset in a tab")
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(ChatPanelEvent::OpenAsset(dir.clone())))),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("{}-fold", f.id)))
+                                .xsmall()
+                                .ghost()
+                                .icon(Lucide::ChevronUp)
+                                .tooltip("Fold to one line")
+                                .on_click(move |_, _, cx| hosted_store::fold(&fold, true, cx)),
+                        ),
+                )
+            })
+            .children(f.close);
         let columns = div()
             .flex()
             .flex_wrap()
@@ -322,21 +379,27 @@ impl ChatPanel {
             .shadow_sm()
             .overflow_hidden()
             .child(header)
-            .child(self.hosted_steps(&f.id, f.shown, f.reached, f.dir.as_deref(), cx))
+            // The overlay covers the work, not the header: folding and Cancel job stay at hand.
             .child(
                 div()
-                    .px_4()
-                    .pt_3()
-                    .pb_4()
+                    .relative()
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .when(!f.intro.is_empty(), |d| d.child(div().text_sm().text_color(muted).child(f.intro)))
-                    .child(columns)
-                    .children(f.error),
+                    .child(
+                        div()
+                            .px_4()
+                            .pt_3()
+                            .pb_4()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .when(!f.intro.is_empty(), |d| d.child(div().text_sm().text_color(muted).child(f.intro)))
+                            .child(columns)
+                            .children(f.error),
+                    )
+                    .child(foot)
+                    .children(overlay),
             )
-            .child(foot)
-            .children(overlay)
             .into_any_element()
     }
 
@@ -355,7 +418,6 @@ impl ChatPanel {
             .id("hosted-busy")
             .absolute()
             .inset_0()
-            .rounded(px(14.))
             .bg(bg.opacity(0.8))
             .block_mouse_except_scroll()
             .flex()
@@ -387,17 +449,17 @@ impl ChatPanel {
             .into_any_element()
     }
 
-    /// The four steps: done ones ticked (and clickable, to look back), the shown one marked.
+    /// The steps in a row: done ones ticked (and clickable, to look back), the shown one marked.
+    /// An imported asset (step 4) has them all ticked.
     fn hosted_steps(&self, key: &str, shown: u8, reached: u8, dir: Option<&Path>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (fg, muted, border, ring, green, ground) = (theme.foreground, theme.muted_foreground, theme.border, theme.ring, theme.green, theme.secondary);
-        let mut row = div().mx_4().flex().border_b_1().border_color(border);
+        let (fg, muted, ring, green, ground) = (theme.foreground, theme.muted_foreground, theme.ring, theme.green, theme.secondary);
+        let mut row = div().flex().flex_wrap().items_center().gap_x_3().gap_y_1();
         for (i, label) in STEPS.iter().enumerate() {
             let n = i as u8 + 1;
             let (current, done) = (n == shown, n < reached);
-            let rig_soon = n == 4;
-            let clickable = dir.is_some() && n >= 2 && n <= reached && !current && !rig_soon;
-            let badge = div().size(px(22.)).flex_none().rounded_full().flex().items_center().justify_center().text_xs();
+            let clickable = dir.is_some() && n >= 2 && n <= reached && !current;
+            let badge = div().size(px(20.)).flex_none().rounded_full().flex().items_center().justify_center().text_xs();
             let badge = if done && !current {
                 badge.border_1().border_color(green).child(Icon::new(Lucide::Check).xsmall().text_color(green))
             } else if current {
@@ -405,25 +467,24 @@ impl ChatPanel {
             } else {
                 badge.bg(ground).text_color(muted).child(n.to_string())
             };
+            if i > 0 {
+                row = row.child(Icon::new(Lucide::ArrowRight).xsmall().text_color(muted));
+            }
             let folder = dir.map(Path::to_path_buf);
             row = row.child(
                 div()
                     .id(SharedString::from(format!("{key}-step-{n}")))
-                    .flex_1()
-                    .py_2()
                     .flex()
-                    .justify_center()
                     .items_center()
                     .gap_2()
-                    .border_b_2()
-                    .border_color(if current { ring } else { gpui_kit::transparent_black() })
                     .child(badge)
                     .child(div().text_sm().when(current, |d| d.font_weight(FontWeight::SEMIBOLD)).text_color(if current { fg } else { muted }).child(*label))
-                    .when(rig_soon, |d| d.child(div().text_xs().text_color(muted).child("soon")))
                     .when(clickable, |d| {
                         d.cursor_pointer().on_click(move |_, _, cx| {
                             if let Some(dir) = &folder {
-                                hosted_store::show_step(dir, if n == reached { None } else { Some(n) }, cx);
+                                // Model is the last step shown: an imported asset's page is its own.
+                                let own = n == reached || (n == 3 && reached == 4);
+                                hosted_store::show_step(dir, if own { None } else { Some(n) }, cx);
                             }
                         })
                     }),
@@ -512,11 +573,11 @@ impl ChatPanel {
     pub(super) fn render_hosted_form(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, danger, border, ring, fg, ground) = (theme.muted_foreground, theme.danger, theme.border, theme.ring, theme.foreground, theme.secondary);
-        let cancel = Button::new("new-asset-cancel").small().ghost().label("Cancel").on_click(cx.listener(|p, _, _, cx| p.close_asset_form(cx, None))).into_any_element();
+        let cancel = Button::new("new-asset-cancel").small().ghost().icon(IconName::Close).tooltip("Close").on_click(cx.listener(|p, _, _, cx| p.close_asset_form(cx, None))).into_any_element();
         let frame = |left: AnyElement, right: Option<AnyElement>, error: Option<AnyElement>, status: &str, primary: Option<AnyElement>, cancel: AnyElement| Frame {
             id: "new-asset".into(),
-            title: "New game asset".into(),
-            subtitle: "Start with a description".into(),
+            title: "New asset".into(),
+            subtitle: String::new(),
             shown: 1,
             reached: 1,
             dir: None,
@@ -524,10 +585,11 @@ impl ChatPanel {
             left,
             right,
             error,
-            back: Some(cancel),
+            back: None,
             status: status.into(),
             primary,
             overlay: None,
+            close: Some(cancel),
         };
         if !hosted_store::signed_in() {
             let left = div()
@@ -555,9 +617,18 @@ impl ChatPanel {
             };
             return self.hosted_frame(frame(left, None, None, "", None, cancel), cx);
         };
-        let heading = |t: &str| div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(t.to_string());
-        let hint = |t: &str| div().text_xs().text_color(muted).child(t.to_string());
         let me = cx.entity().downgrade();
+        // Each part on a row: its name in a column on the left, beside it when there's room.
+        let row = |label: &str, control: AnyElement| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap_x_3()
+                .gap_y_1()
+                .child(div().w(px(FORM_LABEL)).flex_none().pt(px(6.)).text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(label.to_string()))
+                .child(div().flex_1().min_w(px(260.)).child(control))
+        };
         // What it is: the kinds, each a tile with its icon.
         let mut kinds = div().flex().flex_wrap().gap_2();
         for k in &catalog.kinds {
@@ -566,7 +637,7 @@ impl ChatPanel {
                 div()
                     .id(SharedString::from(format!("hosted-kind-{}", k.id)))
                     .px_3()
-                    .py(px(7.))
+                    .py(px(5.))
                     .rounded(px(8.))
                     .border_1()
                     .flex()
@@ -588,52 +659,72 @@ impl ChatPanel {
             );
         }
         let kind = catalog.kind(&form.kind);
-        let what = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(heading("What are you making?"))
-            .child(kinds)
-            .children(kind.filter(|k| !k.description.is_empty()).map(|k| hint(&k.description)));
-        // The brief: the description, and pictures for the design beside it.
+        // The brief, with its reference pictures under it.
         let describe = div()
-            .flex_grow(3.)
-            .flex_basis(px(300.))
-            .min_w(px(240.))
             .flex()
             .flex_col()
             .gap_2()
-            .child(heading("Describe your asset"))
             .child(Textarea::new(&form.description).on_paste({
                 let me = me.clone();
                 move |item, window, cx| reference_paste(item, &me, window, cx)
             }))
-            .child(hint("Include its silhouette, materials and defining details."));
-        let brief = div()
-            .flex()
-            .flex_wrap()
-            .gap_4()
-            .child(describe)
-            .child(div().flex_grow(2.).flex_basis(px(200.)).min_w(px(200.)).child(self.hosted_form_references(form, cx)));
-        // The art style as picture tiles; the kind's other fields are its settings.
+            .child(self.hosted_form_references(form, cx));
+        // The look as two picture cards; the kind's other fields are its settings.
         let style = kind.and_then(|k| k.fields.iter().find(|f| f.id == flow::STYLE_FIELD && f.kind == "enum")).cloned();
-        let style = style.map(|f| self.hosted_style(form, &f, cx));
-        let name = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .max_w(px(380.))
-            .child(div().flex().items_center().gap_2().child(heading("Name")).child(hint("Optional")))
-            .child(Input::new(&form.name).on_paste({
-                let me = me.clone();
-                move |item, window, cx| reference_paste(item, &me, window, cx)
-            }));
+        let look = style.map(|f| {
+            let label = if f.label.eq_ignore_ascii_case("style") { "Look".to_string() } else { f.label.clone() };
+            row(&label, self.hosted_style(form, &f, cx))
+        });
+        // The name: the one the description gives, unless the person renames it.
+        let typed = !form.name.read(cx).value().trim().is_empty();
+        let name = if form.renaming || typed {
+            row(
+                "Name",
+                div()
+                    .max_w(px(380.))
+                    .child(Input::new(&form.name).on_paste({
+                        let me = me.clone();
+                        move |item, window, cx| reference_paste(item, &me, window, cx)
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .child(div().text_color(muted).child("Name:"))
+                .child(if form.suggested.is_empty() { div().text_color(muted).child(NAME_PLACEHOLDER) } else { div().text_color(fg).font_weight(FontWeight::MEDIUM).child(form.suggested.clone()) })
+                .child(
+                    div()
+                        .id("hosted-rename")
+                        .text_color(ring)
+                        .cursor_pointer()
+                        .hover(|d| d.underline())
+                        .child("Rename")
+                        .on_click(cx.listener(|p, _, window, cx| {
+                            if let Some(f) = &mut p.hosted_form {
+                                f.renaming = true;
+                                let (name, suggested) = (f.name.clone(), f.suggested.clone());
+                                name.update(cx, |i, cx| {
+                                    if !suggested.is_empty() {
+                                        i.set_value(suggested, window, cx);
+                                    }
+                                    i.focus(window, cx);
+                                });
+                            }
+                            p.list.remeasure();
+                            cx.notify();
+                        })),
+                )
+        };
         let rest: Vec<Field> = kind.map(|k| k.fields.iter().filter(|f| f.id != flow::STYLE_FIELD).cloned().collect()).unwrap_or_default();
         let has_choices = rest.iter().any(|f| matches!(f.kind.as_str(), "enum" | "bool"));
         let open = form.options_open;
         let settings = if has_choices {
             let summary = flow::settings_summary(&rest, &form.choices.iter().map(|(k, v)| (k.clone(), v.clone())).collect(), &form.flags.iter().map(|(k, v)| (k.clone(), *v)).collect());
-            let mut fields = div().flex().flex_col().gap_3().pt_2();
+            let mut fields = div().flex().flex_col().gap_3().pt_3().pl(px(22.));
             if open {
                 for f in &rest {
                     fields = fields.child(self.hosted_field(form, f, cx));
@@ -641,12 +732,6 @@ impl ChatPanel {
             }
             Some(
                 div()
-                    .id("hosted-options")
-                    .px_3()
-                    .py_2()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(border)
                     .flex()
                     .flex_col()
                     .child(
@@ -657,8 +742,8 @@ impl ChatPanel {
                             .gap_2()
                             .cursor_pointer()
                             .child(Icon::new(if open { Lucide::ChevronDown } else { Lucide::ChevronRight }).small().text_color(muted))
-                            .child(div().flex_none().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Character settings"))
-                            .when(!summary.is_empty(), |d| d.child(div().min_w_0().truncate().text_sm().text_color(muted).child(format!("· {summary}"))))
+                            .child(div().flex_none().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("More options"))
+                            .when(!summary.is_empty(), |d| d.child(div().min_w_0().truncate().text_sm().text_color(muted).child(summary)))
                             .on_click(cx.listener(|p, _, _, cx| {
                                 if let Some(f) = &mut p.hosted_form {
                                     f.options_open = !f.options_open;
@@ -683,21 +768,20 @@ impl ChatPanel {
         let left = div()
             .flex()
             .flex_col()
-            .gap_5()
-            .child(what)
-            .child(brief)
-            .children(style)
+            .gap_3()
+            .child(row("Type", kinds.into_any_element()))
+            .child(row("Describe it", describe.into_any_element()))
+            .children(look)
             .child(name)
             .children(settings)
             .into_any_element();
         let error = form.error.clone().map(|e| div().text_xs().text_color(danger).child(e).into_any_element());
         let cost = match hosted_store::images_left(cx) {
-            Some(n) => format!("Uses 1 image ({n} left this month)"),
-            None => "Uses 1 image".to_string(),
+            Some(n) => format!("Uses 1 image ({n} left this month) · References lock when you generate."),
+            None => "Uses 1 image · References lock when you generate.".to_string(),
         };
-        let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make the views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
-        let mut f = frame(left, None, error, &cost, Some(primary), cancel);
-        f.intro = "First, explore the look: review the views before building the model.".into();
+        let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
+        let f = frame(left, None, error, &cost, Some(primary), cancel);
         let card = self.hosted_frame(f, cx);
         // Pictures dropped anywhere on the form are references.
         div()
@@ -711,44 +795,43 @@ impl ChatPanel {
             .into_any_element()
     }
 
-    /// The art style as picture tiles (each option's picture from the catalog, a text tile for
-    /// one without), with the field's help under its heading.
+    /// The look as picture cards (each option's picture from the catalog, its kind's icon for
+    /// one without), a mark on the one picked. Only the looks the form offers ([`flow::looks`]).
     fn hosted_style(&self, form: &HostedForm, f: &Field, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted, ring, border, ground) = (theme.foreground, theme.muted_foreground, theme.ring, theme.border, theme.secondary);
         let current = form.choices.get(&f.id).cloned().unwrap_or_default();
-        let mut tiles = div().flex().flex_wrap().gap_3();
-        for o in &f.options {
-            let picture = f.option_images.get(o).and_then(|path| hosted_store::style_image(path, cx));
-            let (on, field, value) = (*o == current, f.id.clone(), o.clone());
-            let shown = capitalised(o);
-            let frame = div()
-                .h(px(76.))
-                .w_full()
-                .rounded(px(10.))
-                .overflow_hidden()
-                .bg(ground)
-                .border_2()
-                .border_color(if on { ring } else { border.opacity(0.6) })
-                .flex()
-                .items_center()
-                .justify_center();
-            let has_picture = picture.is_some();
-            tiles = tiles.child(
+        let mut cards = div().flex().flex_wrap().gap_3();
+        for o in flow::looks(f) {
+            let picture = f.option_images.get(&o).and_then(|path| hosted_store::style_image(path, cx));
+            let (on, field, value) = (o == current, f.id.clone(), o.clone());
+            let thumb = div().size(px(52.)).flex_none().rounded(px(8.)).overflow_hidden().bg(ground).flex().items_center().justify_center();
+            let thumb = match picture {
+                Some(path) => thumb.child(img(path).size_full().object_fit(ObjectFit::Cover)),
+                None => thumb.child(Icon::new(kind_icon(&form.kind)).text_color(muted)),
+            };
+            let mark = div().size(px(20.)).flex_none().rounded_full().flex().items_center().justify_center();
+            let mark = if on { mark.bg(ring).child(Icon::new(Lucide::Check).xsmall().text_color(gpui_kit::white())) } else { mark.border_1().border_color(muted.opacity(0.6)) };
+            cards = cards.child(
                 div()
                     .id(SharedString::from(format!("hosted-style-{o}")))
-                    .w(px(112.))
+                    .flex_1()
+                    .min_w(px(170.))
+                    .max_w(px(280.))
+                    .p_1p5()
+                    .pr_3()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(if on { ring } else { border })
+                    .when(on, |d| d.bg(ring.opacity(0.06)))
+                    .when(!on, |d| d.hover(|d| d.bg(ground.opacity(0.5))))
                     .flex()
-                    .flex_col()
-                    .gap_1()
+                    .items_center()
+                    .gap_3()
                     .cursor_pointer()
-                    .child(match picture {
-                        Some(path) => frame.child(img(path).size_full().object_fit(ObjectFit::Cover)),
-                        None => frame.child(div().text_sm().text_color(if on { ring } else { fg }).when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(shown.clone())),
-                    })
-                    .when(has_picture, |d| {
-                        d.child(div().text_xs().text_center().text_color(if on { ring } else { fg }).when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(shown))
-                    })
+                    .child(thumb)
+                    .child(div().flex_1().min_w_0().truncate().text_sm().text_color(fg).when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(capitalised(&o)))
+                    .child(mark)
                     .on_click(cx.listener(move |p, _, _, cx| {
                         if let Some(form) = &mut p.hosted_form {
                             form.choices.insert(field.clone(), value.clone());
@@ -757,56 +840,46 @@ impl ChatPanel {
                     })),
             );
         }
-        let label = if f.label.eq_ignore_ascii_case("style") { "Art style".to_string() } else { f.label.clone() };
         div()
             .flex()
             .flex_col()
-            .gap_2()
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(label))
+            .gap_1()
+            .child(cards)
             .when(!f.help.is_empty(), |d| d.child(div().text_xs().text_color(muted).child(f.help.clone())))
-            .child(tiles)
             .into_any_element()
     }
 
-    /// The form's reference pictures: each as a thumbnail (with a way to drop it), and a tile
-    /// to add more, up to three.
+    /// The form's reference pictures, on one line under the description: Add images (up to
+    /// three), a thumbnail for each (with a way to drop it), and what they're for.
     fn hosted_form_references(&self, form: &HostedForm, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (fg, muted, border, ground, bg) = (theme.foreground, theme.muted_foreground, theme.border, theme.secondary, theme.background);
-        let add = |big: bool| {
-            div()
-                .id("hosted-ref-add")
-                .when(big, |d| d.w_full().h(px(118.)))
-                .when(!big, |d| d.size(px(76.)))
-                .rounded(px(10.))
-                .border_1()
-                .border_color(border)
-                .bg(ground.opacity(0.5))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_1()
-                .cursor_pointer()
-                .hover(|d| d.bg(ground))
-                .child(Icon::new(if big { Lucide::ImagePlus } else { Lucide::Plus }).text_color(muted))
-                .child(div().text_sm().text_color(fg).child(if big { "Add images" } else { "Add" }))
-                .when(big, |d| d.child(div().text_xs().text_color(muted).child(format!("Drop or paste · up to {}", wundur_core::asset_flow::REFERENCES))))
-        };
-        let mut tiles = div().flex().flex_wrap().gap_2();
+        let (muted, border, ground, bg) = (theme.muted_foreground, theme.border, theme.secondary, theme.background);
+        let most = wundur_core::asset_flow::REFERENCES;
+        let mut line = div().flex().flex_wrap().items_center().gap_2();
+        if form.references.len() < most {
+            line = line.child(
+                Button::new("hosted-ref-add")
+                    .xsmall()
+                    .outline()
+                    .icon(Lucide::Paperclip)
+                    .label("Add images")
+                    .tooltip("Pictures for the design: colours, costume, shapes. Drop or paste them here too.")
+                    .on_click(cx.listener(|p, _, _, cx| p.pick_references(cx))),
+            );
+        }
         for (n, path) in form.references.iter().enumerate() {
-            tiles = tiles.child(
+            line = line.child(
                 div()
-                    .size(px(76.))
+                    .size(px(44.))
                     .relative()
-                    .rounded(px(8.))
+                    .rounded(px(6.))
                     .overflow_hidden()
                     .border_1()
                     .border_color(border)
                     .bg(ground)
                     .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
                     .child(
-                        div().absolute().top(px(3.)).right(px(3.)).rounded_full().bg(bg.opacity(0.9)).child(
+                        div().absolute().top(px(1.)).right(px(1.)).rounded_full().bg(bg.opacity(0.9)).child(
                             Button::new(SharedString::from(format!("hosted-ref-remove-{n}")))
                                 .xsmall()
                                 .ghost()
@@ -825,22 +898,7 @@ impl ChatPanel {
                     ),
             );
         }
-        let pictures = if form.references.is_empty() {
-            add(true).on_click(cx.listener(|p, _, _, cx| p.pick_references(cx))).into_any_element()
-        } else {
-            if form.references.len() < wundur_core::asset_flow::REFERENCES {
-                tiles = tiles.child(add(false).on_click(cx.listener(|p, _, _, cx| p.pick_references(cx))));
-            }
-            tiles.into_any_element()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(div().flex().items_center().gap_2().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("References")).child(div().text_xs().text_color(muted).child("Optional")))
-            .child(pictures)
-            .child(div().text_xs().text_color(muted).child("Used for the design (colours, costume, shapes), never the pose. Concept art and drawings work best. They can't be changed later."))
-            .into_any_element()
+        line.child(div().text_xs().text_color(muted).child(format!("{}/{most} · for the design, never the pose", form.references.len()))).into_any_element()
     }
 
     /// The system's picker for reference pictures; the ones chosen join the form's (three at most).
@@ -1003,6 +1061,9 @@ impl ChatPanel {
             let body = div().text_xs().text_color(muted).child(dir.display().to_string()).into_any_element();
             return self.asset_frame(id("card"), "Asset not found".into(), None, None, None, body, cx);
         };
+        if e.folded() {
+            return self.hosted_row(dir, &e, &id, cx);
+        }
         let (catalog, plan) = hosted_store::catalog(cx);
         let kind = catalog.as_ref().and_then(|c| c.kind(&e.record.kind)).cloned();
         let kind_label = kind.as_ref().map(|k| k.label.clone()).unwrap_or_else(|| e.record.kind.clone());
@@ -1024,6 +1085,7 @@ impl ChatPanel {
             status: String::new(),
             primary: None,
             overlay: None,
+            close: None,
         };
         match shown {
             4 => self.hosted_rig(dir, &e, &kind_label, &id, &mut frame, cx),
@@ -1031,6 +1093,64 @@ impl ChatPanel {
             _ => self.hosted_views(dir, &e, kind.as_ref(), &kind_label, reached, &id, &mut frame, cx),
         }
         self.hosted_frame(frame, cx)
+    }
+
+    /// A folded card: one line with a picture of it, its name, where it's at, Open, and Cancel
+    /// job while something is being made.
+    fn hosted_row(&self, dir: &Path, e: &hosted_store::Entry, id: &dyn Fn(&str) -> SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, border, bg, ground, green, danger) = (theme.foreground, theme.muted_foreground, theme.border, theme.background, theme.secondary, theme.green, theme.danger);
+        // Its picture: the approved views' first, else the latest saved set's, else a reference.
+        let asset = e.asset.as_ref();
+        let set = asset.and_then(|a| a.approved_set().or_else(|| a.sets.iter().rev().find(|s| e.record.views.contains_key(&s.id))));
+        let picture = set.and_then(|s| e.record.views.get(&s.id)).and_then(|f| f.first()).or_else(|| e.record.references.first()).map(|f| dir.join(f));
+        let thumb = div().size(px(40.)).flex_none().rounded(px(8.)).overflow_hidden().bg(ground).flex().items_center().justify_center();
+        let thumb = match picture {
+            Some(path) => thumb.child(img(path).size_full().object_fit(ObjectFit::Cover)),
+            None => thumb.child(Icon::new(kind_icon(&e.record.kind)).text_color(muted)),
+        };
+        let busy = e.busy();
+        let (icon, text): (AnyElement, String) = if e.record.cancelled {
+            (Icon::new(Lucide::CircleSlash).small().text_color(muted).into_any_element(), "Cancelled".into())
+        } else if e.error.is_some() {
+            (Icon::new(Lucide::CircleAlert).small().text_color(danger).into_any_element(), "Something went wrong".into())
+        } else if busy {
+            let text = match (e.working, asset) {
+                (Some(w), _) => format!("{w}…"),
+                (None, Some(a)) if a.sets.iter().any(Set::is_generating) => "Generating views…".into(),
+                _ => "Building the model…".into(),
+            };
+            (gpui_kit::component::spinner::Spinner::new().color(muted).into_any_element(), text)
+        } else if e.record.imported.is_some() {
+            (Icon::new(Lucide::CircleCheck).small().text_color(green).into_any_element(), "Imported".into())
+        } else {
+            let text = match asset {
+                Some(a) if a.approved_set().is_some() && a.models.iter().any(Model::succeeded) => "Model ready to import",
+                Some(a) if a.approved_set().is_some() => "Views approved",
+                Some(a) if a.latest_set().is_some_and(Set::is_ready) => "Views ready to review",
+                _ => "",
+            };
+            (div().into_any_element(), text.into())
+        };
+        let (open, cancel) = (dir.to_path_buf(), dir.to_path_buf());
+        div()
+            .id(id("row"))
+            .px_4()
+            .py_2()
+            .rounded(px(14.))
+            .border_1()
+            .border_color(border.opacity(0.8))
+            .bg(bg)
+            .shadow_sm()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(thumb)
+            .child(div().flex_none().max_w(px(240.)).truncate().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(e.record.name.clone()))
+            .child(div().flex_1().min_w_0().flex().items_center().gap_2().child(icon).child(div().min_w_0().truncate().text_sm().text_color(muted).child(text)))
+            .child(Button::new(id("row-open")).small().outline().label("Open").tooltip("Open the card").on_click(move |_, _, cx| hosted_store::fold(&open, false, cx)))
+            .when(e.cancellable(), |d| d.child(Button::new(id("row-cancel")).small().ghost().label("Cancel job").tooltip(CANCEL_TIP).on_click(move |_, _, cx| hosted_store::cancel(&cancel, cx))))
+            .into_any_element()
     }
 
     // ----- step 2: views -----
