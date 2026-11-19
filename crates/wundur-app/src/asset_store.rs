@@ -85,6 +85,21 @@ fn update(dir: &Path, save: bool, cx: &mut App, f: impl FnOnce(&mut Entry)) {
     cx.refresh_windows();
 }
 
+/// Remember the chat the asset in `dir` belongs to, when it doesn't know yet (see
+/// [`crate::hosted_store::claim`]).
+pub fn claim(dir: &Path, origin: &assets::Origin, cx: &mut App) -> bool {
+    if entry(dir, cx).is_none_or(|e| e.asset.origin.is_some()) {
+        return false;
+    }
+    let store = cx.global_mut::<Store>();
+    let Some(e) = store.entries.get_mut(dir) else { return false };
+    e.asset.origin = Some(origin.clone());
+    if let Err(err) = assets::save(dir, &e.asset) {
+        eprintln!("wundur: remembering {}'s chat: {err}", dir.display());
+    }
+    true
+}
+
 /// A new asset in `project`: its folder (another name's when that one is taken) and record,
 /// remembering the chat it was started in.
 pub fn create(project: &Path, name: &str, kind: &str, brief: &str, origin: Option<assets::Origin>, cx: &mut App) -> Result<PathBuf, String> {

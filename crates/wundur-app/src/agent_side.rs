@@ -175,6 +175,7 @@ pub fn watch_takeover(
             let _ = session.update(cx, |s, cx| {
                 if let Some(chat) = reloaded {
                     s.chat = chat;
+                    s.attach_summaries();
                 }
                 s.chat
                     .push_notice("The other terminal finished: this session continues here.");

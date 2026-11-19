@@ -636,6 +636,13 @@ impl Conversation {
         }
     }
 
+    /// The turn the item at `ix` sits in, by key (as [`Self::attach_assets`] finds it again):
+    /// the last message sent before it. `None` before the first message.
+    pub fn turn_key_before(&self, ix: usize) -> Option<String> {
+        let from = self.items[..ix.min(self.items.len())].iter().rposition(|i| matches!(i, Item::User(_)))?;
+        crate::summary::TurnText::key_at(self, from)
+    }
+
     pub fn attach_summaries(&mut self, kept: &std::collections::BTreeMap<String, crate::summary::TurnSummary>) {
         if kept.is_empty() {
             return;
@@ -1716,4 +1723,33 @@ mod shell_command_tests {
         assert_eq!(chat.delivery, Some(Delivery::Failed));
     }
 
+}
+
+#[cfg(test)]
+mod asset_card_tests {
+    use super::*;
+
+    #[test]
+    fn a_card_comes_back_after_the_turn_it_was_made_in() {
+        let dir = std::path::PathBuf::from("/p/assets/humanoids/orc");
+        let mut chat = Conversation::new("/p");
+        chat.items = vec![
+            Item::User("make an orc".into()),
+            Item::Assistant { text: "Opening the card.".into(), streaming: false },
+            Item::Asset(dir.clone()),
+            Item::User("thanks".into()),
+            Item::Assistant { text: "Sure.".into(), streaming: false },
+        ];
+        let turn = chat.turn_key_before(2);
+        assert!(turn.is_some());
+        assert_eq!(chat.turn_key_before(0), None);
+        // Read back from the file the card isn't there; its origin puts it back where it was.
+        let mut read = chat.clone();
+        read.items.remove(2);
+        read.attach_assets(&[(dir.clone(), turn)]);
+        assert!(matches!(&read.items[2], Item::Asset(d) if *d == dir));
+        // Once is enough.
+        read.attach_assets(&[(dir.clone(), None)]);
+        assert_eq!(read.items.iter().filter(|i| matches!(i, Item::Asset(_))).count(), 1);
+    }
 }

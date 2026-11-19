@@ -251,6 +251,22 @@ fn update(dir: &Path, save: bool, cx: &mut App, f: impl FnOnce(&mut Entry)) {
     cx.refresh_windows();
 }
 
+/// Remember the chat the asset in `dir` belongs to, when it doesn't know yet (made before the
+/// chat had an id): its card comes back when that chat is read in again. `false` when it
+/// already knows, or isn't a hosted asset.
+pub fn claim(dir: &Path, origin: &wundur_core::assets::Origin, cx: &mut App) -> bool {
+    if entry(dir, cx).is_none_or(|e| e.record.origin.is_some()) {
+        return false;
+    }
+    let store = cx.global_mut::<Store>();
+    let Some(e) = store.entries.get_mut(dir) else { return false };
+    e.record.origin = Some(origin.clone());
+    if let Err(err) = flow::save(dir, &e.record) {
+        eprintln!("wundur: remembering {}'s chat: {err}", dir.display());
+    }
+    true
+}
+
 /// Show step `step` (1 describe … 4 rig), or the asset's own with `None`.
 pub fn show_step(dir: &Path, step: Option<u8>, cx: &mut App) {
     update(dir, false, cx, |e| e.step = step);
