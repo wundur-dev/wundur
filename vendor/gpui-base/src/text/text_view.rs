@@ -104,6 +104,10 @@ impl TextViewDefaults {
 pub(crate) type TableActionsFn =
     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+/// Wundur patch: type for the blockquote actions generator function (the quote's text as
+/// Markdown, without its `>` markers).
+pub(crate) type QuoteActionsFn = dyn Fn(&str, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
 pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync;
 
 pub(crate) type LinkClickHandlerFn =
@@ -209,6 +213,7 @@ pub struct TextView {
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
+    quote_actions: Option<Arc<QuoteActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     link_tooltip: Option<Arc<LinkTooltipFn>>,
     task_toggle_handler: Option<Arc<TaskToggleHandlerFn>>,
@@ -248,6 +253,21 @@ pub fn set_find_marks(id: &ElementId, marks: Option<FindMarks>) {
             all.remove(id);
         }
     });
+}
+
+thread_local! {
+    static DEFAULT_QUOTE_ACTIONS: std::cell::RefCell<Option<Arc<QuoteActionsFn>>> = Default::default();
+}
+
+/// Wundur patch: the blockquote actions every text view uses when it wasn't given its own
+/// [`TextView::quote_actions`] (for a wrapper that doesn't pass them on): set once, at start.
+pub fn set_default_quote_actions<F, E>(f: F)
+where
+    F: Fn(&str, &mut Window, &mut App) -> E + Send + Sync + 'static,
+    E: IntoElement,
+{
+    let f: Arc<QuoteActionsFn> = Arc::new(move |text, window, cx| f(text, window, cx).into_any_element());
+    DEFAULT_QUOTE_ACTIONS.with_borrow_mut(|d| *d = Some(f));
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -293,6 +313,7 @@ impl TextView {
             code_block_actions: None,
             code_block_highlighter: None,
             table_actions: None,
+            quote_actions: None,
             link_click_handler: None,
             link_tooltip: None,
             task_toggle_handler: None,
@@ -323,6 +344,7 @@ impl TextView {
             code_block_actions: None,
             code_block_highlighter: None,
             table_actions: None,
+            quote_actions: None,
             link_click_handler: None,
             link_tooltip: None,
             task_toggle_handler: None,
@@ -353,6 +375,7 @@ impl TextView {
             code_block_actions: None,
             code_block_highlighter: None,
             table_actions: None,
+            quote_actions: None,
             link_click_handler: None,
             link_tooltip: None,
             task_toggle_handler: None,
@@ -518,6 +541,18 @@ impl TextView {
         self.table_actions = Some(Arc::new(move |table, window, cx| {
             f(table, window, cx).into_any_element()
         }));
+        self
+    }
+
+    /// Wundur patch: set custom actions shown at the top right of each blockquote while the
+    /// pointer is over it (a copy button). The closure receives the quote's text as Markdown,
+    /// without its `>` markers, and returns an element to display.
+    pub fn quote_actions<F, E>(mut self, f: F) -> Self
+    where
+        F: Fn(&str, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.quote_actions = Some(Arc::new(move |text, window, cx| f(text, window, cx).into_any_element()));
         self
     }
 
@@ -873,6 +908,7 @@ impl Element for TextView {
             state.code_block_actions = self.code_block_actions.clone();
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
+            state.quote_actions = self.quote_actions.clone().or_else(|| DEFAULT_QUOTE_ACTIONS.with_borrow(|d| d.clone()));
             state.link_click_handler = self.link_click_handler.clone();
             state.link_tooltip = self.link_tooltip.clone();
             state.task_toggle_handler = self.task_toggle_handler.clone();

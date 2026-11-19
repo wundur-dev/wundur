@@ -1,6 +1,6 @@
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/dock/dock_area.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/dock_area.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/dock/dock_area.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/dock_area.rs
 --- a/src/dock/dock_area.rs	2006-07-23 21:21:28
-+++ b/src/dock/dock_area.rs	2026-11-14 07:07:25
++++ b/src/dock/dock_area.rs	2026-11-19 16:09:47
 @@ -108,6 +108,8 @@
      groups: HashMap<NodeId, Cached<TabGroup>>,
      splits: HashMap<NodeId, CachedSplit>,
@@ -53,9 +53,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
                              .child(self.render_node(child, window, cx))
                              // `flex_none` is what makes the size stick.
                              // `ResizablePanel` sets `flex_grow: 1` on itself,
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/dock/drag.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/drag.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/dock/drag.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/drag.rs
 --- a/src/dock/drag.rs	2006-07-23 21:21:28
-+++ b/src/dock/drag.rs	2026-11-14 07:07:25
++++ b/src/dock/drag.rs	2026-11-19 16:09:47
 @@ -264,6 +264,128 @@
      }
  }
@@ -211,9 +211,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  
      #[test]
      fn drop_placeholder_bounds_cover_each_target_placement() {
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/dock/mod.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/mod.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/dock/mod.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/mod.rs
 --- a/src/dock/mod.rs	2006-07-23 21:21:28
-+++ b/src/dock/mod.rs	2026-11-14 07:07:25
++++ b/src/dock/mod.rs	2026-11-19 16:09:47
 @@ -181,7 +181,7 @@
  
  pub use dock_area::{DockArea, DockAreaRenderer, DockContext, DockEvent};
@@ -230,9 +230,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
 +    pin_panels,
      TabGroup, TabGroupConstraints, TabGroupContext, TabGroupEvent, TabGroupRenderer,
  };
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/dock/tab_group.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/tab_group.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/dock/tab_group.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/dock/tab_group.rs
 --- a/src/dock/tab_group.rs	2006-07-23 21:21:28
-+++ b/src/dock/tab_group.rs	2026-11-14 07:07:25
++++ b/src/dock/tab_group.rs	2026-11-19 16:09:47
 @@ -6,7 +6,7 @@
  use gpui::{
      AnyElement, AnyView, App, Bounds, Context, Div, DragMoveEvent, Empty, EventEmitter,
@@ -449,9 +449,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
      }
  }
  
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/input/base/element.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/element.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/input/base/element.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/element.rs
 --- a/src/input/base/element.rs	2006-07-23 21:21:28
-+++ b/src/input/base/element.rs	2026-11-14 07:07:24
++++ b/src/input/base/element.rs	2026-11-19 16:09:48
 @@ -119,6 +119,53 @@
      combined
  }
@@ -531,9 +531,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
                      }
                  }
                  RangeDecorationStyle::Frame => {
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/input/base/kind.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/kind.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/input/base/kind.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/kind.rs
 --- a/src/input/base/kind.rs	2006-07-23 21:21:28
-+++ b/src/input/base/kind.rs	2026-11-14 07:07:24
++++ b/src/input/base/kind.rs	2026-11-19 16:09:48
 @@ -366,8 +366,42 @@
  impl InputModeKind for TextareaMode {
      const MULTI_LINE: bool = true;
@@ -579,9 +579,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  }
  // `EditorMode`'s implementation lives with the editor code, next to the
  // language features it dispatches to.
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/input/base/state.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/state.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/input/base/state.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/base/state.rs
 --- a/src/input/base/state.rs	2006-07-23 21:21:28
-+++ b/src/input/base/state.rs	2026-11-14 07:07:24
++++ b/src/input/base/state.rs	2026-11-19 16:09:48
 @@ -953,7 +953,8 @@
              }),
              // Observe the blink cursor to repaint the view when it changes.
@@ -636,9 +636,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
          cx.emit(InputEvent::Focus);
      }
  
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/input/editor/decorations.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/editor/decorations.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/input/editor/decorations.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/editor/decorations.rs
 --- a/src/input/editor/decorations.rs	2006-07-23 21:21:28
-+++ b/src/input/editor/decorations.rs	2026-11-14 07:13:11
++++ b/src/input/editor/decorations.rs	2026-11-19 16:09:48
 @@ -1,4 +1,4 @@
 -use crate::input::EditorMode;
 +use crate::input::{EditorMode, InputModeKind, TextareaMode};
@@ -872,9 +872,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
      /// Create a collection of gutter marks, such as added, modified, and deleted
      /// lines in a version-control diff.
      ///
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/input/mod.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/mod.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/input/mod.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/input/mod.rs
 --- a/src/input/mod.rs	2006-07-23 21:21:28
-+++ b/src/input/mod.rs	2026-11-14 07:07:24
++++ b/src/input/mod.rs	2026-11-19 16:09:48
 @@ -106,7 +106,8 @@
  pub use indent::TabSize;
  pub use input::{Input, InputState};
@@ -885,9 +885,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  };
  pub(crate) use language::EditorLanguage;
  pub use language::{LanguageProvider, set_language_config, set_language_provider};
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/resizable/resize_handle.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/resizable/resize_handle.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/resizable/resize_handle.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/resizable/resize_handle.rs
 --- a/src/resizable/resize_handle.rs	2006-07-23 21:21:28
-+++ b/src/resizable/resize_handle.rs	2026-11-14 07:07:25
++++ b/src/resizable/resize_handle.rs	2026-11-19 16:09:48
 @@ -432,16 +432,19 @@
  
          window.with_element_state(id.unwrap(), |state: Option<SharedHandleState>, window| {
@@ -946,10 +946,28 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
                      }
                  }
              });
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/text/node.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/node.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/text/node.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/node.rs
 --- a/src/text/node.rs	2006-07-23 21:21:28
-+++ b/src/text/node.rs	2026-11-14 07:07:25
-@@ -3455,6 +3455,9 @@
++++ b/src/text/node.rs	2026-11-19 16:11:02
+@@ -20,7 +20,7 @@
+     scrollable_mask::horizontal_scroll_area,
+     text::{
+         CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
+-        MarkdownNode, TableActionsFn, TaskToggleEvent, TaskToggleHandlerFn,
++        MarkdownNode, QuoteActionsFn, TableActionsFn, TaskToggleEvent, TaskToggleHandlerFn,
+         document::{NodeRenderOptions, PrevBlock, flow_position},
+         inline::{
+             Inline, InlineHighlight, InlineState, code_insets, combine_highlights, fade_highlights,
+@@ -2756,6 +2756,8 @@
+     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
++    /// Wundur patch: what shows at a blockquote's top right on hover.
++    pub(crate) quote_actions: Option<Arc<QuoteActionsFn>>,
+     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     pub(crate) task_toggle_handler: Option<Arc<TaskToggleHandlerFn>>,
+@@ -3455,6 +3457,9 @@
  
  /// `block` with `gap` below it. The box only exists to hold the padding,
  /// so a block with no gap below it is returned as is.
@@ -959,7 +977,7 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  fn gapped(block: AnyElement, gap: Rems) -> AnyElement {
      if gap.is_zero() {
          block
-@@ -4035,7 +4038,9 @@
+@@ -4035,7 +4040,9 @@
                                      ));
                                  }
                                  BlockNode::List { .. } => {
@@ -970,7 +988,28 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
                                          NodeRenderOptions {
                                              depth: options.depth + 1,
                                              todo: checked.is_some(),
-@@ -4625,8 +4630,16 @@
+@@ -4536,6 +4543,20 @@
+             BlockNode::Blockquote { children, .. } => gapped(
+                 div()
+                     .w_full()
++                    // Wundur patch: the quote's actions (a copy button), at its top right
++                    // while the pointer is over it.
++                    .relative()
++                    .group("wundur-quote")
++                    .children(node_cx.quote_actions.clone().map(|f| {
++                        let text = children.iter().map(|c| c.to_markdown()).collect::<Vec<_>>().join("\n\n");
++                        div()
++                            .absolute()
++                            .top_0()
++                            .right_0()
++                            .opacity(0.)
++                            .group_hover("wundur-quote", |s| s.opacity(1.))
++                            .child(f(&text, window, cx))
++                    }))
+                     .text_color(node_cx.style.muted_foreground())
+                     .border_l_2()
+                     .border_color(node_cx.style.border())
+@@ -4625,8 +4646,16 @@
                      let mut item_index = 0;
                      for (ix, item) in children.into_iter().enumerate() {
                          let is_item = item.is_list_item();
@@ -989,7 +1028,7 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
                              item,
                              item_index,
                              NodeRenderOptions {
-@@ -4638,7 +4651,12 @@
+@@ -4638,7 +4667,12 @@
                              node_cx,
                              window,
                              cx,
@@ -1003,9 +1042,9 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  
                          if is_item {
                              item_index += 1;
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/text/range_highlight.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/range_highlight.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/text/range_highlight.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/range_highlight.rs
 --- a/src/text/range_highlight.rs	2006-07-23 21:21:28
-+++ b/src/text/range_highlight.rs	2026-11-14 07:07:25
++++ b/src/text/range_highlight.rs	2026-11-19 16:09:48
 @@ -171,6 +171,36 @@
  
  impl Eq for RenderedText {}
@@ -1043,9 +1082,18 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  /// A background painted behind one range of a [`RenderedText`].
  ///
  /// It is painted under the text and under the selection, and never changes
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/text/state.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/state.rs
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/text/state.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/state.rs
 --- a/src/text/state.rs	2006-07-23 21:21:28
-+++ b/src/text/state.rs	2026-11-14 07:07:25
++++ b/src/text/state.rs	2026-11-19 16:11:02
+@@ -23,7 +23,7 @@
+     input::{self, SelectAll},
+     text::{
+         CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
+-        RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn, TaskToggleHandlerFn,
++        RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn, QuoteActionsFn, TaskToggleHandlerFn,
+         TextViewStyle,
+         document::ParsedDocument,
+         format,
 @@ -44,6 +44,9 @@
  // Preserve exact first-layout height for small documents while bounding the
  // amount of source parsed synchronously on the UI thread.
@@ -1056,7 +1104,15 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
  // Repaint a streamed fade at about 30 fps, not at the display refresh rate.
  const STREAM_FADE_TICK: Duration = Duration::from_millis(33);
  
-@@ -160,12 +163,17 @@
+@@ -130,6 +133,7 @@
+     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
++    pub(super) quote_actions: Option<std::sync::Arc<QuoteActionsFn>>,
+     pub(super) image_source: Option<std::sync::Arc<super::text_view::ImageSourceFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+     pub(super) link_tooltip: Option<std::sync::Arc<super::text_view::LinkTooltipFn>>,
+@@ -160,12 +164,17 @@
      revision: usize,
      /// The revision of the update `parsed_content` was committed from.
      committed_revision: usize,
@@ -1074,7 +1130,15 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
      pub(super) pending_reveal: Option<PendingReveal>,
      pub(super) selection_revision: usize,
      compatible_layout_update: bool,
-@@ -260,9 +268,11 @@
+@@ -240,6 +249,7 @@
+             code_block_actions: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            quote_actions: None,
+             link_click_handler: None,
+             link_tooltip: None,
+             hovered_link_tooltip: None,
+@@ -260,9 +270,11 @@
              element_text: None,
              revision: 0,
              committed_revision: 0,
@@ -1086,7 +1150,7 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
              pending_reveal: None,
              selection_revision: 0,
              compatible_layout_update: false,
-@@ -370,7 +380,12 @@
+@@ -370,7 +382,12 @@
              return;
          }
          self.element_text = Some(text.clone());
@@ -1099,7 +1163,7 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
      }
  
      /// Append partial text content to the existing text.
-@@ -553,6 +568,45 @@
+@@ -553,6 +570,45 @@
              markdown_extensions: self.markdown_extensions.clone(),
          };
  
@@ -1145,7 +1209,7 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
          // Keep small full replacements synchronous so their first layout has
          // the exact content height. Larger replacements use the existing
          // background parser, bounding synchronous parser input on the UI thread.
-@@ -581,7 +635,9 @@
+@@ -581,7 +637,9 @@
              // later append extends this baseline instead of parsing the delta
              // as a standalone document.
              _ = self.tx.try_send(update_options);
@@ -1156,12 +1220,10 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
              return;
          }
  
-@@ -737,6 +793,40 @@
-         );
-         cx.notify();
+@@ -739,6 +797,40 @@
          Ok(())
-+    }
-+
+     }
+ 
 +    /// Mark `marks`' occurrences as range highlights, again only when the
 +    /// marks or the parsed text changed. Called as the element lays out, so
 +    /// it does not notify: the highlights paint in this same frame.
@@ -1194,13 +1256,42 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
 +            .flatten()
 +            .map(Arc::new);
 +        self.find_marks = Some((marks.clone(), self.committed_revision));
-     }
- 
++    }
++
      /// Remove all range highlights.
-diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/src/text/text_view.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/text_view.rs
+     pub fn clear_range_highlights(&mut self, cx: &mut Context<Self>) {
+         if self.range_highlights.take().is_some() {
+@@ -1143,6 +1235,7 @@
+             code_block_actions: self.code_block_actions.clone(),
+             code_block_highlighter: self.code_block_highlighter.clone(),
+             table_actions: self.table_actions.clone(),
++            quote_actions: self.quote_actions.clone(),
+             link_click_handler: self.link_click_handler.clone(),
+             task_toggle_handler: self.task_toggle_handler.clone(),
+             image_source: self.image_source.clone(),
+diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target -x .cargo_vcs_info.json gpui-base-0.9.1/src/text/text_view.rs /Volumes/Extreme SSD/workspace/keleuo/vendor/gpui-base/src/text/text_view.rs
 --- a/src/text/text_view.rs	2006-07-23 21:21:28
-+++ b/src/text/text_view.rs	2026-11-14 07:11:47
-@@ -216,8 +216,40 @@
++++ b/src/text/text_view.rs	2026-11-19 16:15:50
+@@ -104,6 +104,10 @@
+ pub(crate) type TableActionsFn =
+     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
+ 
++/// Wundur patch: type for the blockquote actions generator function (the quote's text as
++/// Markdown, without its `>` markers).
++pub(crate) type QuoteActionsFn = dyn Fn(&str, &mut Window, &mut App) -> AnyElement + Send + Sync;
++
+ pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync;
+ 
+ pub(crate) type LinkClickHandlerFn =
+@@ -209,6 +213,7 @@
+     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
++    quote_actions: Option<Arc<QuoteActionsFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     link_tooltip: Option<Arc<LinkTooltipFn>>,
+     task_toggle_handler: Option<Arc<TaskToggleHandlerFn>>,
+@@ -216,8 +221,55 @@
      reveal_handler: Option<Rc<RevealHandlerFn>>,
      markdown_extensions: Arc<MarkdownExtensions>,
      motion: Option<TextViewMotion>,
@@ -1238,10 +1329,33 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
 +    });
 +}
 +
++thread_local! {
++    static DEFAULT_QUOTE_ACTIONS: std::cell::RefCell<Option<Arc<QuoteActionsFn>>> = Default::default();
++}
++
++/// Wundur patch: the blockquote actions every text view uses when it wasn't given its own
++/// [`TextView::quote_actions`] (for a wrapper that doesn't pass them on): set once, at start.
++pub fn set_default_quote_actions<F, E>(f: F)
++where
++    F: Fn(&str, &mut Window, &mut App) -> E + Send + Sync + 'static,
++    E: IntoElement,
++{
++    let f: Arc<QuoteActionsFn> = Arc::new(move |text, window, cx| f(text, window, cx).into_any_element());
++    DEFAULT_QUOTE_ACTIONS.with_borrow_mut(|d| *d = Some(f));
++}
++
  /// A plugin that can configure a [`TextView`].
  pub trait TextViewPlugin {
      fn setup(self, text_view: TextView) -> TextView;
-@@ -268,6 +300,7 @@
+@@ -261,6 +313,7 @@
+             code_block_actions: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            quote_actions: None,
+             link_click_handler: None,
+             link_tooltip: None,
+             task_toggle_handler: None,
+@@ -268,6 +321,7 @@
              reveal_handler: None,
              markdown_extensions: Arc::default(),
              motion: None,
@@ -1249,7 +1363,15 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
          }
      }
  
-@@ -297,6 +330,7 @@
+@@ -290,6 +344,7 @@
+             code_block_actions: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            quote_actions: None,
+             link_click_handler: None,
+             link_tooltip: None,
+             task_toggle_handler: None,
+@@ -297,6 +352,7 @@
              reveal_handler: None,
              markdown_extensions: Arc::default(),
              motion: None,
@@ -1257,7 +1379,15 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
          }
      }
  
-@@ -326,6 +360,7 @@
+@@ -319,6 +375,7 @@
+             code_block_actions: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            quote_actions: None,
+             link_click_handler: None,
+             link_tooltip: None,
+             task_toggle_handler: None,
+@@ -326,6 +383,7 @@
              reveal_handler: None,
              markdown_extensions: Arc::default(),
              motion: None,
@@ -1265,7 +1395,26 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
          }
      }
  
-@@ -542,6 +577,13 @@
+@@ -486,6 +544,18 @@
+         self
+     }
+ 
++    /// Wundur patch: set custom actions shown at the top right of each blockquote while the
++    /// pointer is over it (a copy button). The closure receives the quote's text as Markdown,
++    /// without its `>` markers, and returns an element to display.
++    pub fn quote_actions<F, E>(mut self, f: F) -> Self
++    where
++        F: Fn(&str, &mut Window, &mut App) -> E + Send + Sync + 'static,
++        E: IntoElement,
++    {
++        self.quote_actions = Some(Arc::new(move |text, window, cx| f(text, window, cx).into_any_element()));
++        self
++    }
++
+     /// Handle pointer events on rendered links.
+     ///
+     /// The handler receives the resolved URL and the original GPUI click event.
+@@ -542,6 +612,13 @@
          self
      }
  
@@ -1279,7 +1428,15 @@ diff -ruN -x Cargo.lock -x ._* -x rust-toolchain.toml -x target gpui-base-0.9.1/
      /// Replace the Markdown extension registry.
      pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
          self.markdown_extensions = Arc::new(extensions);
-@@ -850,6 +892,11 @@
+@@ -831,6 +908,7 @@
+             state.code_block_actions = self.code_block_actions.clone();
+             state.code_block_highlighter = code_block_highlighter;
+             state.table_actions = self.table_actions.clone();
++            state.quote_actions = self.quote_actions.clone().or_else(|| DEFAULT_QUOTE_ACTIONS.with_borrow(|d| d.clone()));
+             state.link_click_handler = self.link_click_handler.clone();
+             state.link_tooltip = self.link_tooltip.clone();
+             state.task_toggle_handler = self.task_toggle_handler.clone();
+@@ -850,6 +928,11 @@
              if let Some(text) = &self.text {
                  state.set_element_text(text, cx);
              }

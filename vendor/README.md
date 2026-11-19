@@ -36,4 +36,6 @@ Each is marked `Wundur patch` (or `Keleuo patch`) in the code.
   it is in, not the whole window (which painted every cached panel again).
 - **Markdown** (`text/`): space between list items (also above a nested list); find marks on
   the words found in the chat; streaming text drawn in the frame that brings it, at most ten
-  times a second, the list keeping its place; idle work not redrawing the window.
+  times a second, the list keeping its place; idle work not redrawing the window; actions at a
+  blockquote's top right on hover (`quote_actions`, or `set_default_quote_actions` for every
+  view: the chat's copy button).
