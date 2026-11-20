@@ -30,20 +30,22 @@ blocks, each marked `run` on its fence, in this order:
    cd "<worktree path>" && git push -u origin <branch> && gh pr create --base main --head <branch> --title "<title>" --body-file /tmp/pr-<branch>.md
    ```
 
-2. The restart, from the root checkout (the folder that holds `main`), not from the worktree:
+2. The after-merge command, from the root checkout (the folder that holds `main`), not from the
+   worktree. Run it once the PR is merged. It pulls `main` into the root (fast-forward only),
+   removes each worktree whose PR has merged and which is clean (the directory, then its branch),
+   and restarts Wundur only if the pull brought changes. If `main` was already up to date, it does
+   not restart.
 
    ```sh run
-   cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" && ./scripts/restart
+   cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" && ./scripts/after-merge
    ```
 
-   The restart builds the root checkout as it stands, so it shows the change only after the PR
-   is merged and root is on an up-to-date `main`. If root is behind, check
-   `git branch --show-current` and put `git pull --ff-only origin main` before the restart.
+   To restart without pulling, run `./scripts/restart` from the root checkout.
 
 Wundur shows a Run button on each block. The restart script builds the release binary, quits the
 running Wundur and starts the new build in the same folder with the same arguments; open
-sessions come back. Never run either block yourself: the PR block pushes, and the restart quits
-the app this session runs in.
+sessions come back. Never run these blocks yourself: the PR block pushes, and after-merge can
+restart the app this session runs in.
 
 ## Changes go through pull requests
 
@@ -56,7 +58,8 @@ the app this session runs in.
 - Commit on the task's branch. Push and open the PR with the PR run command (see "At
   completion" above); don't push or run `gh` yourself.
 - Never push to `main`, merge a PR, or delete a branch someone else made.
-- After the owner merges, bring the root checkout up to date on `main` before restarting.
+- After the owner merges, the after-merge command (see "At completion" above) brings the root
+  checkout up to date on `main` and removes the merged worktree.
 
 ## Releasing
 
