@@ -874,12 +874,18 @@ impl ChatPanel {
         };
         let left = div().flex().flex_col().gap_3().child(describe).child(look).child(name).children(settings).into_any_element();
         let error = form.error.clone().map(|e| div().text_xs().text_color(danger).child(e).into_any_element());
-        let tip = match hosted_store::images_left(cx) {
+        let left_n = hosted_store::images_left(cx);
+        let tip = match left_n {
             Some(n) => format!("Making the views uses 1 image ({n} left this month). The references are sent with them, so they can't be changed after."),
             None => "Making the views uses 1 image. The references are sent with them, so they can't be changed after.".to_string(),
         };
+        // What's left is in the line itself, not only behind the icon.
+        let status = match left_n {
+            Some(n) => format!("1 image ({n} left) · References lock on generation"),
+            None => "1 image · References lock on generation".to_string(),
+        };
         let primary = Button::new("new-asset-create").small().primary().icon(Lucide::Sparkles).label("Make views").on_click(cx.listener(|p, _, _, cx| p.create_hosted(cx))).into_any_element();
-        let mut f = frame(left, None, error, "1 image · References lock on generation", Some(primary), cancel);
+        let mut f = frame(left, None, error, &status, Some(primary), cancel);
         f.header_mid = Some(kinds);
         f.status_tip = Some(tip);
         f.secondary = Some(Button::new("new-asset-cancel-foot").small().outline().label("Cancel").on_click(cx.listener(|p, _, _, cx| p.close_asset_form(cx, None))).into_any_element());
@@ -1469,7 +1475,9 @@ impl ChatPanel {
                 Some(n) => format!("{n} It starts by itself, and carries on if you close the card."),
                 None => format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }),
             };
-            frame.overlay = Some(self.hosted_busy_overlay(format!("Building the model{progress}"), detail, cx));
+            // The step it's on, in the service's words ("Painting the back"), beside the spinner.
+            let stage = running.and_then(|m| m.stage_text()).unwrap_or("Building the model");
+            frame.overlay = Some(self.hosted_busy_overlay(format!("{stage}{progress}"), detail, cx));
         }
         let mut left = div().flex().flex_col().gap_4();
 
