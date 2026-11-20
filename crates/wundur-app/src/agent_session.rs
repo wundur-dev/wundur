@@ -1956,6 +1956,16 @@ impl AgentSession {
         }
     }
 
+    /// The person has this session in front of them: the last turn's summary is no longer news
+    /// (kept so, for the next run). Whether it changed anything.
+    pub fn see_summary(&mut self) -> bool {
+        let Some((key, seen)) = self.chat.see_last_summary() else { return false };
+        if let Some(id) = &self.chat.session_id {
+            summary::keep(id, &key, &seen);
+        }
+        true
+    }
+
     // ----- what the window asks -----
 
     /// Send a user turn, starting the agent when needed.

@@ -125,7 +125,7 @@ impl ChatPanel {
             }
             summary::State::Ready(s) => s,
         };
-        let amber = theme.yellow;
+        let (amber, accent) = (theme.yellow, theme.ring);
         // The turn's summary reads the turn; agents it left in the background are not done yet.
         let chat = &self.session.read(cx).chat;
         let background = chat.running_agents().filter(|a| a.background).count();
@@ -236,19 +236,22 @@ impl ChatPanel {
                 .collect();
             card = card.child(section("Checked", muted, rows));
         }
-        if !s.needs_you.is_empty() {
-            let rows = s
-                .needs_you
+        // What the agent asked (answered in the chat), then what it left the person to do.
+        for (title, id, color, list) in [("Needs you", "ask", amber, &s.needs_you), ("To do", "todo", accent, &s.to_do)] {
+            if list.is_empty() {
+                continue;
+            }
+            let rows = list
                 .iter()
                 .enumerate()
                 .map(|(n, t)| {
-                    let dot = div().size(px(6.)).rounded_full().bg(amber).into_any_element();
+                    let dot = div().size(px(6.)).rounded_full().bg(color).into_any_element();
                     let command = t.source.as_ref().and_then(|s| s.command.clone());
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(3.))
-                        .child(row(format!("sum-todo-{key}-{n}"), dot, t.text.clone(), t.source.as_ref()))
+                        .child(row(format!("sum-{id}-{key}-{n}"), dot, t.text.clone(), t.source.as_ref()))
                         // The agent's own command for it, to run from here: shown as it runs.
                         .when_some(command, |d, command| {
                             d.child(
@@ -267,13 +270,13 @@ impl ChatPanel {
                                             .text_color(muted)
                                             .child(command.clone()),
                                     )
-                                    .child(run_pill(SharedString::from(format!("sum-run-{key}-{n}")), command, background, panel.clone(), cx)),
+                                    .child(run_pill(SharedString::from(format!("sum-run-{id}-{key}-{n}")), command, background, panel.clone(), cx)),
                             )
                         })
                         .into_any_element()
                 })
                 .collect();
-            card = card.child(section("Needs you", amber, rows));
+            card = card.child(section(title, color, rows));
         }
         card.into_any_element()
     }

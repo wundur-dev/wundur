@@ -616,7 +616,7 @@ fn summaries(cx: &App) -> SettingPage {
                         }))
                 }),
             )
-            .description("What the model is told, as a Markdown file you can change. The summary keeps its fields (status, headline, changed, checked, needs you) whatever it says."),
+            .description("What the model is told, as a Markdown file you can change. The summary keeps its fields (status, headline, changed, checked, needs you, to do) whatever it says."),
         ),
     ])
 }
