@@ -1,0 +1,62 @@
+#!/bin/sh
+# after-merge: run after a PR merges on main. Runs from anywhere in the repo.
+#
+# 1. Pulls main into the root checkout (fast-forward only). Stops if the root is not on main or
+#    the pull fails.
+# 2. After a successful pull, removes each worktree in .worktrees/ whose PR has merged and which
+#    has no uncommitted changes: the directory, then its branch (git branch -d, so a branch git
+#    does not see as merged, such as after a squash merge, is kept). Anything it cannot confirm
+#    as merged is kept.
+# 3. Restarts Wundur only if the pull brought changes. When main was already up to date, nothing
+#    restarts. To restart without pulling, run ./scripts/restart from the root checkout.
+
+ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)") || exit 1
+cd "$ROOT" || exit 1
+
+branch=$(git branch --show-current)
+if [ "$branch" != main ]; then
+    echo "The root checkout is on '$branch', not main: nothing pulled, removed or restarted."
+    exit 1
+fi
+
+before=$(git rev-parse HEAD)
+if ! git pull --ff-only origin main; then
+    echo "The pull failed: nothing removed or restarted. Resolve it in $ROOT first."
+    exit 1
+fi
+after=$(git rev-parse HEAD)
+
+for wt in "$ROOT"/.worktrees/*; do
+    [ -d "$wt" ] || continue
+    name=$(basename "$wt")
+    b=$(git -C "$wt" branch --show-current)
+    if [ -z "$b" ]; then
+        echo "Kept $name: it has no branch."
+        continue
+    fi
+    if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+        echo "Kept $name: it has uncommitted changes."
+        continue
+    fi
+    n=$(gh pr list --head "$b" --state merged --json number --jq 'length' 2>/dev/null)
+    case $n in
+        ''|0) echo "Kept $name: no merged PR for branch $b."; continue ;;
+    esac
+    if ! git worktree remove "$wt"; then
+        echo "Kept $name: git would not remove it."
+        continue
+    fi
+    echo "Removed $name."
+    if git branch -d "$b" >/dev/null 2>&1; then
+        echo "Deleted branch $b."
+    else
+        echo "Kept branch $b: git does not see it in main (a squash merge, for example)."
+    fi
+done
+
+if [ "$before" = "$after" ]; then
+    echo "main was already up to date: not restarting."
+    exit 0
+fi
+echo "main moved to $(git rev-parse --short HEAD): restarting Wundur."
+exec ./scripts/restart
