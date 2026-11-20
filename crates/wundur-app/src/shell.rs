@@ -96,13 +96,45 @@ struct Row {
     place: String,
     worktree: bool,
     activity: Option<String>,
-    /// The last turn's summary, once the turn is over: status, whether it needs the person,
-    /// headline.
-    summary: Option<(wundur_core::summary::Status, bool, String)>,
+    /// The last turn's summary, once the turn is over.
+    summary: Option<RowSummary>,
     per_use: Option<bool>,
     cost: Option<Spend>,
     context: Option<Spend>,
     short_id: Option<String>,
+}
+
+/// What a session's row shows of its last turn's summary.
+#[derive(Clone, PartialEq)]
+struct RowSummary {
+    status: wundur_core::summary::Status,
+    /// The agent asked the person something (answered in the chat).
+    asks: bool,
+    /// It left the person things to do themselves.
+    to_do: bool,
+    /// The person has looked at it since it came.
+    seen: bool,
+    headline: String,
+}
+
+impl RowSummary {
+    /// The word on the row, and its colour: a question until it is answered (a reply starts a
+    /// new turn); the rest only until the person has seen it.
+    fn label(&self, theme: &gpui_kit::component::Theme) -> Option<(&'static str, Hsla)> {
+        use wundur_core::summary::Status;
+        let fresh = !self.seen;
+        if fresh && self.status == Status::Failed {
+            Some((self.status.label(), theme.red))
+        } else if self.asks || self.status == Status::Waiting {
+            Some(("Needs you", theme.yellow))
+        } else if fresh && self.to_do {
+            Some(("To do", theme.ring))
+        } else if fresh && self.status == Status::Partial {
+            Some((self.status.label(), theme.blue))
+        } else {
+            None
+        }
+    }
 }
 
 /// A session's state on its dot.
@@ -149,7 +181,15 @@ impl Row {
             worktree: w.worktree.is_some(),
             activity: chat.last_activity(80),
             summary: (!chat.busy && !needs_input)
-                .then(|| chat.last_summary().map(|sm| (sm.status, !sm.needs_you.is_empty(), sm.headline.clone())))
+                .then(|| {
+                    chat.last_summary().map(|sm| RowSummary {
+                        status: sm.status,
+                        asks: !sm.needs_you.is_empty(),
+                        to_do: !sm.to_do.is_empty(),
+                        seen: sm.seen,
+                        headline: sm.headline.clone(),
+                    })
+                })
                 .flatten(),
             per_use: s.per_use,
             cost: s.spend_as(true),
@@ -294,6 +334,7 @@ impl Shell {
                 // Looking at the window again, or away; a notification setting changed.
                 cx.observe_window_activation(window, |s, window, cx| {
                     s.attend(window, cx);
+                    s.see_summary(window, cx);
                     // Back from the browser (a checkout, the billing portal): the account anew.
                     if window.is_window_active() && s.settings.is_some() {
                         crate::settings_account::refresh_soon(cx);
@@ -1157,6 +1198,7 @@ impl Shell {
                 move |s, _, window, cx| {
                     s.save_open(cx);
                     s.attend(window, cx);
+                    s.see_summary(window, cx);
                     if let Some(ws) = ws.upgrade()
                         && s.refresh_row(&ws, cx)
                     {
@@ -1207,6 +1249,7 @@ impl Shell {
         });
         crate::perf::switch_step("focused");
         // Seen now: its row loses the mark.
+        self.see_summary(window, cx);
         self.refresh_row(&ws, cx);
         self.save_open(cx);
         crate::perf::switch_step("saved");
@@ -1273,7 +1316,9 @@ impl Shell {
         if tab.row == row {
             return false;
         }
-        if tab.row.dot != row.dot || tab.row.activity != row.activity || tab.row.summary != row.summary {
+        // (Seeing a summary is not the session doing something.)
+        let headline = |r: &Row| r.summary.as_ref().map(|s| (s.status, s.headline.clone()));
+        if tab.row.dot != row.dot || tab.row.activity != row.activity || headline(&tab.row) != headline(&row) {
             tab.changed = Some(std::time::SystemTime::now());
         }
         tab.row = row;
@@ -1932,6 +1977,19 @@ impl Shell {
         window.is_window_active() && ix == self.active && self.browser.is_none()
     }
 
+    /// The shown session's last summary, once the person looks at it, is no longer news: its
+    /// row stops saying "To do", "Partly done" or "Failed" (a question stays until answered).
+    fn see_summary(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.looking_at(self.active, window) {
+            return;
+        }
+        let Some(ws) = self.active_workspace() else { return };
+        let session = ws.read(cx).session.clone();
+        if session.update(cx, |s, _| s.see_summary()) && self.refresh_row(&ws, cx) {
+            cx.notify();
+        }
+    }
+
     /// Tell the person about sessions that came to wait on them (a permission prompt, a
     /// question in the terminal) while they look elsewhere, and take back what they have seen.
     fn attend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2034,7 +2092,7 @@ impl Shell {
         // matters at the right. The shown one is tinted, with an accent bar along its left edge.
         let theme = cx.theme();
         let (fg, muted, border, hover, ring) = (crate::theme::list_text(cx), theme.muted_foreground, theme.border, theme.secondary_hover, theme.ring);
-        let (yellow, red, blue, green) = (theme.yellow, theme.red, theme.blue, theme.green);
+        let (yellow, green) = (theme.yellow, theme.green);
         let in_card = project.is_some();
         let ground = if in_card { crate::theme::session_card_ground(cx) } else { crate::theme::tool_ground(cx) };
         let active = ix == self.active && self.browser.is_none();
@@ -2058,17 +2116,8 @@ impl Shell {
             (Some(Dot::Permission | Dot::Asking), _) => (Some(("Needs you", yellow)), row.activity.clone()),
             (Some(Dot::Working), _) => (Some(("Working", green)), row.activity.clone()),
             (Some(Dot::Agents), _) => (Some(("Agents working", green)), row.activity.clone()),
-            (None, Some((st, needs_you, headline))) => {
-                use wundur_core::summary::Status;
-                let status = match st {
-                    Status::Done if *needs_you => Some(("Needs you", yellow)),
-                    Status::Waiting => Some((st.label(), yellow)),
-                    Status::Failed => Some((st.label(), red)),
-                    Status::Partial => Some((st.label(), blue)),
-                    Status::Done => None,
-                };
-                (status, Some(headline.clone()))
-            }
+            // The shown one is in front of the person: its word would tell them nothing.
+            (None, Some(sm)) => (sm.label(theme).filter(|_| !active), Some(sm.headline.clone())),
             (None, None) => (None, row.activity.clone()),
         };
         // Nothing said yet: where it is (a folder inside the project, else its branch).

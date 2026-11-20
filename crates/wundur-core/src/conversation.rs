@@ -671,6 +671,19 @@ impl Conversation {
         })
     }
 
+    /// Mark the last turn's summary seen, if it was not: its key and the summary, to keep.
+    pub fn see_last_summary(&mut self) -> Option<(String, crate::summary::TurnSummary)> {
+        let from = self.turn_start();
+        let (key, s) = self.items[from..].iter_mut().find_map(|i| match i {
+            Item::Summary { key, state: crate::summary::State::Ready(s) } if !s.seen => Some((key, s)),
+            _ => None,
+        })?;
+        s.seen = true;
+        let out = (key.clone(), s.clone());
+        self.revision += 1;
+        Some(out)
+    }
+
     /// The files the agent's edit tools changed in the turn starting at `turn`.
     pub fn edited_in_turn(&self, turn: usize) -> std::collections::HashSet<PathBuf> {
         self.changes(turn).into_iter().filter(|c| !c.by_command).map(|c| c.path).collect()
@@ -1420,6 +1433,33 @@ mod tool_run_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_last_summary_is_seen_once() {
+        use crate::summary::{State, Status, TurnSummary};
+        let summary = |headline: &str| TurnSummary {
+            status: Status::Done,
+            headline: headline.into(),
+            changed: Vec::new(),
+            checked: Vec::new(),
+            needs_you: Vec::new(),
+            to_do: Vec::new(),
+            model: String::new(),
+            seen: false,
+        };
+        let mut c = Conversation::new("/p");
+        c.items = vec![
+            Item::User("one".into()),
+            Item::Summary { key: "a".into(), state: State::Ready(summary("first")) },
+            Item::User("two".into()),
+            Item::Summary { key: "b".into(), state: State::Ready(summary("second")) },
+        ];
+        let (key, seen) = c.see_last_summary().expect("news");
+        assert_eq!((key.as_str(), seen.seen), ("b", true));
+        assert!(c.last_summary().is_some_and(|s| s.seen));
+        assert!(c.see_last_summary().is_none(), "seen already");
+        assert!(matches!(&c.items[1], Item::Summary { state: State::Ready(s), .. } if !s.seen), "only the last turn's");
+    }
+
     #[test]
     fn a_preview_gives_way_to_the_finished_reply() {
         let mut c = Conversation::new("/p");

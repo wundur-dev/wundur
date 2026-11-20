@@ -85,7 +85,8 @@ impl Config {
     }
 }
 
-/// How the work went (whether something waits on the person is apart: [`TurnSummary::needs_you`]).
+/// How the work went (whether something waits on the person is apart: [`TurnSummary::needs_you`]
+/// and [`TurnSummary::to_do`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -181,18 +182,52 @@ impl From<TodoIn> for Todo {
 
 /// A turn, summarised.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TurnSummaryIn")]
 pub struct TurnSummary {
     pub status: Status,
     pub headline: String,
-    #[serde(default)]
     pub changed: Vec<String>,
-    #[serde(default)]
     pub checked: Vec<Check>,
-    #[serde(default)]
+    /// What the agent asked the person, to answer in the chat.
     pub needs_you: Vec<Todo>,
+    /// What the agent left for the person to do themselves: a command to run, something to
+    /// try. Wundur cannot tell when it is done, so it is news until the person has seen it.
+    pub to_do: Vec<Todo>,
     /// The model that wrote it (its id on the server), shown with it.
-    #[serde(default)]
     pub model: String,
+    /// The person has had its session in front of them since it came.
+    pub seen: bool,
+}
+
+/// A summary as kept. Before `to_do` there was one list of everything waiting on the person:
+/// it stays questions when the agent stopped on one, and is things to do otherwise.
+#[derive(Deserialize)]
+struct TurnSummaryIn {
+    status: Status,
+    headline: String,
+    #[serde(default)]
+    changed: Vec<String>,
+    #[serde(default)]
+    checked: Vec<Check>,
+    #[serde(default)]
+    needs_you: Vec<Todo>,
+    #[serde(default)]
+    to_do: Option<Vec<Todo>>,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    seen: bool,
+}
+
+impl From<TurnSummaryIn> for TurnSummary {
+    fn from(s: TurnSummaryIn) -> Self {
+        let (needs_you, to_do) = match s.to_do {
+            Some(to_do) => (s.needs_you, to_do),
+            None if s.status == Status::Waiting => (s.needs_you, Vec::new()),
+            None => (Vec::new(), s.needs_you),
+        };
+        TurnSummary { status: s.status, headline: s.headline, changed: s.changed, checked: s.checked, needs_you, to_do, model: s.model, seen: s.seen }
+    }
 }
 
 /// A turn's summary in the chat, as it comes.
@@ -424,14 +459,19 @@ command the agent gave the person to run. Use the tags to point at where an item
     - `not_run`: the agent says it did not run it.
     - `unknown`: the agent does not say how it came out. Never assume either way.
   - `source`: the tag of the piece that reports it, or `""`.
-- **`needs_you`**: questions, decisions and actions waiting on the person: a command to run,
-  something to push, a question to answer. Each has:
-  - `text`: what to do or answer, in a few words.
+- **`needs_you`**: only what the agent **asked the person**, that they will answer by replying
+  in the chat: a question, a choice between options, a go-ahead it is waiting for. Each has:
+  - `text`: what to answer, in a few words.
+  - `source`: the tag of the piece that asks it, or `""`.
+- **`to_do`**: what the agent left for the person to **do themselves**, outside the chat: a
+  command to run, a restart, something to push, open or try. Each has:
+  - `text`: what to do, in a few words.
   - `source`: the tag of the piece it comes from (a `C` tag when there is a command for it),
     or `""`.
 
   One item per thing to do. A command belongs to its item as its `source`: never list the
-  command itself, or what it should print, as an item of its own.
+  command itself, or what it should print, as an item of its own. Something to do is never also
+  a question: "Run this and tell me what it prints" is one item in `needs_you`.
 
 ## Example
 
@@ -444,7 +484,8 @@ command the agent gave the person to run. Use the tags to point at where an item
     { "what": "Unit tests", "outcome": "passed", "source": "P4" },
     { "what": "In the app", "outcome": "not_run", "source": "P5" }
   ],
-  "needs_you": [{ "text": "Restart onto the new build", "source": "C1" }]
+  "needs_you": [{ "text": "Keep the old setting or drop it", "source": "P6" }],
+  "to_do": [{ "text": "Restart onto the new build", "source": "C1" }]
 }
 ```
 "#;
@@ -505,6 +546,12 @@ fn schema(tags: &[String]) -> Value {
     let mut sources: Vec<Value> = tags.iter().map(|t| json!(t)).collect();
     sources.push(json!(""));
     let source = json!({ "type": "string", "enum": sources });
+    let todo = json!({ "type": "array", "items": {
+        "type": "object",
+        "properties": { "text": { "type": "string" }, "source": source },
+        "required": ["text", "source"],
+        "additionalProperties": false,
+    } });
     json!({
         "type": "object",
         "properties": {
@@ -521,14 +568,10 @@ fn schema(tags: &[String]) -> Value {
                 "required": ["what", "outcome", "source"],
                 "additionalProperties": false,
             } },
-            "needs_you": { "type": "array", "items": {
-                "type": "object",
-                "properties": { "text": { "type": "string" }, "source": source },
-                "required": ["text", "source"],
-                "additionalProperties": false,
-            } },
+            "needs_you": todo.clone(),
+            "to_do": todo,
         },
-        "required": ["status", "headline", "changed", "checked", "needs_you"],
+        "required": ["status", "headline", "changed", "checked", "needs_you", "to_do"],
         "additionalProperties": false,
     })
 }
@@ -572,6 +615,8 @@ struct Answer {
     checked: Vec<AnswerCheck>,
     #[serde(default)]
     needs_you: Vec<AnswerTodo>,
+    #[serde(default)]
+    to_do: Vec<AnswerTodo>,
 }
 
 #[derive(Deserialize)]
@@ -620,17 +665,27 @@ pub fn parse(response: &Value, pieces: &[Piece]) -> Result<TurnSummary> {
         .filter(|c| !c.what.is_empty())
         .take(5)
         .collect();
-    let needs_you = a
-        .needs_you
-        .into_iter()
-        .map(|t| match t {
-            AnswerTodo::Full { text, source: tag } => Todo { text: one_line(&text), source: source(&tag) },
-            AnswerTodo::Plain(text) => Todo { text: one_line(&text), source: None },
-        })
-        .filter(|t| !t.text.is_empty())
-        .collect();
-    let needs_you = fold_commands(needs_you, pieces).into_iter().take(5).collect();
-    Ok(TurnSummary { status: a.status, headline: one_line(&a.headline), changed: lines(a.changed), checked, needs_you, model: String::new() })
+    let todos = |list: Vec<AnswerTodo>| {
+        let items = list
+            .into_iter()
+            .map(|t| match t {
+                AnswerTodo::Full { text, source: tag } => Todo { text: one_line(&text), source: source(&tag) },
+                AnswerTodo::Plain(text) => Todo { text: one_line(&text), source: None },
+            })
+            .filter(|t| !t.text.is_empty())
+            .collect();
+        fold_commands(items, pieces).into_iter().take(5).collect::<Vec<_>>()
+    };
+    Ok(TurnSummary {
+        status: a.status,
+        headline: one_line(&a.headline),
+        changed: lines(a.changed),
+        checked,
+        needs_you: todos(a.needs_you),
+        to_do: todos(a.to_do),
+        model: String::new(),
+        seen: false,
+    })
 }
 
 /// An item that is only one of the agent's commands written out joins the item before it, as
@@ -895,7 +950,8 @@ mod tests {
             &answer(
                 r#"{"status":"done","headline":"Fixed the tab.","changed":["a","  "],
                 "checked":[{"what":"tests","outcome":"passed","source":"P1"},{"what":"clippy","outcome":"unknown","source":""}],
-                "needs_you":[{"text":"Restart","source":"C1"},{"text":"Push","source":"P9"}]}"#,
+                "needs_you":[{"text":"Keep the old one?","source":"P1"}],
+                "to_do":[{"text":"Restart","source":"C1"},{"text":"Push","source":"P9"}]}"#,
             ),
             &p,
         )
@@ -906,8 +962,10 @@ mod tests {
         assert_eq!(s.checked[0].outcome, Outcome::Passed);
         assert_eq!(s.checked[0].source.as_ref().map(|s| s.text.as_str()), Some("Tests pass."));
         assert_eq!(s.checked[1].source, None);
-        assert_eq!(s.needs_you[0].source.as_ref().and_then(|s| s.command.as_deref()), Some("./scripts/restart"));
-        assert_eq!(s.needs_you[1].source, None, "a tag that is not there points nowhere");
+        assert_eq!(s.needs_you[0].text, "Keep the old one?");
+        assert_eq!(s.to_do[0].source.as_ref().and_then(|s| s.command.as_deref()), Some("./scripts/restart"));
+        assert_eq!(s.to_do[1].source, None, "a tag that is not there points nowhere");
+        assert!(!s.seen, "a new summary is news");
         // Without structured output: plain lines are read, their outcome unknown.
         let wrapped = parse(
             &answer("Here:\n```json\n{\"status\":\"done\",\"headline\":\"x\",\"changed\":[],\"checked\":[\"ran tests\"],\"needs_you\":[\"push\"]}\n```"),
@@ -916,6 +974,7 @@ mod tests {
         .unwrap();
         assert_eq!(wrapped.checked[0].outcome, Outcome::Unknown);
         assert_eq!(wrapped.needs_you[0].text, "push");
+        assert!(wrapped.to_do.is_empty(), "a list left out is empty");
         assert!(parse(&answer(""), &p).is_err());
         assert!(parse(&answer("no json here"), &p).is_err());
     }
@@ -941,8 +1000,14 @@ mod tests {
         .unwrap();
         assert_eq!(old.status, Status::Waiting);
         assert_eq!(old.checked[0], Check { what: "Ran tests".into(), outcome: Outcome::Unknown, source: None });
-        assert_eq!(old.needs_you[0].text, "Restart");
-        // And the new shape goes round.
+        assert_eq!(old.needs_you[0].text, "Restart", "stopped on a question: a question");
+        assert!(old.to_do.is_empty() && !old.seen);
+        let done: TurnSummary =
+            serde_json::from_str(r#"{"status":"done","headline":"h","needs_you":[{"text":"Restart","source":null}]}"#).unwrap();
+        assert!(done.needs_you.is_empty(), "finished, with steps left: things to do");
+        assert_eq!(done.to_do[0].text, "Restart");
+        // And the new shape goes round, seen and all.
+        let old = TurnSummary { seen: true, ..old };
         let back: TurnSummary = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert_eq!(back, old);
     }
