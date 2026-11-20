@@ -56,7 +56,7 @@ restart the app this session runs in.
   `git fetch origin main && git worktree add .worktrees/<branch> -b <branch> origin/main`
   Edit, build and commit there. Don't switch, stash or reset the root checkout.
 - Commit on the task's branch. Push and open the PR with the PR run command (see "At
-  completion" above); don't push or run `gh` yourself.
+  completion" above); don't push or open PRs yourself (read-only `gh`, such as checking a PR, is fine).
 - Never push to `main`, merge a PR, or delete a branch someone else made.
 - After the owner merges, the after-merge command (see "At completion" above) brings the root
   checkout up to date on `main` and removes the merged worktree.

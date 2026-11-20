@@ -3,10 +3,12 @@
 #
 # 1. Pulls main into the root checkout (fast-forward only). Stops if the root is not on main or
 #    the pull fails.
-# 2. After a successful pull, removes each worktree in .worktrees/ whose PR has merged and which
-#    has no uncommitted changes: the directory, then its branch (git branch -d, so a branch git
-#    does not see as merged, such as after a squash merge, is kept). Anything it cannot confirm
-#    as merged is kept.
+# 2. After a successful pull, removes each worktree in .worktrees/ that is finished: no
+#    uncommitted changes, no running process inside it (another session may still be there), and
+#    its tip is exactly the head commit of a merged PR. Branch names get reused for later PRs, so
+#    a merged PR under the same name is not enough: new commits since then keep the worktree.
+#    Then its branch is deleted; everything on it is in the merged PR. Anything it cannot confirm
+#    is kept.
 # 3. Restarts Wundur only if the pull brought changes. When main was already up to date, nothing
 #    restarts. To restart without pulling, run ./scripts/restart from the root checkout.
 
@@ -38,20 +40,22 @@ for wt in "$ROOT"/.worktrees/*; do
         echo "Kept $name: it has uncommitted changes."
         continue
     fi
-    n=$(gh pr list --head "$b" --state merged --json number --jq 'length' 2>/dev/null)
-    case $n in
-        ''|0) echo "Kept $name: no merged PR for branch $b."; continue ;;
-    esac
+    if lsof -a -d cwd -Fn 2>/dev/null | awk -v w="n$wt" 'index($0, w) == 1 { c = substr($0, length(w) + 1, 1); if (c == "" || c == "/") f = 1 } END { exit !f }'; then
+        echo "Kept $name: a running process (another session?) is working in it."
+        continue
+    fi
+    tip=$(git -C "$wt" rev-parse HEAD)
+    if ! gh pr list --head "$b" --state merged --json headRefOid --jq '.[].headRefOid' 2>/dev/null | grep -qx "$tip"; then
+        echo "Kept $name: its tip is not the head of a merged PR for branch $b."
+        continue
+    fi
     if ! git worktree remove "$wt"; then
         echo "Kept $name: git would not remove it."
         continue
     fi
     echo "Removed $name."
-    if git branch -d "$b" >/dev/null 2>&1; then
-        echo "Deleted branch $b."
-    else
-        echo "Kept branch $b: git does not see it in main (a squash merge, for example)."
-    fi
+    # Its tip is a merged PR's head, so -D loses nothing, squash merges included.
+    git branch -D "$b" >/dev/null && echo "Deleted branch $b."
 done
 
 if [ "$before" = "$after" ]; then
