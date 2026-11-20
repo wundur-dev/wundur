@@ -61,6 +61,35 @@ fn triangles(n: u32) -> String {
     if n >= 1000 { format!("{}k", (n as f64 / 1000.0).round() as u32) } else { n.to_string() }
 }
 
+/// A count with thousands marked: "30,000".
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A generator's terms as the banner says them: "Wundur (preview)" and "Preview: not yet
+/// cleared for commercial use" read "Wundur preview: not yet cleared for commercial use."
+fn license_line(engine: &str, terms: &str) -> String {
+    let terms = terms.trim().trim_end_matches('.');
+    let (name, preview) = match engine.trim().strip_suffix("(preview)") {
+        Some(name) => (name.trim(), true),
+        None => (engine.trim(), false),
+    };
+    let rest = terms.strip_prefix("Preview:").map(str::trim);
+    match (preview, rest) {
+        (true, Some(rest)) => format!("{name} preview: {rest}."),
+        (_, Some(rest)) => format!("{name} (preview): {rest}."),
+        _ => format!("{name}: {terms}."),
+    }
+}
+
 /// What a model attempt was made with, as one line: "Wundur (preview) · Light · Faceted"
 /// (the engine's, detail's and finish's names from the catalog, else their ids).
 fn model_line(m: &Model, catalog: Option<&Catalog>) -> String {
@@ -121,15 +150,8 @@ fn reference_paste(item: &ClipboardItem, panel: &WeakEntity<ChatPanel>, window: 
     true
 }
 
-/// The width of two view tiles side by side (a tile is 0.62 of its picture's height, plus its
-/// border) and the gap between: four views wrap into two rows of two.
 /// A view tile's height on the Views step (made and being made).
 const TILE_HEIGHT: f32 = 200.;
-
-fn two_wide(height: f32) -> f32 {
-    // Two points to spare: rounding never pushes a tile onto a third row.
-    2. * (height * 0.62 + 2.) + 8. + 2.
-}
 
 /// "1 credit", "3 credits".
 fn credits(n: u32) -> String {
@@ -670,41 +692,6 @@ impl ChatPanel {
                 d.child(Button::new(SharedString::from(format!("{id}-upgrade"))).xsmall().outline().label("Upgrade").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
             })
             .into_any_element()
-    }
-
-    /// A set's views, from the asset's folder, labelled; a click shows one large.
-    fn hosted_view_row(&self, dir: &Path, files: &[String], labels: &[String], height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (muted, ground, border) = (theme.muted_foreground, theme.secondary, theme.border);
-        // Four views (a character's or creature's) as two rows of two, as they're drawn.
-        let four = files.len() == 4;
-        let height = if four { height * 0.85 } else { height };
-        let mut row = div().flex().flex_wrap().gap_2().when(four, |d| d.w(px(two_wide(height))));
-        for (n, file) in files.iter().enumerate() {
-            let path = dir.join(file);
-            let full = path.clone();
-            row = row.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(10.))
-                    .border_1()
-                    .border_color(border)
-                    .overflow_hidden()
-                    .child(div().px_2().py_1().text_xs().font_weight(FontWeight::MEDIUM).text_color(muted).child(labels.get(n).cloned().unwrap_or_default()))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("hosted-view-{}", path.display())))
-                            .h(px(height))
-                            .w(px(height * 0.62))
-                            .bg(ground)
-                            .cursor_pointer()
-                            .child(img(path).size_full().object_fit(ObjectFit::Contain))
-                            .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
-                    ),
-            );
-        }
-        row.into_any_element()
     }
 
     // ----- step 1: describe -----
@@ -1450,11 +1437,10 @@ impl ChatPanel {
         cx: &mut Context<Self>,
     ) {
         let theme = cx.theme();
-        let (muted, fg, ring, border, yellow, danger, ground, green) = (theme.muted_foreground, theme.foreground, theme.ring, theme.border, theme.yellow, theme.danger, theme.secondary, theme.green);
+        let (muted, fg, ring, border, yellow, danger, ground) = (theme.muted_foreground, theme.foreground, theme.ring, theme.border, theme.yellow, theme.danger, theme.secondary);
         let Some(asset) = &e.asset else { return };
         let Some(set) = asset.approved_set().cloned() else { return };
         let v = version(asset, &set.id);
-        let labels: Vec<String> = set.views.iter().map(|v| v.label.clone()).collect();
         let files = e.record.views.get(&set.id).cloned().unwrap_or_default();
         let attempts: Vec<Model> = asset.models.iter().filter(|m| m.set == set.id).cloned().collect();
         let attempt = attempts.last().cloned();
@@ -1463,273 +1449,313 @@ impl ChatPanel {
         let building = e.building.is_some() || matches!(e.working, Some("Starting the model" | "Rebuilding")) || attempt.as_ref().is_some_and(Model::is_running);
         let busy = e.working.is_some() || building;
         let imported = e.record.imported.clone();
-        frame.intro = "Inspect the model before importing it into your project.".into();
-        frame.subtitle = match &attempt {
-            Some(_) => format!("{} · Model v{}", frame.subtitle, attempts.len()),
-            None => format!("{} · Model", frame.subtitle),
-        };
         let engines = match (catalog, kind) {
             (Some(c), Some(k)) => c.engines_for(k).into_iter().cloned().collect::<Vec<_>>(),
             _ => Vec::new(),
         };
-        let picked = e.engine.clone().or_else(|| kind.map(|k| k.default_engine.clone())).unwrap_or_default();
+        let (picked, detail, finish) = hosted_store::model_choice(e, catalog);
         let picked_engine = engines.iter().find(|en| en.id == picked).cloned();
         let plan = plan.unwrap_or("free");
-        // The stage: what's being built, or the finished attempt and its preview.
-        let stage = div().min_h(px(240.)).rounded(px(12.)).bg(ground).flex().flex_col().items_center().justify_center().gap_2().p_4();
-        let stage = match &attempt {
-            // Being made: the views it's made from (the card's overlay says what's happening).
-            _ if building => {
-                let running = attempt.as_ref().filter(|m| m.is_running());
-                let engine = running.map_or(picked.clone(), |m| m.engine.clone());
-                let seconds = catalog.and_then(|c| c.engine(&engine)).map_or(60, |en| en.seconds);
-                let about = if seconds >= 120 { format!("usually about {} minutes", seconds / 60) } else { "usually about a minute".to_string() };
-                let progress = running.and_then(|m| m.progress).map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
-                // Why it waits, while the service says (a sleeping GPU waking up): without it a
-                // queued model looks stuck. It starts by itself; the store keeps asking.
-                let note = running.filter(|m| m.status == "queued").and_then(|m| m.note.clone()).filter(|n| !n.trim().is_empty());
-                let detail = match note {
-                    Some(n) => format!("{n} It starts by itself, and carries on if you close the card."),
-                    None => format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }),
-                };
-                frame.overlay = Some(self.hosted_busy_overlay(format!("Building the model{progress}"), detail, cx));
-                stage.child(self.hosted_view_row(dir, &files, &labels, 120., cx))
-            }
-            Some(m) if m.succeeded() => {
+        if building {
+            let running = attempt.as_ref().filter(|m| m.is_running());
+            let engine = running.map_or(picked.clone(), |m| m.engine.clone());
+            let seconds = catalog.and_then(|c| c.engine(&engine)).map_or(60, |en| en.seconds);
+            let about = if seconds >= 120 { format!("usually about {} minutes", seconds / 60) } else { "usually about a minute".to_string() };
+            let progress = running.and_then(|m| m.progress).map(|p| format!(" · {}%", (p * 100.0).round() as u32)).unwrap_or_default();
+            // Why it waits, while the service says (a sleeping GPU waking up): without it a
+            // queued model looks stuck. It starts by itself; the store keeps asking.
+            let note = running.filter(|m| m.status == "queued").and_then(|m| m.note.clone()).filter(|n| !n.trim().is_empty());
+            let detail = match note {
+                Some(n) => format!("{n} It starts by itself, and carries on if you close the card."),
+                None => format!("{}, {about}. It carries on if you close the card.", if running.is_some() { "Running" } else { "Starting" }),
+            };
+            frame.overlay = Some(self.hosted_busy_overlay(format!("Building the model{progress}"), detail, cx));
+        }
+        let mut left = div().flex().flex_col().gap_4();
+
+        // The latest attempt, once there is one: ready to inspect, or what went wrong.
+        if let Some(m) = attempt.as_ref().filter(|_| !building) {
+            let n = attempts.len();
+            let mut result = div().px_4().py_3().rounded(px(12.)).border_1().border_color(border).bg(ground.opacity(0.5)).flex().items_center().gap_3().child(Icon::new(Lucide::Box).large().text_color(muted));
+            if m.succeeded() {
+                let facts = [Some(model_line(m, catalog)), m.face_limit.map(|t| format!("up to {} triangles", triangles(t)))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                 let (d1, mid) = (dir.to_path_buf(), m.id.clone());
                 let me = cx.entity().downgrade();
-                stage
-                    .child(Icon::new(Lucide::Box).large().text_color(muted))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("Model v{} is ready to inspect", attempts.len())))
+                result = result
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(format!("Model v{n} is ready to inspect")))
+                            .child(div().text_xs().text_color(muted).child(facts))
+                            .child(div().text_xs().text_color(muted).child("Opens beside the chat: drag to orbit, scroll to zoom. Check the hands, feet and silhouette from every angle.")),
+                    )
+                    .when(imported.as_deref() != Some(m.id.as_str()), |d| {
+                        let (d2, mid2) = (dir.to_path_buf(), m.id.clone());
+                        d.child(Button::new(id("discard")).small().ghost().label("Discard").disabled(busy).on_click(move |_, _, cx| hosted_store::reject(&d2, &mid2, cx)))
+                    })
                     .child(Button::new(id("preview")).small().outline().icon(Lucide::Eye).label("Open 3D preview").on_click(move |_, _, cx| {
                         let me = me.clone();
                         hosted_store::preview(&d1, &mid, cx, move |page, cx| {
                             let _ = me.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenFile(page, None)));
                         });
-                    }))
-                    .child(div().text_xs().text_color(muted).child("Opens beside the chat: drag to orbit, scroll to zoom. Check the hands, feet and silhouette from every angle."))
+                    }));
+            } else if m.status == "failed" {
+                result = result.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_sm().text_color(danger).child(m.error.clone().map_or("That model didn't come out (not counted).".into(), |er| er.message)))
+                        .child(div().text_xs().text_color(muted).child("Build it again, or pick another generator.")),
+                );
             }
-            Some(m) if m.status == "failed" => stage.child(div().text_sm().text_color(danger).child(m.error.clone().map_or("That model didn't come out (not counted).".into(), |er| er.message))).child(div().text_xs().text_color(muted).child("Build it again, or pick another engine.")),
-            _ => stage.child(self.hosted_view_row(dir, &files, &labels, 120., cx)).child(div().text_xs().text_color(muted).child("These views go to the engine; pick one and build.")),
-        };
-        // Built from, and the attempts so far.
-        // The views the latest attempt was made from (the service says which), else the set's.
-        let used: Vec<(String, String)> = match attempt.as_ref().filter(|m| !m.input_image_ids.is_empty()) {
-            Some(m) => m
-                .input_image_ids
-                .iter()
-                .filter_map(|id| set.views.iter().position(|v| &v.image_id == id))
-                .filter_map(|n| Some((files.get(n)?.clone(), set.views[n].label.clone())))
-                .collect(),
-            None => files.iter().cloned().zip(labels.iter().cloned()).collect(),
-        };
-        let from = if attempt.as_ref().is_some_and(|m| !m.input_image_ids.is_empty()) && !used.is_empty() {
-            format!("Built from {} (v{v})", used.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(", "))
-        } else {
-            format!("Built from Views v{v}")
-        };
-        let mut thumbs = div().flex().items_center().gap_2().child(div().text_xs().text_color(muted).child(from));
-        for (f, label) in used.iter().take(4) {
-            let full = dir.join(f);
+            let history = (n > 1).then(|| {
+                let line = attempts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, m)| {
+                        let state = if imported.as_deref() == Some(m.id.as_str()) { "imported" } else { m.status.as_str() };
+                        format!("v{} {} · {state}", k + 1, model_line(m, catalog))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("   ");
+                div().text_xs().text_color(muted).child(line)
+            });
+            left = left.child(div().flex().flex_col().gap_2().child(result).children(history));
+        }
+
+        // The approved views it's made from (the ones the service used, when it says, stand out).
+        let used: Option<Vec<String>> = attempt.as_ref().filter(|m| !m.input_image_ids.is_empty()).map(|m| m.input_image_ids.clone());
+        let mut thumbs = div().flex().flex_wrap().gap_3();
+        for (n, view) in set.views.iter().enumerate() {
+            let Some(file) = files.get(n) else { continue };
+            let full = dir.join(file);
+            let unused = used.as_ref().is_some_and(|u| !u.contains(&view.image_id));
             thumbs = thumbs.child(
                 div()
-                    .id(SharedString::from(format!("hosted-used-{}", full.display())))
-                    .size(px(40.))
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .bg(ground)
-                    .cursor_pointer()
-                    .tooltip({
-                        let label = label.clone();
-                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label.clone()).build(window, cx)
-                    })
-                    .child(img(full.clone()).size_full().object_fit(ObjectFit::Cover))
-                    .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
-            );
-        }
-        let history = (attempts.len() > 1).then(|| {
-            let line = attempts
-                .iter()
-                .enumerate()
-                .map(|(n, m)| {
-                    let engine = model_line(m, catalog);
-                    let state = if imported.as_deref() == Some(m.id.as_str()) { "imported" } else { m.status.as_str() };
-                    format!("v{} {engine} · {state}", n + 1)
-                })
-                .collect::<Vec<_>>()
-                .join("   ");
-            div().text_xs().text_color(muted).child(line)
-        });
-        frame.left = div().flex().flex_col().gap_3().child(stage).child(thumbs).children(history).into_any_element();
-        // The engines, and what the finished attempt would cost.
-        let mut right = div().flex().flex_col().gap_2();
-        if let Some(m) = attempt.as_ref().filter(|m| m.succeeded()) {
-            let cost = m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1);
-            let engine = model_line(m, catalog);
-            let row = |k: &str, val: String| div().flex().justify_between().gap_2().py_1().child(div().flex_none().text_xs().text_color(muted).child(k.to_string())).child(div().text_xs().text_right().text_color(fg).child(val));
-            right = right
-                .child(div().flex().items_center().gap_2().child(Icon::new(Lucide::Box).small().text_color(fg)).child(self.hosted_heading("Model ready for review", cx)))
-                .child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(border)
-                        .child(row("Engine", engine))
-                        .children(m.face_limit.map(|n| row("Triangles", format!("up to {}", triangles(n)))))
-                        .child(row("Import", credits(cost)))
-                        .child(row("Attempts left", attempts_left.map_or("—".into(), |n| n.to_string())))
-                        .child(row("Rig", "Not yet".into())),
-                );
-        }
-        right = right.child(self.hosted_heading("Engine", cx));
-        for en in &engines {
-            let (on, allowed, folder, eid) = (en.id == picked, en.on_plan(plan), dir.to_path_buf(), en.id.clone());
-            right = right.child(
-                div()
-                    .id(SharedString::from(format!("hosted-engine-{}-{}", en.id, dir.display())))
-                    .px_2()
-                    .py(px(6.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(if on { ring } else { border })
-                    .when(on, |d| d.bg(ring.opacity(0.06)))
                     .flex()
+                    .flex_col()
                     .items_center()
-                    .gap_2()
-                    .when(allowed && !building, |d| d.cursor_pointer().on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
-                    .when(!allowed, |d| d.opacity(0.55))
+                    .gap_1()
+                    .when(unused, |d| d.opacity(0.4))
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().text_color(fg).child(en.label.clone()))
-                            .child(div().text_xs().text_color(muted).child(match (en.multiview, set.views.len()) {
-                                // Which ones is the service's choice; "Built from" says after.
-                                (_, 0 | 1) => "Uses its view".to_string(),
-                                (true, _) => "Uses several views".to_string(),
-                                (false, _) => "Uses one view".to_string(),
-                            }))
-                            // Its own line, wrapping: a preview's terms are long and must be read.
-                            .children((!en.license.label.is_empty()).then(|| div().text_xs().text_color(yellow).child(en.license.label.clone()))),
+                            .id(SharedString::from(format!("hosted-used-{}", full.display())))
+                            .size(px(72.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(border)
+                            .overflow_hidden()
+                            .bg(ground)
+                            .cursor_pointer()
+                            .child(img(full.clone()).size_full().object_fit(ObjectFit::Contain))
+                            .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
                     )
-                    .child(div().flex_none().text_xs().text_color(muted).child(if allowed { credits(en.credits) } else { format!("{} · Monthly plan", credits(en.credits)) })),
+                    .child(div().text_xs().text_color(muted).child(view.label.clone())),
             );
         }
-        // Detail (always, when the catalog has levels) and finish (only for an engine with some).
-        let (_, detail, finish) = hosted_store::model_choice(e, catalog);
-        if let Some(c) = catalog.filter(|c| !c.details.is_empty()) {
-            right = right.child(div().h(px(4.))).child(self.hosted_heading("Detail", cx));
-            let mut chips = div().flex().flex_wrap().gap_1();
-            for d in &c.details {
-                let (on, folder, did) = (detail.as_deref() == Some(d.id.as_str()), dir.to_path_buf(), d.id.clone());
-                chips = chips.child(
-                    Button::new(SharedString::from(format!("hosted-detail-{}-{}", d.id, dir.display())))
-                        .xsmall()
-                        .label(if d.triangles > 0 { format!("{} · {}", d.label, triangles(d.triangles)) } else { d.label.clone() })
-                        .when(on, |b| b.outline())
-                        .when(!on, |b| b.ghost())
-                        .disabled(building)
-                        .on_click(move |_, _, cx| hosted_store::pick_detail(&folder, &did, cx)),
-                );
+        let to_views = dir.to_path_buf();
+        left = left.child(
+            div()
+                .px_4()
+                .py_3()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(border)
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap_x_6()
+                .gap_y_2()
+                .child(self.hosted_heading(&format!("Approved views · v{v}"), cx).text_base().min_w(px(150.)))
+                .child(div().flex_1().min_w(px(200.)).child(thumbs))
+                .child(
+                    div()
+                        .id(id("review-views"))
+                        .self_center()
+                        .text_sm()
+                        .text_color(ring)
+                        .cursor_pointer()
+                        .hover(|d| d.underline())
+                        .child("Review views")
+                        .on_click(move |_, _, cx| hosted_store::show_step(&to_views, Some(2), cx)),
+                ),
+        );
+
+        // The generators, as a table to pick one from.
+        let help_key = format!("hosted-help:{}", dir.display());
+        let compare_open = self.toggled.contains(&help_key);
+        let toggle = help_key.clone();
+        let mut generator = div().flex().flex_col().gap_2().child(
+            div()
+                .flex()
+                .items_center()
+                .child(div().flex_1().child(self.hosted_heading("Model generator", cx).text_lg()))
+                .child(
+                    div()
+                        .id(SharedString::from(help_key.clone()))
+                        .text_sm()
+                        .text_color(ring)
+                        .underline()
+                        .cursor_pointer()
+                        .child(if compare_open { "Hide comparison" } else { "Compare generators" })
+                        .on_click(cx.listener(move |p, _, _, cx| {
+                            if !p.toggled.remove(&toggle) {
+                                p.toggled.insert(toggle.clone());
+                            }
+                            p.list.remeasure();
+                            cx.notify();
+                        })),
+                ),
+        );
+        const USES: f32 = 130.;
+        const COST: f32 = 120.;
+        let cells = |a: AnyElement, b: AnyElement, c: AnyElement| div().flex().items_center().gap_2().child(div().flex_1().min_w_0().child(a)).child(div().w(px(USES)).flex_none().child(b)).child(div().w(px(COST)).flex_none().child(c));
+        generator = generator.child(
+            div().px_3().text_xs().text_color(muted).child(cells(
+                div().pl(px(28.)).child("Generator").into_any_element(),
+                div().child("Uses").into_any_element(),
+                div().child("On import").into_any_element(),
+            )),
+        );
+        let mut table = div().rounded(px(8.)).border_1().border_color(border).overflow_hidden().flex().flex_col();
+        for (n, en) in engines.iter().enumerate() {
+            let (on, allowed, folder, eid) = (en.id == picked, en.on_plan(plan), dir.to_path_buf(), en.id.clone());
+            let radio = div()
+                .size(px(18.))
+                .flex_none()
+                .rounded_full()
+                .border_1()
+                .border_color(if on { ring } else { muted.opacity(0.7) })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(on, |d| d.child(div().size(px(8.)).rounded_full().bg(ring)));
+            let uses = match (en.multiview, set.views.len()) {
+                // Which ones is the service's choice; the views above show which after.
+                (_, 0 | 1) => "Its view",
+                (true, _) => "Several views",
+                (false, _) => "1 view",
+            };
+            table = table.child(
+                div()
+                    .id(SharedString::from(format!("hosted-engine-{}-{}", en.id, dir.display())))
+                    .px_3()
+                    .py_2()
+                    .when(n > 0, |d| d.border_t_1().border_color(border))
+                    .when(on, |d| d.bg(ring.opacity(0.1)))
+                    .when(allowed && !building && !on, |d| d.cursor_pointer().hover(|d| d.bg(ground)).on_click(move |_, _, cx| hosted_store::pick_engine(&folder, &eid, cx)))
+                    .when(!allowed, |d| d.opacity(0.55))
+                    .child(cells(
+                        div().flex().items_center().gap_3().child(radio).child(div().truncate().text_sm().font_weight(FontWeight::MEDIUM).text_color(fg).child(en.label.clone())).into_any_element(),
+                        div().text_sm().text_color(muted).child(uses).into_any_element(),
+                        div().text_sm().text_color(muted).child(if allowed { credits(en.credits) } else { format!("{} · Monthly", credits(en.credits)) }).into_any_element(),
+                    )),
+            );
+        }
+        generator = generator.child(table);
+        if compare_open {
+            for en in &engines {
+                let best = if en.best_for.is_empty() { String::new() } else { format!(" Best for {}.", en.best_for.join(", ")) };
+                generator = generator.child(div().text_xs().text_color(muted).child(format!("{}: {}{best}", en.label, en.help)));
             }
-            right = right.child(chips);
-            if let Some(d) = detail.as_deref().and_then(|d| c.detail(d)).filter(|d| !d.help.is_empty()) {
-                right = right.child(div().text_xs().text_color(muted).child(d.help.clone()));
+        }
+
+        // Geometry: the triangle limit (always, when the catalog has levels) and the finish
+        // (only for a generator with some).
+        let mut geometry = div().flex().flex_col().gap_2().child(self.hosted_heading("Geometry", cx).text_lg());
+        if let Some(c) = catalog.filter(|c| !c.details.is_empty()) {
+            let folder = dir.to_path_buf();
+            let options = c.details.iter().map(|d| (d.id.clone(), if d.triangles > 0 { triangles(d.triangles) } else { d.label.clone() })).collect();
+            geometry = geometry.child(self.hosted_heading("Triangle limit", cx)).child(segmented(options, detail.as_deref().unwrap_or_default(), &format!("hosted-detail-{}", dir.display()), cx, move |_, did, cx| {
+                hosted_store::pick_detail(&folder, &did, cx)
+            }));
+            if let Some(d) = detail.as_deref().and_then(|d| c.detail(d)) {
+                let line = [(d.triangles > 0).then(|| format!("Up to {} triangles", thousands(d.triangles))), (!d.help.is_empty()).then(|| d.help.clone())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                geometry = geometry.child(div().text_xs().text_color(muted).child(line));
             }
         }
         if let Some(en) = picked_engine.as_ref().filter(|en| !en.finishes.is_empty()) {
-            right = right.child(div().h(px(4.))).child(self.hosted_heading("Finish", cx));
-            let mut chips = div().flex().flex_wrap().gap_1();
-            for f in &en.finishes {
-                let (on, folder, fid) = (finish.as_deref() == Some(f.as_str()), dir.to_path_buf(), f.clone());
-                chips = chips.child(
-                    Button::new(SharedString::from(format!("hosted-finish-{f}-{}", dir.display())))
-                        .xsmall()
-                        .label(capitalised(f))
-                        .when(on, |b| b.outline())
-                        .when(!on, |b| b.ghost())
-                        .disabled(building)
-                        .on_click(move |_, _, cx| hosted_store::pick_finish(&folder, &fid, cx)),
-                );
-            }
-            right = right.child(chips);
-        }
-        let help_key = format!("hosted-help:{}", dir.display());
-        let open = self.toggled.contains(&help_key);
-        let toggle = help_key.clone();
-        right = right.child(
-            div()
-                .id(SharedString::from(help_key.clone()))
-                .text_xs()
-                .text_color(muted)
-                .cursor_pointer()
-                .child(if open { "Which should I use? ▾" } else { "Which should I use? ▸" })
-                .on_click(cx.listener(move |p, _, _, cx| {
-                    if !p.toggled.remove(&toggle) {
-                        p.toggled.insert(toggle.clone());
-                    }
-                    cx.notify();
-                })),
-        );
-        if open {
-            for en in &engines {
-                let best = if en.best_for.is_empty() { String::new() } else { format!(" Best for {}.", en.best_for.join(", ")) };
-                right = right.child(div().text_xs().text_color(muted).child(format!("{}: {}{best}", en.label, en.help)));
-            }
-        }
-        let left_n = attempts_left.unwrap_or(1);
-        if attempt.as_ref().is_some_and(|m| m.succeeded() || m.status == "failed") {
-            let d = dir.to_path_buf();
-            let last = attempt.as_ref().map(|m| m.id.clone());
-            right = right.child(div().h(px(4.))).child(
-                Button::new(id("rebuild"))
-                    .small()
-                    .outline()
-                    .w_full()
-                    .icon(Lucide::RefreshCw)
-                    .label("Rebuild model")
-                    .disabled(busy || left_n == 0)
-                    .on_click(move |_, _, cx| hosted_store::model(&d, last.clone(), cx)),
-            );
-            right = right.child(div().text_xs().text_color(muted).child(if left_n == 0 {
-                "This set's attempts are used: make a change or a new set of views.".to_string()
-            } else {
-                format!("Free · makes another version on the engine picked ({left_n} left)")
+            let folder = dir.to_path_buf();
+            let options = en.finishes.iter().map(|f| (f.clone(), capitalised(f))).collect();
+            geometry = geometry.child(div().h(px(4.))).child(self.hosted_heading("Surface finish", cx)).child(segmented(options, finish.as_deref().unwrap_or_default(), &format!("hosted-finish-{}", dir.display()), cx, move |_, fid, cx| {
+                hosted_store::pick_finish(&folder, &fid, cx)
             }));
-            if let Some(m) = attempt.as_ref().filter(|m| m.succeeded() && imported.as_deref() != Some(m.id.as_str())) {
-                let (d, mid) = (dir.to_path_buf(), m.id.clone());
-                right = right.child(div().flex().child(Button::new(id("discard")).xsmall().ghost().label("Discard this one").disabled(busy).on_click(move |_, _, cx| hosted_store::reject(&d, &mid, cx))));
+            if let Some(f) = &finish {
+                geometry = geometry.child(div().text_xs().text_color(muted).child(format!("{} shading", capitalised(f))));
             }
         }
-        frame.right = Some(right.into_any_element());
+        left = left.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_y_4()
+                .child(div().flex_grow(3.).flex_basis(px(420.)).min_w(px(340.)).pr_6().child(generator))
+                .child(div().flex_grow(2.).flex_basis(px(240.)).min_w(px(220.)).pl_6().border_l_1().border_color(border).child(geometry)),
+        );
+
+        // The picked generator's terms, when it has some to read.
+        if let Some(en) = picked_engine.as_ref().filter(|en| !en.license.label.is_empty()) {
+            left = left.child(
+                div()
+                    .px_4()
+                    .py_3()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(yellow.opacity(0.6))
+                    .bg(yellow.opacity(0.12))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(Icon::new(Lucide::TriangleAlert).text_color(yellow))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(fg).child(license_line(&en.label, &en.license.label))),
+            );
+        }
+        frame.left = left.into_any_element();
+
+        // The foot: back to the views, what it costs, and build (or import what was built).
         let d = dir.to_path_buf();
-        frame.back = Some(Button::new(id("to-views")).small().ghost().label("Back to views").on_click(move |_, _, cx| hosted_store::show_step(&d, Some(2), cx)).into_any_element());
-        frame.status = "Free to build; Import spends credits.".into();
-        if let Some(m) = imported.as_ref().and_then(|i| attempts.iter().find(|m| &m.id == i)) {
-            let _ = m;
+        frame.back = Some(Button::new(id("to-views")).small().ghost().icon(IconName::ArrowLeft).label("Back to views").on_click(move |_, _, cx| hosted_store::show_step(&d, Some(2), cx)).into_any_element());
+        let import_cost = picked_engine.as_ref().map_or(1, |en| en.credits);
+        frame.status = format!("Free to build · Import: {}", credits(import_cost));
+        if imported.as_ref().is_some_and(|i| attempts.iter().any(|m| &m.id == i)) {
             frame.status = "Imported into the project.".into();
             let d = dir.to_path_buf();
-            frame.primary = Some(Button::new(id("to-rig")).small().primary().label("Continue →").on_click(move |_, _, cx| hosted_store::show_step(&d, None, cx)).into_any_element());
-            let _ = green;
+            frame.primary = Some(Button::new(id("to-rig")).primary().label("Continue").child(Icon::new(IconName::ArrowRight).small()).on_click(move |_, _, cx| hosted_store::show_step(&d, None, cx)).into_any_element());
             return;
         }
+        let left_n = attempts_left.unwrap_or(1);
+        let last = attempt.as_ref().filter(|m| m.succeeded() || m.status == "failed").map(|m| m.id.clone());
+        if last.is_some() {
+            frame.status_tip = Some(if left_n == 0 {
+                "This set's attempts are used: make a change or a new set of views.".to_string()
+            } else {
+                format!("Building again is free and makes another version with the generator picked ({left_n} left).")
+            });
+        }
+        let blocked = picked_engine.as_ref().is_some_and(|en| !en.on_plan(plan));
+        let rebuild = |label: &str| {
+            let (d, last) = (dir.to_path_buf(), last.clone());
+            Button::new(id("rebuild")).icon(Lucide::RefreshCw).label(label.to_string()).disabled(busy || left_n == 0 || blocked).on_click(move |_, _, cx| hosted_store::model(&d, last.clone(), cx))
+        };
         frame.primary = Some(match &attempt {
             // A rebuild on its way: the earlier attempt isn't the one to import now.
-            _ if building => Button::new(id("building")).small().primary().label("Building…").loading(true).disabled(true).into_any_element(),
+            _ if building => Button::new(id("building")).primary().label("Building…").loading(true).disabled(true).into_any_element(),
             Some(m) if m.succeeded() => {
+                frame.status = format!("Model v{} ready · Import: {}", attempts.len(), credits(m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1)));
+                frame.secondary = Some(rebuild("Rebuild").outline().into_any_element());
                 let cost = m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1);
                 let (d, mid) = (dir.to_path_buf(), m.id.clone());
-                Button::new(id("import")).small().primary().icon(Lucide::FolderOpen).label(format!("Import · {} →", credits(cost))).disabled(busy).on_click(move |_, _, cx| hosted_store::import(&d, &mid, cx)).into_any_element()
+                Button::new(id("import")).primary().icon(Lucide::FolderOpen).label(format!("Import · {}", credits(cost))).disabled(busy).on_click(move |_, _, cx| hosted_store::import(&d, &mid, cx)).into_any_element()
             }
+            Some(m) if m.status == "failed" => rebuild("Build again").primary().into_any_element(),
             _ => {
                 let d = dir.to_path_buf();
-                let blocked = picked_engine.as_ref().is_some_and(|en| !en.on_plan(plan));
                 Button::new(id("model"))
-                    .small()
                     .primary()
                     .icon(Lucide::Sparkles)
                     .label("Build model")
@@ -1887,7 +1913,16 @@ impl ChatPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{Catalog, Model, model_line, triangles};
+    use super::{Catalog, Model, license_line, model_line, thousands, triangles};
+
+    #[test]
+    fn a_preview_generator_s_terms_read_as_one_line() {
+        assert_eq!(license_line("Wundur (preview)", "Preview: not yet cleared for commercial use"), "Wundur preview: not yet cleared for commercial use.");
+        assert_eq!(license_line("Other", "Non-commercial only."), "Other: Non-commercial only.");
+        assert_eq!(thousands(30000), "30,000");
+        assert_eq!(thousands(100000), "100,000");
+        assert_eq!(thousands(800), "800");
+    }
 
     #[test]
     fn triangle_counts_read_in_thousands() {
