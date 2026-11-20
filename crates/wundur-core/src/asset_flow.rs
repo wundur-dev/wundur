@@ -443,6 +443,10 @@ pub struct Model {
     pub finish: Option<String>,
     /// Why it's waiting, while the service says ("Starting the GPU: …"): shown while queued.
     pub note: Option<String>,
+    /// The step it's on while queued or running (`paint_back`), and its words ("Painting the
+    /// back"); both null once it has finished. Shown as they come: steps may be added.
+    pub stage: Option<String>,
+    pub stage_label: Option<String>,
 }
 
 /// What a finished model can be looked at with: never the importable file.
@@ -535,6 +539,11 @@ impl Model {
 
     pub fn succeeded(&self) -> bool {
         self.status == "succeeded"
+    }
+
+    /// What it's doing now, in the service's words, while it's being made.
+    pub fn stage_text(&self) -> Option<&str> {
+        self.stage_label.as_deref().map(str::trim).filter(|l| !l.is_empty() && self.is_running())
     }
 }
 
@@ -1084,6 +1093,11 @@ mod tests {
         eprintln!("catalog {}: kinds {:?}", c.version, c.kinds.iter().map(|k| (&k.id, k.views, k.supports_3d, &k.engines, k.fields.len())).collect::<Vec<_>>());
         eprintln!("engines {:?}", c.engines.iter().map(|e| (&e.id, e.credits, &e.plans, e.seconds)).collect::<Vec<_>>());
         eprintln!("sounds {:?}, riggers {}", c.sounds.iter().map(|s| (&s.id, s.max_seconds)).collect::<Vec<_>>(), c.riggers.len());
+        for k in &c.kinds {
+            for f in &k.fields {
+                eprintln!("{}.{} {:?} help {:?} option_help {:?} images {}", k.id, f.id, f.options, f.help, f.option_help, f.option_images.len());
+            }
+        }
         assert!(!c.kinds.is_empty() && !c.engines.is_empty());
         for k in c.kinds.iter().filter(|k| k.supports_3d) {
             assert!(k.engines.iter().all(|e| c.engine(e).is_some()), "{}'s engines are in the catalog", k.id);
@@ -1111,6 +1125,16 @@ mod tests {
         let (a, b) = (idempotency_key(), idempotency_key());
         assert_eq!(a.len(), 32);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_model_says_what_step_it_is_on_while_being_made() {
+        let m: Model = serde_json::from_str(r#"{ "id": "m1", "status": "running", "stage": "paint_back", "stage_label": "Painting the back" }"#).unwrap();
+        assert_eq!((m.stage.as_deref(), m.stage_text()), (Some("paint_back"), Some("Painting the back")));
+        let done: Model = serde_json::from_str(r#"{ "id": "m1", "status": "succeeded", "stage": null, "stage_label": null }"#).unwrap();
+        assert_eq!(done.stage_text(), None);
+        let older: Model = serde_json::from_str(r#"{ "id": "m1", "status": "queued" }"#).unwrap();
+        assert_eq!(older.stage_text(), None, "an older API without stages still reads");
     }
 
     #[test]
