@@ -2103,21 +2103,11 @@ impl Shell {
                 .when(!active, |d| d.hover(|d| d.bg(hover)))
                 // The hairline parting it from the row above, short of the card's sides.
                 .when(divider, |d| d.child(div().absolute().top_0().left(px(10.)).right(px(10.)).h(px(1.)).bg(border.opacity(0.75))))
-                // The shown one's accent bar, along its whole left edge.
-                .when(active, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(px(3.))
-                            .bg(ring)
-                            .when(!in_card, |d| d.rounded_full())
-                            .when(in_card && first, |d| d.rounded_tl(r))
-                            .when(in_card && last, |d| d.rounded_bl(r)),
-                    )
-                })
+                // The shown one's accent: a 3px left border on the row itself. The row's corner
+                // radius curves it where the row is rounded (top when first, bottom when last in
+                // its card) and leaves it straight where the row is square. The border takes its
+                // width out of the left padding, so the text does not move.
+                .when(active, |d| d.border_l_3().border_color(ring).pl(px(7.)))
                 .child(
                     div()
                         .relative()
