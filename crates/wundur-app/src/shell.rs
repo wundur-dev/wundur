@@ -3027,26 +3027,19 @@ impl Shell {
                     })),
             ))
             .on_click(move |_, _, cx| Self::toggle_project(root2.clone(), cx))
-            .context_menu(move |menu, _, cx| {
-                let (k, a, r) = (k1.clone(), a1.clone(), root3.clone());
-                let saved = cx.global::<AppSettings>().0.borrow().projects.iter().any(|p| p.root == r);
-                let (w, r_new) = (weak_shell.clone(), r.clone());
-                let (w_close, r_close) = (weak_shell.clone(), r.clone());
+            .context_menu(move |menu, _, _| {
+                let (k, a) = (k1.clone(), a1.clone());
+                let (w, r_new) = (weak_shell.clone(), root3.clone());
+                let (w_close, r_close) = (weak_shell.clone(), root3.clone());
                 menu.item(PopupMenuItem::new("New session…").on_click(move |_, window, cx| {
                     let _ = w.update(cx, |s, cx| s.new_session_for_project(r_new.clone(), window, cx));
                 }))
                 .separator()
                 .item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| start_tab_rename(k.clone(), a.clone(), a.clone(), window, cx)))
-                    .when(saved, |m| {
-                        m.item(PopupMenuItem::new("Forget project (its sessions stay)").on_click(move |_, _, cx| {
-                            let r = r.clone();
-                            crate::settings_window::change(cx, move |s| s.projects.retain(|p| p.root != r));
-                        }))
-                    })
-                    .separator()
-                    .item(PopupMenuItem::new("Close project").on_click(move |_, window, cx| {
-                        let _ = w_close.update(cx, |s, cx| s.close_project(r_close.clone(), window, cx));
-                    }))
+                .separator()
+                .item(PopupMenuItem::new("Close project").on_click(move |_, window, cx| {
+                    let _ = w_close.update(cx, |s, cx| s.close_project(r_close.clone(), window, cx));
+                }))
             })
             .into_any_element()
     }
