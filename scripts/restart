@@ -7,7 +7,8 @@
 # on after the restart, quit, or cancel (then nothing restarts). Safe to run from a terminal inside Wundur: after the
 # build, quitting and starting again is done by a detached process that outlives the app.
 # Test copies of the debug build are left running. WUNDUR_BIN overrides the binary, as in
-# scripts/wundur.
+# scripts/wundur. The running app is found by its executable, from any build folder: the one it
+# was started from need not be today's CARGO_TARGET_DIR (a shell profile can set another).
 #
 # --reset-layout: between quitting and starting, put every folder's saved arrangement aside
 # (layouts/ becomes layouts.reset-<time>) and forget the saved panel widths, so each window
@@ -16,8 +17,6 @@
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 TARGET="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}"
 BIN="${WUNDUR_BIN:-$TARGET/release/wundur}"
-# The binary from before the app was renamed (Keleuo): still running, it is quit and replaced.
-OLD_BIN="$TARGET/release/keleuo"
 
 NO_BUILD=
 RESET=
@@ -38,8 +37,8 @@ if [ "$1" = "--relaunch" ]; then
         for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done
         return 1
     }
-    QUIT=$BIN
-    [ -n "$OLD" ] && QUIT=$OLD_BIN
+    # The running app's own binary asks it to quit: it speaks its own protocol.
+    QUIT=${QUIT_BIN:-$BIN}
     if [ $# -gt 0 ] && "$QUIT" --quit; then
         # Up to five minutes for an answer; still running then means Cancel: no restart.
         i=0
@@ -76,16 +75,27 @@ if [ -z "$NO_BUILD" ]; then
     (cd "$REPO" && CARGO_TARGET_DIR="$TARGET" cargo build --manifest-path "$REPO/Cargo.toml" -p wundur-app --release) || exit 1
 fi
 
-# The running app: processes of exactly this binary, else of the one from before the rename.
+# The running app: release builds of Wundur (or of Keleuo, its name before the rename), each as
+# "pid<TAB>executable", from any build folder. Debug builds are test copies and are left alone.
+# By executable (lsof), not by command line: a build folder's path can hold spaces. pgrep -a:
+# this script often runs in a terminal inside Wundur, and pgrep skips its own ancestors otherwise.
 running() {
-    ps -axo pid=,command= | awk -v bin="$1" '{ pid = $1; $1 = ""; sub(/^ /, ""); if ($0 == bin || index($0, bin " ") == 1) print pid }'
+    for pid in $(pgrep -a -x wundur; pgrep -a -x keleuo); do
+        exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+        case $exe in
+            */release/wundur | */release/keleuo) printf '%s\t%s\n' "$pid" "$exe" ;;
+        esac
+    done
 }
-PIDS=$(running "$BIN")
-RUNNING=$BIN
+FOUND=$(running)
+# The one built here first, else whichever release build is running.
+RUNNING=$(printf '%s\n' "$FOUND" | awk -F '\t' -v bin="$BIN" '$2 == bin { print $2; exit }')
+[ -n "$RUNNING" ] || RUNNING=$(printf '%s\n' "$FOUND" | awk -F '\t' 'NF { print $2; exit }')
+PIDS=
 OLD=
-if [ -z "$PIDS" ] && [ -x "$OLD_BIN" ]; then
-    PIDS=$(running "$OLD_BIN")
-    [ -n "$PIDS" ] && RUNNING=$OLD_BIN && OLD=1
+if [ -n "$RUNNING" ]; then
+    PIDS=$(printf '%s\n' "$FOUND" | awk -F '\t' -v bin="$RUNNING" '$2 == bin { print $1 }')
+    case $RUNNING in */keleuo) OLD=1 ;; esac
 fi
 # Where the first one was started, and with what: it starts again the same way.
 FIRST=$(echo "$PIDS" | head -n 1)
@@ -94,12 +104,13 @@ ARGS=
 if [ -n "$FIRST" ]; then
     FOLDER=$(lsof -a -p "$FIRST" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
     [ -n "$FOLDER" ] || FOLDER=$PWD
-    ARGS=$(ps -o command= -p "$FIRST" | awk -v bin="$RUNNING" '{ print substr($0, length(bin) + 2) }')
+    ARGS=$(pgrep -alf . | awk -v pid="$FIRST" -v bin="$RUNNING" '$1 == pid { print substr($0, length(pid) + length(bin) + 3); exit }')
     echo "Restarting Wundur in $FOLDER..."
+    [ "$RUNNING" = "$BIN" ] || echo "(It was running $RUNNING; the new build is $BIN.)"
 else
     echo "Wundur isn't running; starting it in $FOLDER."
 fi
 # A new session (setsid), so closing the app's terminals cannot take it down.
 # shellcheck disable=SC2086
 [ -n "$RESET" ] && echo "The layout goes back to the default (the old one is kept as layouts.reset-<time>)."
-OLD=$OLD RESET_LAYOUT=$RESET nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$REPO/scripts/restart" --relaunch "$FOLDER" "$ARGS" $PIDS >/dev/null 2>&1 &
+QUIT_BIN=$RUNNING OLD=$OLD RESET_LAYOUT=$RESET nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$REPO/scripts/restart" --relaunch "$FOLDER" "$ARGS" $PIDS >/dev/null 2>&1 &
