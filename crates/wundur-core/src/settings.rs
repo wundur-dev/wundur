@@ -299,6 +299,9 @@ pub struct Settings {
     pub tab_style: String,
     /// Model names typed in beyond a backend's own list, most recent first.
     pub recent_models: Vec<String>,
+    /// Where the New Project wizard puts new projects unless told otherwise (none:
+    /// `~/Wundur Projects`, see [`crate::engines::projects_folder`]).
+    pub projects_folder: Option<PathBuf>,
     /// The message box keeps its proportional font even with a code block in it (by default
     /// it turns monospace while a message holds a ``` fence).
     pub always_proportional: bool,

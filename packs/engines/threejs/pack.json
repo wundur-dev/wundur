@@ -1,0 +1,25 @@
+{
+  "id": "wundur/engine-threejs",
+  "name": "Three.js",
+  "version": "1.0.0",
+  "description": "Start 3D browser games with Three.js and Vite.",
+  "homepage": "https://threejs.org",
+  "engine": {
+    "name": "Three.js",
+    "tagline": "3D in the browser",
+    "description": "Code-first 3D with WebGL and WebGPU: scenes, glTF models, lights and shaders, in JavaScript.",
+    "image": "card.jpg",
+    "order": 1,
+    "dimensions": ["3d"],
+    "requires": [
+      {
+        "label": "Node.js",
+        "programs": ["npm"],
+        "paths": ["~/.nvm/versions/node/*/bin/npm", "~/.volta/bin/npm"],
+        "url": "https://nodejs.org/en/download",
+        "help": "The starter runs with Vite, which needs Node.js (npm comes with it)."
+      }
+    ],
+    "run": "npm install && npm run dev"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "wundur/engine-godot",
+  "name": "Godot",
+  "version": "1.0.0",
+  "description": "Start 2D or 3D games with the Godot editor.",
+  "homepage": "https://godotengine.org",
+  "engine": {
+    "name": "Godot",
+    "tagline": "2D or 3D, free and open",
+    "description": "A light, free editor with GDScript. Exports to desktop, mobile and the web.",
+    "image": "card.jpg",
+    "order": 3,
+    "dimensions": ["2d", "3d"],
+    "requires": [
+      {
+        "label": "Godot",
+        "programs": ["godot", "godot4"],
+        "paths": ["/Applications/Godot*.app", "~/Applications/Godot*.app"],
+        "url": "https://godotengine.org/download/macos/",
+        "help": "The project is made without it, but you need the Godot editor to run and edit the game."
+      }
+    ],
+    "run": "Open project.godot in Godot, then press Play (F5).",
+    "sprite_tools": true
+  }
+}

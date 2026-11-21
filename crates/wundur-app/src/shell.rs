@@ -255,6 +255,8 @@ pub struct Shell {
     folder_rename: Option<FolderRename>,
     /// A folder being made a project: the name asked for first.
     project_form: Option<ProjectForm>,
+    /// The New Project wizard, while it is open.
+    wizard: Option<(Entity<crate::project_wizard::ProjectWizard>, Subscription)>,
     /// Go to session (Cmd+K): what is typed, and the match picked.
     switcher: Option<Switcher>,
     /// The tool panel shown under the sessions (Files, Changes, Agent, Skills).
@@ -317,6 +319,7 @@ impl Shell {
             inbox_reply: None,
             folder_rename: None,
             project_form: None,
+            wizard: None,
             switcher: None,
             tools_tab: "Files",
             list_resizing: false,
@@ -1731,6 +1734,18 @@ impl Shell {
                 self.ask_new_project(PathBuf::from(arg), window, cx);
                 "ok".into()
             }
+            "project-new" => {
+                // Tests: the New Project wizard.
+                self.new_project(window, cx);
+                "ok".into()
+            }
+            "wizard" => {
+                // Tests: a step in the open New Project wizard (see `ProjectWizard::command`).
+                match self.wizard.as_ref().map(|(w, _)| w.clone()) {
+                    Some(w) => w.update(cx, |w, cx| w.command(arg, window, cx)),
+                    None => "no wizard".into(),
+                }
+            }
             "project-rename" => {
                 // Tests: the Rename project dialog for a project's folder.
                 self.ask_project_name(PathBuf::from(arg), folder_name(Path::new(arg)), true, window, cx);
@@ -2706,15 +2721,22 @@ impl Shell {
         tools.get(picked).map_or(self.tools_tab, |(n, _)| *n)
     }
 
-    /// Ask for a folder, then for the project's name.
+    /// The New Project wizard: game or other work, the engine, the name and where it goes.
     fn new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Make project".into()) });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(root) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |s, window, cx| s.ask_new_project(root, window, cx));
-        })
-        .detach();
+        let parent = wundur_core::engines::projects_folder(cx.global::<AppSettings>().0.borrow().projects_folder.as_deref());
+        let wizard = cx.new(|cx| crate::project_wizard::ProjectWizard::new(parent, window, cx));
+        let sub = cx.subscribe_in(&wizard, window, |s, _, ev: &crate::project_wizard::WizardEvent, window, cx| {
+            use crate::project_wizard::WizardEvent;
+            s.wizard = None;
+            if let WizardEvent::Created { folder, name, notes } = ev {
+                name_project(folder.clone(), name.clone(), cx);
+                let note = (!notes.is_empty()).then(|| notes.join("\n"));
+                s.open_browser(Arc::new(LocalHost), folder.clone(), note, window, cx);
+            }
+            cx.notify();
+        });
+        self.wizard = Some((wizard, sub));
+        cx.notify();
     }
 
     /// Ask what to call the project made of `root` (its folder's name to start with).
@@ -4048,10 +4070,11 @@ impl Render for Shell {
         let list_shown = list.is_some();
         let folder_rename = self.render_folder_rename(cx);
         let project_form = self.render_project_form(cx);
+        let wizard = self.wizard.as_ref().map(|(w, _)| w.clone());
         let switcher = self.render_switcher(cx);
         // Web pages are native views over the window: they hide while an overlay is open.
         crate::web_panel::set_covered(
-            self.folder_rename.is_some() || self.project_form.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
+            self.folder_rename.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
                 || crate::skill_installer::is_open(cx),
         );
         div()
@@ -4167,6 +4190,7 @@ impl Render for Shell {
             )
             .children(folder_rename)
             .children(project_form)
+            .children(wizard)
             .children(switcher)
             .children(crate::skill_installer::render(cx))
             .children(crate::image_view::render(cx))

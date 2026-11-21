@@ -1,0 +1,26 @@
+{
+  "id": "wundur/engine-phaser",
+  "name": "Phaser",
+  "version": "1.0.0",
+  "description": "Start 2D browser games with Phaser and Vite.",
+  "homepage": "https://phaser.io",
+  "engine": {
+    "name": "Phaser",
+    "tagline": "2D games in the browser",
+    "description": "Sprites, tilemaps and arcade physics in JavaScript. Quick to start, runs anywhere a browser does.",
+    "image": "card.jpg",
+    "order": 2,
+    "dimensions": ["2d"],
+    "requires": [
+      {
+        "label": "Node.js",
+        "programs": ["npm"],
+        "paths": ["~/.nvm/versions/node/*/bin/npm", "~/.volta/bin/npm"],
+        "url": "https://nodejs.org/en/download",
+        "help": "The starter runs with Vite, which needs Node.js (npm comes with it)."
+      }
+    ],
+    "run": "npm install && npm run dev",
+    "sprite_tools": true
+  }
+}
