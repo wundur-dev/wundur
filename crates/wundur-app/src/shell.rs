@@ -622,6 +622,50 @@ impl Shell {
         .detach();
     }
 
+    /// Close the project at `root`: every session listed under it, then the project itself (no
+    /// longer kept in the settings). Asks once first when that loses something: unsaved files,
+    /// a turn in progress, a terminal's command.
+    pub fn close_project(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let (projects, groups) = self.groups(cx);
+        let members: Vec<usize> = projects
+            .iter()
+            .position(|p| p.root == root)
+            .and_then(|pi| groups.into_iter().find(|(g, _)| *g == Some(pi)).map(|(_, m)| m))
+            .unwrap_or_default();
+        let numbers: Vec<usize> = members.iter().map(|ix| self.tabs[*ix].number).collect();
+        let unsaved: Vec<_> = members.iter().flat_map(|ix| self.tabs[*ix].ws.read(cx).unsaved_docs(cx)).collect();
+        let working = members.iter().filter(|ix| self.tabs[**ix].ws.read(cx).session.read(cx).chat.busy).count();
+        let commands: usize = members.iter().map(|ix| self.tabs[*ix].ws.read(cx).busy_terminals(cx)).sum();
+        let name = panels::tab_label(&project_key(&root), projects.iter().find(|p| p.root == root).map(|p| p.name.clone()).unwrap_or_default(), cx);
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            if !crate::closing::save_or_drop(unsaved, handle, cx).await {
+                return;
+            }
+            if working > 0 || commands > 0 {
+                let message = format!("{}. Close \u{201c}{name}\u{201d} anyway?", crate::closing::busy_summary(working, commands));
+                let detail = "Its sessions stop, and their agents and commands with them.";
+                let answers = vec![PromptButton::Ok("Close".into()), PromptButton::Cancel("Cancel".into())];
+                if crate::closing::ask(handle, PromptLevel::Warning, message, detail.into(), answers, cx).await != Some(0) {
+                    return;
+                }
+            }
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |s, cx| {
+                    for number in &numbers {
+                        if let Some(ix) = s.tabs.iter().position(|t| t.number == *number) {
+                            s.close(ix, window, cx);
+                        }
+                    }
+                    let root = root.clone();
+                    crate::settings_window::change(cx, move |st| st.projects.retain(|p| p.root != root));
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Keep the list of open sessions (and the shown one) for the next run, when it changed.
     fn save_open(&mut self, cx: &mut Context<Self>) {
         if self.restoring {
@@ -1759,6 +1803,11 @@ impl Shell {
                 // Tests: the shown session.
                 format!("active={} ({}) browser={}", self.name(self.active, cx), self.active, self.browser.is_some())
             }
+            "project-close" => {
+                // Tests: Close project from a project's menu (`arg`: its folder).
+                self.close_project(PathBuf::from(arg), window, cx);
+                "ok".into()
+            }
             "project-new-session" => {
                 // Tests: New session from a project's menu (`arg`: its folder).
                 self.new_session_for_project(PathBuf::from(arg), window, cx);
@@ -2893,6 +2942,7 @@ impl Shell {
                 let (k, a, r) = (k1.clone(), a1.clone(), root3.clone());
                 let saved = cx.global::<AppSettings>().0.borrow().projects.iter().any(|p| p.root == r);
                 let (w, r_new) = (weak_shell.clone(), r.clone());
+                let (w_close, r_close) = (weak_shell.clone(), r.clone());
                 menu.item(PopupMenuItem::new("New session…").on_click(move |_, window, cx| {
                     let _ = w.update(cx, |s, cx| s.new_session_for_project(r_new.clone(), window, cx));
                 }))
@@ -2904,6 +2954,10 @@ impl Shell {
                             crate::settings_window::change(cx, move |s| s.projects.retain(|p| p.root != r));
                         }))
                     })
+                    .separator()
+                    .item(PopupMenuItem::new("Close project").on_click(move |_, window, cx| {
+                        let _ = w_close.update(cx, |s, cx| s.close_project(r_close.clone(), window, cx));
+                    }))
             })
             .into_any_element()
     }
