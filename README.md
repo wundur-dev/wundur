@@ -21,10 +21,12 @@ Apache-2.0 licence, copyright Wundur AI Learning, LLC.
 ## Run it
 
 Needs Rust 1.99 (pinned in `rust-toolchain.toml`) and Claude Code (`claude`) on the PATH.
-Keep the build output on the internal disk:
+Keep the build output in one place every checkout shares, by default on the internal disk; to
+put it on a roomier drive, set `CARGO_TARGET_DIR` in `~/.zshenv` (APFS, not exFAT: cargo needs
+hard links). The scripts and the commands here use it when it's set:
 
 ```sh
-export CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}"
 cargo run -p wundur-app --release -- /path/to/project      # the browser at that folder
 cargo run -p wundur-app --release -- --new /path/to/project # a session there at once
 cargo test --workspace
@@ -40,7 +42,7 @@ window that is already open (one window for everything; the first one listens on
 `$TMPDIR`). Install it once, after a release build:
 
 ```sh
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo build -p wundur-app --release
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo build -p wundur-app --release
 ln -s "$PWD/scripts/wundur" "$HOME/.local/bin/wundur"   # any folder on your PATH
 ```
 

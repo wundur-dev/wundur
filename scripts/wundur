@@ -6,11 +6,11 @@
 # starting a second app. --new starts a session in the folder without the browser.
 #
 # Install (once): build the release binary, then link this script onto your PATH:
-#   CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo build -p wundur-app --release
+#   CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo build -p wundur-app --release
 #   ln -s "<repo>/scripts/wundur" "$HOME/.local/bin/wundur"
-# WUNDUR_BIN overrides where the binary is.
+# WUNDUR_BIN overrides where the binary is; else it's in CARGO_TARGET_DIR's release folder.
 
-BIN="${WUNDUR_BIN:-${KELEUO_BIN:-${KELEION_BIN:-${WORKBENCH_BIN:-$HOME/Library/Caches/workbench-target/release/wundur}}}}"
+BIN="${WUNDUR_BIN:-${KELEUO_BIN:-${KELEION_BIN:-${WORKBENCH_BIN:-${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}/release/wundur}}}}"
 if [ ! -x "$BIN" ]; then
     echo "wundur: no binary at $BIN (build it first, see the top of this script)" >&2
     exit 1

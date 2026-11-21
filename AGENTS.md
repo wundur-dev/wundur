@@ -8,10 +8,15 @@ backends, files; no UI) and `wundur-app` (the window).
 ## Build and check
 
 ```sh
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo build -p wundur-app --release
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo test -p wundur-core -p wundur-app
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo clippy -p wundur-core -p wundur-app
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo build -p wundur-app --release
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo test -p wundur-core -p wundur-app
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo clippy -p wundur-core -p wundur-app
 ```
+
+Every checkout and worktree builds into one shared build cache: `CARGO_TARGET_DIR` when the
+machine sets it (in `~/.zshenv`, so every shell has it), else `~/Library/Caches/workbench-target`.
+Use the commands as written; don't give a worktree a cache of its own (a full build is about
+10 GB). Not on an exFAT drive: cargo needs hard links, and macOS litters it with `._*` files.
 
 On an exFAT drive, macOS leaves `._*` files that break builds and git; delete them first:
 `find . -name '._*' -type f -not -path './target/*' -delete`.
