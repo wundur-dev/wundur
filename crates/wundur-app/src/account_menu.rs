@@ -35,6 +35,8 @@ pub fn button(cx: &App) -> impl IntoElement {
         .child(Icon::new(IconName::CircleUser).size(px(20.)))
         .w(px(36.))
         .h(px(36.))
+        // No padding of its own: a medium Button's 10px a side, clipped, cut the icon's edges.
+        .p_0()
         .rounded(px(10.))
         .tooltip(tip)
         // From the window's bottom left corner: the menu opens above and to the right.
