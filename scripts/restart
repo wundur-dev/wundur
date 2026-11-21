@@ -16,8 +16,11 @@
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 TARGET="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}"
 BIN="${WUNDUR_BIN:-$TARGET/release/wundur}"
-# The binary from before the app was renamed (Keleuo): still running, it is quit and replaced.
-OLD_BIN="$TARGET/release/keleuo"
+# A Wundur started from another binary is quit and replaced too: the one from before the app was
+# renamed (Keleuo), or one built in the default cache before the build moved (CARGO_TARGET_DIR).
+# (Paths may have spaces: the SanDisk drive's do.)
+OLD_KELEUO="$TARGET/release/keleuo"
+DEFAULT_BIN="$HOME/Library/Caches/workbench-target/release/wundur"
 
 NO_BUILD=
 RESET=
@@ -39,7 +42,7 @@ if [ "$1" = "--relaunch" ]; then
         return 1
     }
     QUIT=$BIN
-    [ -n "$OLD" ] && QUIT=$OLD_BIN
+    [ -n "$OLD" ] && QUIT=$OLD
     if [ $# -gt 0 ] && "$QUIT" --quit; then
         # Up to five minutes for an answer; still running then means Cancel: no restart.
         i=0
@@ -55,7 +58,7 @@ if [ "$1" = "--relaunch" ]; then
     if [ -n "$RESET_LAYOUT" ]; then
         CFG="${WUNDUR_CONFIG_DIR:-$HOME/Library/Application Support/wundur-studio}"
         # Still Keleuo's until Wundur first starts (it copies them over then).
-        [ -n "$OLD" ] && [ -z "$WUNDUR_CONFIG_DIR" ] && CFG="$HOME/Library/Application Support/keleuo"
+        case $OLD in */keleuo) [ -z "$WUNDUR_CONFIG_DIR" ] && CFG="$HOME/Library/Application Support/keleuo" ;; esac
         [ -d "$CFG/layouts" ] && mv "$CFG/layouts" "$CFG/layouts.reset-$(date +%Y%m%d-%H%M%S)"
         [ -f "$CFG/settings.json" ] && python3 -I -c 'import json,sys
 p=sys.argv[1]; s=json.load(open(p)); s.pop("layout",None); json.dump(s,open(p,"w"),indent=2)' "$CFG/settings.json"
@@ -82,11 +85,17 @@ running() {
 }
 PIDS=$(running "$BIN")
 RUNNING=$BIN
+# OLD: the other binary it runs from, when it isn't $BIN (it is asked to quit with that one).
 OLD=
-if [ -z "$PIDS" ] && [ -x "$OLD_BIN" ]; then
-    PIDS=$(running "$OLD_BIN")
-    [ -n "$PIDS" ] && RUNNING=$OLD_BIN && OLD=1
-fi
+find_old() {
+    for old in "$@"; do
+        [ -n "$PIDS" ] && return
+        [ "$old" != "$BIN" ] && [ -x "$old" ] || continue
+        PIDS=$(running "$old")
+        [ -n "$PIDS" ] && RUNNING=$old && OLD=$old
+    done
+}
+find_old "$OLD_KELEUO" "$DEFAULT_BIN"
 # Where the first one was started, and with what: it starts again the same way.
 FIRST=$(echo "$PIDS" | head -n 1)
 FOLDER=$PWD

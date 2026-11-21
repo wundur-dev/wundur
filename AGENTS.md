@@ -8,10 +8,14 @@ backends, files; no UI) and `wundur-app` (the window).
 ## Build and check
 
 ```sh
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo build -p wundur-app --release
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo test -p wundur-core -p wundur-app
-CARGO_TARGET_DIR="$HOME/Library/Caches/workbench-target" cargo clippy -p wundur-core -p wundur-app
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo build -p wundur-app --release
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo test -p wundur-core -p wundur-app
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo clippy -p wundur-core -p wundur-app
 ```
+
+Every checkout and worktree shares one build cache: `$CARGO_TARGET_DIR` when it is set (the
+owner's `~/.zshenv` puts it on the SanDisk drive), else `~/Library/Caches/workbench-target`.
+Don't hardcode either path; the scripts (`restart`, `wundur`, `perf-scene`) follow the same rule.
 
 On an exFAT drive, macOS leaves `._*` files that break builds and git; delete them first:
 `find . -name '._*' -type f -not -path './target/*' -delete`.
