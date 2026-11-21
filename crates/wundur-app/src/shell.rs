@@ -253,6 +253,8 @@ pub struct Shell {
     inbox_reply: Option<(u64, Entity<InputState>, Subscription)>,
     /// The folder being renamed, asked for its new name.
     folder_rename: Option<FolderRename>,
+    /// Asking for beta access (the account menu's Request access).
+    access_request: Option<crate::account_menu::RequestDialog>,
     /// A folder being made a project: the name asked for first.
     project_form: Option<ProjectForm>,
     /// The New Project wizard, while it is open.
@@ -318,6 +320,7 @@ impl Shell {
             tasks_open: false,
             inbox_reply: None,
             folder_rename: None,
+            access_request: None,
             project_form: None,
             wizard: None,
             switcher: None,
@@ -338,8 +341,9 @@ impl Shell {
                 cx.observe_window_activation(window, |s, window, cx| {
                     s.attend(window, cx);
                     s.see_summary(window, cx);
-                    // Back from the browser (a checkout, the billing portal): the account anew.
-                    if window.is_window_active() && s.settings.is_some() {
+                    // Back from the browser (signing in, the billing portal, an approval email):
+                    // the account anew, so a change shows without a restart.
+                    if window.is_window_active() {
                         crate::settings_account::refresh_soon(cx);
                     }
                 }),
@@ -988,6 +992,60 @@ impl Shell {
                     window.push_notification(format!("Could not read the session: {e}"), cx)
                 }
         }
+    }
+
+    // ----- asking for beta access -----
+
+    /// Open Request access (signed out: sign in first).
+    pub fn open_access_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::settings_account::signed_in(cx) != Some(true) {
+            crate::settings_account::start_sign_in(false, cx);
+            return;
+        }
+        self.access_request = Some(crate::account_menu::RequestDialog::new(window, cx, |s: &mut Self, ev, _, cx| match ev {
+            crate::account_menu::DialogEvent::Send => s.send_access_request(cx),
+        }));
+        cx.notify();
+    }
+
+    fn send_access_request(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.access_request.as_ref() else { return };
+        let note = d.note(cx);
+        if note.trim().chars().count() > wundur_core::account::ACCESS_NOTE_MAX {
+            return;
+        }
+        let me = cx.entity().downgrade();
+        crate::settings_account::request_access(
+            note,
+            move |got, cx| {
+                let _ = me.update(cx, |s, cx| {
+                    if let Some(d) = s.access_request.as_mut() {
+                        d.answered(got);
+                    }
+                    cx.notify();
+                });
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn render_access_request(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let d = self.access_request.as_ref()?;
+        let me = cx.entity().downgrade();
+        let me2 = me.clone();
+        Some(d.render(
+            move |_, _, cx| {
+                let _ = me.update(cx, |s, cx| {
+                    s.access_request = None;
+                    cx.notify();
+                });
+            },
+            move |_, _, cx| {
+                let _ = me2.update(cx, |s, cx| s.send_access_request(cx));
+            },
+            cx,
+        ))
     }
 
     // ----- renaming a folder -----
@@ -2007,6 +2065,15 @@ impl Shell {
                         });
                     }
                     "cancel" => crate::settings_account::cancel(cx),
+                    // `account access-request`: the Request access dialog.
+                    "access-request" => self.open_access_request(window, cx),
+                    // `account me-json <json>`: show this account (a `GET /v1/me` answer)
+                    // without the network, to see the menu and the dialog.
+                    a if a.starts_with("me-json ") => {
+                        if let Err(e) = crate::settings_account::show_me_json(&a["me-json ".len()..], cx) {
+                            return Some(e);
+                        }
+                    }
                     _ => {}
                 }
                 crate::settings_account::describe(cx)
@@ -3225,6 +3292,8 @@ impl Shell {
                     }
                 })),
             )
+            // The account, last: below Settings.
+            .child(crate::account_menu::button(cx))
             .into_any_element()
     }
 
@@ -4123,12 +4192,13 @@ impl Render for Shell {
         let tasks = self.tasks_open.then(|| self.render_tasks(cx));
         let list_shown = list.is_some();
         let folder_rename = self.render_folder_rename(cx);
+        let access_request = self.render_access_request(cx);
         let project_form = self.render_project_form(cx);
         let wizard = self.wizard.as_ref().map(|(w, _)| w.clone());
         let switcher = self.render_switcher(cx);
         // Web pages are native views over the window: they hide while an overlay is open.
         crate::web_panel::set_covered(
-            self.folder_rename.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
+            self.folder_rename.is_some() || self.access_request.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
                 || crate::skill_installer::is_open(cx),
         );
         div()
@@ -4243,6 +4313,7 @@ impl Render for Shell {
                     .children(tasks),
             )
             .children(folder_rename)
+            .children(access_request)
             .children(project_form)
             .children(wizard)
             .children(switcher)
@@ -4364,6 +4435,16 @@ pub fn open_settings_page(name: &'static str, cx: &mut App) {
     cx.defer(move |cx| {
         let _ = handle.update(cx, |_, window, cx| {
             let _ = shell.update(cx, |s, cx| s.show_settings_at(name, false, window, cx));
+        });
+    });
+}
+
+/// Open Request access in the window (from the account menu, Settings, a locked engine).
+pub fn open_access_request(cx: &mut App) {
+    let Some((handle, shell)) = cx.try_global::<crate::control::ControlTargets>().and_then(|t| t.workspace.clone()) else { return };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = shell.update(cx, |s, cx| s.open_access_request(window, cx));
         });
     });
 }

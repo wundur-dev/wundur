@@ -165,6 +165,9 @@ pub struct Engine {
     /// The finishes it offers (`smooth`, `faceted`); most engines have none.
     #[serde(deserialize_with = "list")]
     pub finishes: Vec<String>,
+    /// Whether this account may use it (the catalog is per caller); `None` from an API before
+    /// the beta, which listed `plans` instead.
+    pub available: Option<bool>,
 }
 
 /// A rigger, for an imported model.
@@ -324,9 +327,10 @@ pub fn suggested_name(description: &str) -> String {
 }
 
 impl Engine {
-    /// Whether the person's `plan` may use it (an engine listing no plans is open to all).
+    /// Whether the person may use it: as the catalog says (`available`), else whether `plan`
+    /// is among its plans (an engine listing none is open to all).
     pub fn on_plan(&self, plan: &str) -> bool {
-        self.plans.is_empty() || self.plans.iter().any(|p| p == plan)
+        self.available.unwrap_or_else(|| self.plans.is_empty() || self.plans.iter().any(|p| p == plan))
     }
 }
 
@@ -815,7 +819,10 @@ pub fn explain(e: &Error) -> (String, bool) {
         "model_credits_used" => "You're out of model credits this month.",
         "image_allowance_used" => "This month's images are used up.",
         "sound_seconds_used" => "This month's sound effects are used up.",
-        "engine_not_on_plan" => "That engine is on the Monthly plan.",
+        // The server's words ("{engine} comes with beta access: ask for it in the app.").
+        "engine_not_on_plan" | "checkout_closed" if !a.message.is_empty() => "",
+        "engine_not_on_plan" => "That engine isn't on your plan.",
+        "checkout_closed" => "Wundur Studio is in invite-only beta: ask for access.",
         "attempts_used" | "rerolls_used" => "This set's attempts are used: make a change or a new set of views.",
         "no_approved_set" => "Approve a set of views first.",
         "set_in_progress" => "A set of views is still being made: wait for it to finish.",
@@ -838,7 +845,12 @@ pub fn explain(e: &Error) -> (String, bool) {
         _ if text.is_empty() => if a.message.is_empty() { a.to_string() } else { a.message.clone() },
         _ => text.to_string(),
     };
-    (text, a.is_used_up() || a.code == "engine_not_on_plan")
+    (text, a.is_used_up() || needs_access(e))
+}
+
+/// The way on from `e` is asking for beta access (an engine not on the plan, checkout closed).
+pub fn needs_access(e: &Error) -> bool {
+    matches!(e.code(), Some("engine_not_on_plan" | "checkout_closed"))
 }
 
 #[cfg(test)]
@@ -1049,6 +1061,17 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_says_which_engines_this_account_may_use() {
+        let c: Catalog = serde_json::from_str(
+            r#"{"engines": [{ "id": "wundur", "available": true }, { "id": "tripo", "plans": ["free"], "available": false }, { "id": "old", "plans": ["monthly"] }]}"#,
+        )
+        .unwrap();
+        assert!(c.engine("wundur").unwrap().on_plan("free"));
+        assert!(!c.engine("tripo").unwrap().on_plan("free"), "available wins over plans");
+        assert!(!c.engine("old").unwrap().on_plan("free") && c.engine("old").unwrap().on_plan("monthly"), "an older catalog: by plan");
+    }
+
+    #[test]
     fn errors_say_what_to_do() {
         let api = |status: u16, code: &str| Error::Api(ApiError { status, code: code.into(), message: format!("{code} said"), retry_after: None });
         let (text, upgrade) = explain(&api(402, "model_credits_used"));
@@ -1065,6 +1088,11 @@ mod tests {
         assert!(explain(&api(413, "image_too_large")).0.contains("10 MB"));
         assert_eq!(explain(&api(422, "invalid_request")).0, "invalid_request said", "the server's own words for a bad request");
         assert!(explain(&api(403, "engine_not_on_plan")).1);
+        assert_eq!(explain(&api(403, "engine_not_on_plan")).0, "engine_not_on_plan said", "the server's words for a locked engine");
+        assert!(needs_access(&api(403, "engine_not_on_plan")) && needs_access(&api(403, "checkout_closed")));
+        assert!(!needs_access(&api(402, "model_credits_used")));
+        let bare = Error::Api(ApiError { status: 403, code: "checkout_closed".into(), message: String::new(), retry_after: None });
+        assert!(explain(&bare).0.contains("ask for access"));
         assert_eq!(explain(&api(500, "weird")).0, "weird said");
         assert!(explain(&Error::SignedOut).0.contains("Sign in"));
     }
