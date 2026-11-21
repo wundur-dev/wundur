@@ -238,6 +238,10 @@ fn general(page: WeakEntity<SettingsPage>) -> SettingPage {
             let page = page.clone();
             SettingItem::render(move |_, _, cx| crate::settings_fonts::render(&page, which, cx))
         })),
+        SettingGroup::new().title("Projects").item(SettingItem::render({
+            let page = page.clone();
+            move |_, _, cx| projects_folder_row(&page, cx)
+        })),
         SettingGroup::new().title("Sessions").items([
             pref(
                 "Reopen sessions at start",
@@ -246,6 +250,51 @@ fn general(page: WeakEntity<SettingsPage>) -> SettingPage {
             ),
         ]),
     ])
+}
+
+/// Settings > General > Projects: where the New Project wizard puts new projects.
+fn projects_folder_row(page: &WeakEntity<SettingsPage>, cx: &mut App) -> AnyElement {
+    let theme = cx.theme();
+    let (fg, muted) = (theme.foreground, theme.muted_foreground);
+    let setting = get(cx, |s| s.projects_folder.clone());
+    let folder = wundur_core::engines::projects_folder(setting.as_deref());
+    let (p1, p2) = (page.clone(), page.clone());
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_sm().text_color(fg).child("Projects folder"))
+                .child(div().text_xs().text_color(muted).child(format!(
+                    "New projects go in {} unless you pick another folder for one.",
+                    crate::project_wizard::tilde(&folder)
+                ))),
+        )
+        .when(setting.is_some(), |d| {
+            d.child(Button::new("projects-folder-reset").small().ghost().label("Use default").on_click(move |_, _, cx| {
+                change(cx, |s| s.projects_folder = None);
+                let _ = p1.update(cx, |_, cx| cx.notify());
+            }))
+        })
+        .child(Button::new("projects-folder-choose").small().label("Choose…").on_click(move |_, _, cx| {
+            let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose".into()) });
+            let page = p2.clone();
+            cx.spawn(async move |cx| {
+                let Ok(Ok(Some(paths))) = picked.await else { return };
+                let Some(folder) = paths.into_iter().next() else { return };
+                cx.update(|cx| {
+                    change(cx, |s| s.projects_folder = Some(folder));
+                    let _ = page.update(cx, |_, cx| cx.notify());
+                });
+            })
+            .detach();
+        }))
+        .into_any_element()
 }
 
 fn chat() -> SettingPage {

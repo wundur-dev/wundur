@@ -1,0 +1,9 @@
+; Engine configuration file.
+; Godot fills in the rest when it first opens the project.
+
+config_version=5
+
+[application]
+
+config/name="{{name}}"
+run/main_scene="res://main.tscn"

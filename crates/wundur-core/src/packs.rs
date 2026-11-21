@@ -117,6 +117,9 @@ pub struct Manifest {
     /// Hosts its scripts may reach (`*.example.com`: any under it). HTTPS only.
     pub network: Vec<String>,
     pub tools: Vec<PackTool>,
+    /// A game engine for the New Project wizard ([`crate::engines`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<crate::engines::EngineSpec>,
 }
 
 /// An installed pack: its manifest and folder.
@@ -214,8 +217,8 @@ pub fn installed(dir: &Path) -> Vec<Pack> {
 pub fn install_from_folder(from: &Path, dir: &Path) -> Result<Pack, String> {
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(from.join("pack.json")).map_err(|e| format!("No pack.json there: {e}"))?)
         .map_err(|e| format!("pack.json is not a pack: {e}"))?;
-    if manifest.id.is_empty() || manifest.tools.is_empty() {
-        return Err("pack.json needs an id and at least one tool".into());
+    if manifest.id.is_empty() || (manifest.tools.is_empty() && manifest.engine.is_none()) {
+        return Err("pack.json needs an id and at least one tool or an engine".into());
     }
     let folder = dir.join(manifest.id.replace(['/', '\\', ':'], "-"));
     if folder.exists() {
