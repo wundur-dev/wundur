@@ -22,6 +22,7 @@ use wundur_core::host::{Host, LocalHost, SshHost};
 use wundur_core::settings::Settings;
 
 mod about;
+mod account_menu;
 mod project_wizard;
 mod inbox;
 mod tasks;

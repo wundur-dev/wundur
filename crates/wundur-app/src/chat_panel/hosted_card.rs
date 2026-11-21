@@ -13,6 +13,7 @@ use gpui_kit::component::Disableable;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use serde_json::Value;
 use wundur_core::asset_flow::{self as flow, Asset, Catalog, Field, Kind, Model, Set};
+use wundur_core::account::Me;
 
 use super::*;
 use crate::hosted_store;
@@ -688,7 +689,12 @@ impl ChatPanel {
             .gap_2()
             // Wraps: a long message stays inside the card.
             .child(div().flex_1().min_w_0().text_xs().text_color(danger).child(text))
-            .when(upgrade && resets.is_none(), |d| {
+            // In the beta, asking for access is the way on (checkout is closed); asked already,
+            // the message says so and there's nothing to press.
+            .when(upgrade && resets.is_none() && crate::settings_account::can_request(cx), |d| {
+                d.child(Button::new(SharedString::from(format!("{id}-request"))).xsmall().outline().label("Request access").on_click(|_, _, cx| crate::shell::open_access_request(cx)))
+            })
+            .when(upgrade && resets.is_none() && crate::settings_account::me(cx).is_none_or(Me::offers_upgrade), |d| {
                 d.child(Button::new(SharedString::from(format!("{id}-upgrade"))).xsmall().outline().label("Upgrade").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
             })
             .into_any_element()
@@ -1661,11 +1667,26 @@ impl ChatPanel {
                     .child(cells(
                         div().flex().items_center().gap_3().child(radio).child(div().truncate().text_sm().font_weight(FontWeight::MEDIUM).text_color(fg).child(en.label.clone())).into_any_element(),
                         div().text_sm().text_color(muted).child(uses).into_any_element(),
-                        div().text_sm().text_color(muted).child(if allowed { credits(en.credits) } else { format!("{} · Monthly", credits(en.credits)) }).into_any_element(),
+                        div().text_sm().text_color(muted).child(if allowed { credits(en.credits) } else { format!("{} · Locked", credits(en.credits)) }).into_any_element(),
                     )),
             );
         }
         generator = generator.child(table);
+        // Locked engines: why, in the API's words, and the way to them.
+        if engines.iter().any(|en| !en.on_plan(plan)) {
+            let message = crate::settings_account::me(cx).map(|m| m.access.message.clone()).filter(|m| !m.is_empty());
+            let ask = crate::settings_account::can_request(cx);
+            if message.is_some() || ask {
+                generator = generator.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().text_xs().text_color(muted).children(message))
+                        .when(ask, |d| d.child(Button::new(id("request-access")).xsmall().outline().label("Request access").on_click(|_, _, cx| crate::shell::open_access_request(cx)))),
+                );
+            }
+        }
         if compare_open {
             for en in &engines {
                 let best = if en.best_for.is_empty() { String::new() } else { format!(" Best for {}.", en.best_for.join(", ")) };

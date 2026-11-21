@@ -25,8 +25,9 @@ use base64::Engine as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::Digest as _;
 
-/// The hosted API, until it moves to `https://api.wundur.ai`.
-pub const DEFAULT_API_BASE: &str = "https://wundur-api.greenmoss-5be352a8.westus.azurecontainerapps.io";
+/// The hosted API. Paths carry their version (`/v1/me`), so the base has none; a base given
+/// with `/v1` on the end has it taken off ([`normalize_api_base`]).
+pub const DEFAULT_API_BASE: &str = "https://api.wundur.ai";
 const AUTHORIZE_URL: &str = "https://wundurapi.ciamlogin.com/ea0a2010-c331-4354-beb2-375e88ffff9f/oauth2/v2.0/authorize";
 const TOKEN_URL: &str = "https://wundurapi.ciamlogin.com/ea0a2010-c331-4354-beb2-375e88ffff9f/oauth2/v2.0/token";
 /// The desktop app's registration: a public client, no secret.
@@ -59,6 +60,24 @@ impl Config {
         let b = self.api_base.trim();
         if b.is_empty() { DEFAULT_API_BASE } else { b }
     }
+
+    /// A saved address from before the API had its own domain (its Azure Container Apps
+    /// address) goes back to the default. True when it changed.
+    pub fn migrate(&mut self) -> bool {
+        let old = self.api_base.trim().to_ascii_lowercase();
+        let on_azure = old.split("://").nth(1).unwrap_or(&old).split(['/', ':']).next().is_some_and(|host| host.ends_with(".azurecontainerapps.io"));
+        if on_azure {
+            self.api_base.clear();
+        }
+        on_azure
+    }
+}
+
+/// An API address as the calls want it: no spaces, no trailing `/` and no `/v1` (each path has
+/// its version). Empty stays empty (the default).
+pub fn normalize_api_base(base: &str) -> String {
+    let b = base.trim().trim_end_matches('/');
+    b.strip_suffix("/v1").unwrap_or(b).trim_end_matches('/').to_string()
 }
 
 /// Where signing in and the API are.
@@ -263,7 +282,36 @@ pub struct Me {
     pub attempt_weights: BTreeMap<String, f64>,
     pub limits: Limits,
     pub can_manage_billing: bool,
+    /// The account's name, when the API sends one (else the sign-in's).
+    #[serde(deserialize_with = "text", alias = "display_name")]
+    pub name: String,
+    /// The invite-only beta: where the account stands, and what to tell the person.
+    pub access: Access,
 }
+
+/// `access` in `GET /v1/me` (and `POST /v1/access/request`'s answer). The API decides it all;
+/// the app shows `message` as it comes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Access {
+    /// `none`, `requested`, `declined`, `beta` or `paid` (or one added later).
+    #[serde(deserialize_with = "text")]
+    pub state: String,
+    /// Whether to offer Request access.
+    pub can_request: bool,
+    #[serde(deserialize_with = "text")]
+    pub message: String,
+}
+
+impl Access {
+    /// Asked for and not yet answered.
+    pub fn requested(&self) -> bool {
+        self.state == "requested"
+    }
+}
+
+/// The longest note a request for access may carry, in characters.
+pub const ACCESS_NOTE_MAX: usize = 500;
 
 impl Me {
     /// The plan's name to show: Free, Comp, Monthly.
@@ -279,9 +327,15 @@ impl Me {
         }
     }
 
-    /// On the free plan (so offered the upgrade).
+    /// On the free plan.
     pub fn is_free(&self) -> bool {
         matches!(self.plan.as_str(), "" | "free")
+    }
+
+    /// Whether to offer Upgrade: on the free plan, and not while the beta asks people to request
+    /// access instead (checkout is closed then).
+    pub fn offers_upgrade(&self) -> bool {
+        self.is_free() && !self.access.can_request && !self.access.requested()
     }
 
     /// The status, when it is worth saying (not active), in words: "past due".
@@ -485,6 +539,21 @@ struct Tokens {
     /// Seconds; Entra sends a number (some servers a string).
     #[serde(default, deserialize_with = "number")]
     expires_in: i64,
+    /// OpenID Connect's id token: only its `name` is read, to show who is signed in.
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+/// The `name` claim of an id token (or given and family names), unverified: it is only shown.
+fn id_token_name(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let get = |k: &str| claims.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty() && *v != "unknown").map(String::from);
+    get("name").or_else(|| {
+        let full = [get("given_name"), get("family_name")].into_iter().flatten().collect::<Vec<_>>().join(" ");
+        (!full.is_empty()).then_some(full)
+    })
 }
 
 impl Tokens {
@@ -725,6 +794,8 @@ pub struct Account {
     /// Whether a refresh token is kept, and the key, as last read (`None`: not read yet).
     signed_in: Mutex<Option<bool>>,
     key: Mutex<Option<Option<String>>>,
+    /// The name in the last id token, to show who is signed in.
+    name: Mutex<Option<String>>,
 }
 
 static SHARED: OnceLock<Account> = OnceLock::new();
@@ -753,7 +824,7 @@ fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, Error> {
 
 impl Account {
     pub fn new(endpoints: Endpoints, store: Box<dyn Store>) -> Self {
-        Self { endpoints: RwLock::new(endpoints), store, access: Mutex::new(None), refreshing: Mutex::new(()), signed_in: Mutex::new(None), key: Mutex::new(None) }
+        Self { endpoints: RwLock::new(endpoints), store, access: Mutex::new(None), refreshing: Mutex::new(()), signed_in: Mutex::new(None), key: Mutex::new(None), name: Mutex::new(None) }
     }
 
     fn endpoints(&self) -> Endpoints {
@@ -762,9 +833,22 @@ impl Account {
 
     /// Use the API at `base` (empty: the default). From [`Config::api_base`].
     pub fn set_api_base(&self, base: &str) {
-        let base = base.trim().trim_end_matches('/');
+        let base = normalize_api_base(base);
         if let Ok(mut e) = self.endpoints.write() {
-            e.api_base = if base.is_empty() { DEFAULT_API_BASE.into() } else { base.into() };
+            e.api_base = if base.is_empty() { DEFAULT_API_BASE.into() } else { base };
+        }
+    }
+
+    /// The signed-in person's name from the sign-in service, once a token has come this run.
+    pub fn display_name(&self) -> Option<String> {
+        self.name.lock().ok().and_then(|n| n.clone())
+    }
+
+    fn keep_name(&self, tokens: &Tokens) {
+        if let Some(name) = tokens.id_token.as_deref().and_then(id_token_name)
+            && let Ok(mut n) = self.name.lock()
+        {
+            *n = Some(name);
         }
     }
 
@@ -807,13 +891,22 @@ impl Account {
     /// Start signing in: the loopback listener, and the address for the browser
     /// ([`SignIn::url`]; the caller opens it). Then [`Account::finish_sign_in`].
     pub fn begin_sign_in(&self) -> io::Result<SignIn> {
+        self.begin_sign_in_with(false)
+    }
+
+    /// [`Self::begin_sign_in`]; `create`: open on the sign-up page (`prompt=create`; the same
+    /// flow, which offers signing in too).
+    pub fn begin_sign_in_with(&self, create: bool) -> io::Result<SignIn> {
         let listeners = loopback_listeners()?;
         let port = listeners[0].local_addr()?.port();
         let redirect_uri = format!("http://localhost:{port}/");
         // 32 random bytes: a 43-character verifier, as RFC 7636 suggests.
         let verifier = random_text(32);
         let state = random_text(16);
-        let url = authorize_url(&self.endpoints(), &redirect_uri, &pkce_challenge(&verifier), &state);
+        let mut url = authorize_url(&self.endpoints(), &redirect_uri, &pkce_challenge(&verifier), &state);
+        if create {
+            url.push_str("&prompt=create");
+        }
         Ok(SignIn { url, redirect_uri, verifier, state, listeners, cancel: Cancel::default() })
     }
 
@@ -835,6 +928,7 @@ impl Account {
         let refresh = tokens.refresh_token.clone().filter(|t| !t.is_empty()).ok_or_else(|| Error::Network("the sign-in service sent no refresh token".into()))?;
         self.store.set(REFRESH_TOKEN, &refresh).map_err(Error::Store)?;
         self.set_signed_in(true);
+        self.keep_name(&tokens);
         self.set_access(Some(tokens.access(Instant::now())));
         let key = self.create_machine_key();
         let me = self.me().ok();
@@ -863,6 +957,9 @@ impl Account {
             let _ = self.send(auth, "DELETE", &format!("/v1/keys/{}", encode(id)), None);
         }
         self.forget_session();
+        if let Ok(mut n) = self.name.lock() {
+            *n = None;
+        }
         self.store.remove(API_KEY);
         if let Ok(mut k) = self.key.lock() {
             *k = Some(None);
@@ -926,6 +1023,7 @@ impl Account {
         if let Some(new) = tokens.refresh_token.as_deref().filter(|t| !t.is_empty() && *t != refresh) {
             self.store.set(REFRESH_TOKEN, new).map_err(Error::Store)?;
         }
+        self.keep_name(&tokens);
         let access = tokens.access(Instant::now());
         let value = access.value.clone();
         self.set_access(Some(access));
@@ -1029,6 +1127,19 @@ impl Account {
             checkout_url: String,
         }
         Ok(self.json::<Checkout>(Auth::Session, "POST", "/v1/checkout", Some(&serde_json::json!({ "plan": plan })))?.checkout_url)
+    }
+
+    /// `POST /v1/access/request`: ask for beta access, with an optional note (what they'd
+    /// like to make; up to [`ACCESS_NOTE_MAX`] characters). The new access state.
+    pub fn request_access(&self, note: &str) -> Result<Access, Error> {
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            access: Access,
+        }
+        let note = note.trim();
+        let body = if note.is_empty() { serde_json::json!({}) } else { serde_json::json!({ "note": note }) };
+        Ok(self.json::<Answer>(Auth::Session, "POST", "/v1/access/request", Some(&body))?.access)
     }
 
     /// `POST /v1/billing/portal`: the address of Stripe's customer portal.
@@ -1198,11 +1309,57 @@ mod tests {
     fn the_api_address_is_a_setting() {
         let account = Account::new(Endpoints::default(), Box::new(MemoryStore::default()));
         assert_eq!(account.api_base(), DEFAULT_API_BASE);
-        account.set_api_base(" https://api.wundur.ai/ ");
-        assert_eq!(account.api_base(), "https://api.wundur.ai");
+        account.set_api_base(" http://localhost:8000/ ");
+        assert_eq!(account.api_base(), "http://localhost:8000");
+        account.set_api_base("http://localhost:8000/v1/");
+        assert_eq!(account.api_base(), "http://localhost:8000", "the version is the paths'");
         account.set_api_base("");
         assert_eq!(account.api_base(), DEFAULT_API_BASE);
         assert_eq!(Config { api_base: "  ".into(), key_id: String::new() }.api_base(), DEFAULT_API_BASE);
+    }
+
+    #[test]
+    fn an_old_azure_address_moves_to_the_domain() {
+        let mut old = Config { api_base: "https://wundur-api.greenmoss-5be352a8.westus.azurecontainerapps.io/".into(), key_id: "k".into() };
+        assert!(old.migrate());
+        assert_eq!(old.api_base(), "https://api.wundur.ai");
+        assert_eq!(old.key_id, "k", "only the address changes");
+        for keep in ["", "http://localhost:8000", "https://staging.wundur.ai/v1"] {
+            let mut c = Config { api_base: keep.into(), key_id: String::new() };
+            assert!(!c.migrate(), "{keep}");
+            assert_eq!(c.api_base, keep);
+        }
+    }
+
+    #[test]
+    fn me_reads_the_access_state() {
+        let me: Me = serde_json::from_str(
+            r#"{"plan":"free","email":"a@b.c","access":{"state":"none","can_request":true,"message":"Wundur Studio is in invite-only beta."}}"#,
+        )
+        .unwrap();
+        assert!(me.access.can_request && me.access.state == "none");
+        assert_eq!(me.access.message, "Wundur Studio is in invite-only beta.");
+        assert!(!me.offers_upgrade(), "checkout is closed while access can be asked for");
+        let requested: Me = serde_json::from_str(r#"{"plan":"free","access":{"state":"requested","can_request":false}}"#).unwrap();
+        assert!(!requested.offers_upgrade());
+        let older: Me = serde_json::from_str(r#"{"plan":"free"}"#).unwrap();
+        assert!(older.offers_upgrade(), "an API before the beta: Upgrade as before");
+    }
+
+    #[test]
+    fn the_name_comes_from_the_id_token() {
+        let claims = |json: &str| format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json));
+        assert_eq!(id_token_name(&claims(r#"{"name":"Ada Lovelace"}"#)).as_deref(), Some("Ada Lovelace"));
+        assert_eq!(id_token_name(&claims(r#"{"given_name":"Ada","family_name":"L"}"#)).as_deref(), Some("Ada L"));
+        assert_eq!(id_token_name(&claims(r#"{"name":"unknown"}"#)), None);
+        assert_eq!(id_token_name("not a token"), None);
+    }
+
+    #[test]
+    fn create_account_opens_on_sign_up() {
+        let account = Account::new(Endpoints::default(), Box::new(MemoryStore::default()));
+        assert!(account.begin_sign_in_with(true).unwrap().url.ends_with("&prompt=create"));
+        assert!(!account.begin_sign_in().unwrap().url.contains("prompt="));
     }
 
     /// The loopback listener over real sockets: a stray request and a wrong state are refused,

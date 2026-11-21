@@ -85,6 +85,9 @@ struct Store {
     /// Style pictures being fetched now, by path (so each is asked for once).
     fetching: std::collections::HashSet<String>,
     loading: bool,
+    /// The catalog is for an earlier plan or access (it differs by caller): fetch it again,
+    /// showing the one held meanwhile.
+    stale: bool,
     catalog_error: Option<String>,
     revision: u64,
 }
@@ -114,8 +117,9 @@ pub fn signed_in() -> bool {
 /// The catalog and the person's plan, fetched the first time (and again after a failure).
 pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     let store = cx.default_global::<Store>();
-    if store.catalog.is_none() && !store.loading {
+    if (store.catalog.is_none() || store.stale) && !store.loading {
         store.loading = true;
+        store.stale = false;
         cx.spawn(async move |cx: &mut AsyncApp| {
             let got = cx.background_spawn(async move { (flow::catalog(), account::shared().me_with(Auth::Key).map(|m| (m.plan, (m.period_end, m.allowance.images.left)))) }).await;
             cx.update(|cx| {
@@ -141,6 +145,17 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
     }
     let store = cx.global::<Store>();
     (store.catalog.clone(), store.plan.clone())
+}
+
+/// The account's plan or access changed (signed in or out, approved for the beta): the catalog
+/// is fetched again the next time it's wanted, so engines unlock or lock.
+pub fn catalog_changed(cx: &mut App) {
+    if cx.try_global::<Store>().is_some_and(|s| s.catalog.is_some() || s.catalog_error.is_some()) {
+        let store = cx.global_mut::<Store>();
+        store.stale = true;
+        store.revision += 1;
+        cx.refresh_windows();
+    }
 }
 
 /// Images left this month (`GET /v1/me`), once known.
