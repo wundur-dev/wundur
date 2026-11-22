@@ -35,6 +35,9 @@ pub struct AccountUi {
     last_fetch: Option<Instant>,
     /// A request for access on its way.
     requesting: bool,
+    /// Signed in on this machine's key, but the session has lapsed: what needs it (billing, a
+    /// new key) asks to sign in again; everything else goes on.
+    session_lapsed: bool,
 }
 
 impl Global for AccountUi {}
@@ -107,16 +110,28 @@ pub fn refresh(cx: &mut App) {
         s.last_fetch = Some(Instant::now());
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let (me, key) = cx
+        let (me, key, session) = cx
             .background_spawn(async move {
                 let a = account::shared();
-                if !a.is_signed_in() {
-                    return (Ok(None), None);
+                // The Keychain can't be read right now (locked after sleep): nothing is known,
+                // and nothing is signed out for it.
+                if let Some(e) = a.store_error() {
+                    return (Err(Error::Store(e)), None, true);
                 }
-                let me = a.me().map(Some);
+                if !a.is_signed_in() {
+                    return (Ok(None), None, false);
+                }
+                // This machine's key first: it doesn't expire, so a lapsed session doesn't sign
+                // anyone out.
+                let mut me = a.me_any();
+                if a.api_key().is_some() && matches!(&me, Err(Error::Api(e)) if e.status == 401) {
+                    // The key was revoked elsewhere: forget it here; a session makes a new one.
+                    a.forget_key();
+                    me = if a.has_session() { a.me() } else { Err(Error::SignedOut) };
+                }
                 // Signed in but without a key (making it failed at sign-in): try again.
-                let key = (me.is_ok() && a.api_key().is_none()).then(|| a.create_machine_key());
-                (me, key)
+                let key = (me.is_ok() && a.api_key().is_none() && a.has_session()).then(|| a.create_machine_key());
+                (me.map(Some), key, a.has_session())
             })
             .await;
         cx.update(|cx| {
@@ -130,6 +145,7 @@ pub fn refresh(cx: &mut App) {
                     update(cx, |s| {
                         s.loading = false;
                         s.signed_in = Some(me.is_some());
+                        s.session_lapsed = me.is_some() && !session;
                         changed = set_me(s, me);
                         s.error = match key {
                             Some(Err(e)) => Some(format!("Couldn't make this machine's key: {e}")),
@@ -140,10 +156,19 @@ pub fn refresh(cx: &mut App) {
                         crate::hosted_store::catalog_changed(cx);
                     }
                 }
+                // Neither a session nor a key left: signed out (nothing to revoke).
                 Err(Error::SignedOut) => {
-                    update(cx, |s| s.loading = false);
-                    signed_out(Some("Your sign-in has expired. Sign in again.".into()), cx);
+                    change(cx, |s| s.account.key_id.clear());
+                    update(cx, |s| {
+                        *s = AccountUi { signed_in: Some(false), error: Some("Your sign-in has expired. Sign in again.".into()), last_fetch: s.last_fetch, ..Default::default() };
+                    });
+                    crate::hosted_store::catalog_changed(cx);
                 }
+                // Not known now: keep what was shown; the next refresh tries again.
+                Err(Error::Store(e)) => update(cx, |s| {
+                    s.loading = false;
+                    s.error = Some(format!("Couldn't read the Keychain ({e}); trying again later."));
+                }),
                 Err(e) => update(cx, |s| {
                     s.loading = false;
                     s.signed_in = Some(account::shared().known_signed_in().unwrap_or(true));
@@ -208,8 +233,8 @@ pub fn request_access(note: String, done: impl FnOnce(Result<String, String>, &m
                     done(Ok(message), cx);
                 }
                 Err(Error::SignedOut) => {
-                    signed_out(Some("Your sign-in has expired. Sign in again.".into()), cx);
-                    done(Err("Your sign-in has expired. Sign in again.".into()), cx);
+                    session_needed(cx);
+                    done(Err("Sign in again to ask for access (your sign-in has lapsed).".into()), cx);
                 }
                 // Not allowed now (declined, already in, paid): the account as it stands says why.
                 Err(Error::Api(e)) if e.status == 409 => {
@@ -226,8 +251,17 @@ pub fn request_access(note: String, done: impl FnOnce(Result<String, String>, &m
     .detach();
 }
 
-/// The session is gone (signed out here, or the server refused the refresh token): revoke this
-/// machine's key, forget it and the tokens.
+/// Something needed the session and it has lapsed: say so (Sign in again), without signing out.
+fn session_needed(cx: &mut App) {
+    update(cx, |s| s.session_lapsed = true);
+}
+
+/// Whether the session has lapsed (the menu offers Sign in again).
+pub fn session_lapsed(cx: &App) -> bool {
+    cx.try_global::<AccountUi>().is_some_and(|s| s.session_lapsed)
+}
+
+/// Signing out, asked for here: revoke this machine's key, forget it and the tokens.
 pub fn signed_out(note: Option<String>, cx: &mut App) {
     let key_id = cx.global::<crate::AppSettings>().0.borrow().account.key_id.clone();
     update(cx, |s| s.busy = Some("Signing out…"));
@@ -270,17 +304,20 @@ pub fn sign_in_with(open: bool, create: bool, cx: &mut App) -> Result<u16, Strin
         cx.update(|cx| match done {
             Ok(signed) => {
                 let error = match &signed.key {
-                    Ok(info) => {
+                    Ok(Some(info)) => {
                         let id = info.id.clone();
                         change(cx, move |s| s.account.key_id = id);
                         None
                     }
+                    // The key already kept still works.
+                    Ok(None) => None,
                     Err(e) => Some(format!("Signed in, but couldn't make this machine's key: {e}")),
                 };
                 let fetched = signed.me.is_some();
                 update(cx, |s| {
                     s.waiting = None;
                     s.signed_in = Some(true);
+                    s.session_lapsed = false;
                     s.me = signed.me;
                     s.error = error;
                 });
@@ -323,7 +360,10 @@ pub fn open_from(busy: &'static str, ask: fn() -> Result<String, Error>, cx: &mu
             update(cx, |s| s.busy = None);
             match url {
                 Ok(url) => cx.open_url(&url),
-                Err(Error::SignedOut) => signed_out(Some("Your sign-in has expired. Sign in again.".into()), cx),
+                Err(Error::SignedOut) => {
+                    session_needed(cx);
+                    update(cx, |s| s.error = Some("Sign in again to do this (your sign-in has lapsed).".into()));
+                }
                 // Checkout is closed in the beta: asking for access is the way on.
                 Err(e) if wundur_core::asset_flow::needs_access(&e) => {
                     refresh(cx);
@@ -350,6 +390,7 @@ pub fn describe(cx: &App) -> String {
         out.push_str(&format!(" access={} can_request={}", if me.access.state.is_empty() { "-" } else { &me.access.state }, me.access.can_request));
     }
     out.push_str(&format!(" key={}", if account::shared().api_key().is_some() { "kept" } else { "none" }));
+    out.push_str(&format!(" session_lapsed={}", s.session_lapsed));
     out.push_str(&format!(" api={}", account::shared().api_base()));
     if let Some(e) = &s.error {
         out.push_str(&format!(" error={e:?}"));
@@ -449,6 +490,9 @@ pub fn render(_window: &mut Window, cx: &mut App) -> AnyElement {
             buttons = buttons.child(Button::new("account-upgrade").small().primary().label("Upgrade").disabled(busy).on_click(|_, _, cx| {
                 open_from("Opening checkout…", || account::shared().checkout("monthly"), cx)
             }));
+        }
+        if state.session_lapsed {
+            buttons = buttons.child(Button::new("account-sign-in-again").small().outline().label("Sign in again").disabled(busy).on_click(|_, _, cx| start_sign_in(false, cx)));
         }
         if state.me.as_ref().is_some_and(|m| m.can_manage_billing) {
             buttons = buttons.child(Button::new("account-billing").small().outline().label("Manage billing").disabled(busy).on_click(|_, _, cx| {

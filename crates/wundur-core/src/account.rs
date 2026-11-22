@@ -8,7 +8,13 @@
 //!
 //! The access token lives in memory only, with its expiry; it is refreshed shortly before it
 //! expires and when the API answers `401`. Entra hands out a new refresh token on each refresh,
-//! which replaces the kept one. A refresh refused with `invalid_grant` signs the account out.
+//! which replaces the kept one. A refresh refused with `invalid_grant` ends the session (the
+//! refresh token is forgotten), but not this machine's key: the account stays signed in on the
+//! key, which doesn't expire, and only what needs the session (making a key, billing) asks to
+//! sign in again. A key store that can't be read right now is never taken for signed out.
+//!
+//! A test copy (a debug build, or one with its own `WUNDUR_CONFIG_DIR`) keeps its secrets under
+//! names of its own ([`secret_name`]), so it can't sign the person's own app in or out.
 //!
 //! Background work (summaries, images, models) uses this machine's key: [`Account::api_key`]
 //! and [`Account::send`] with [`Auth::Key`]. Tokens and keys are never logged, nor put in
@@ -39,9 +45,26 @@ pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// An access token this close to its expiry is refreshed first.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(120);
 
-/// The key store's names for the account's secrets.
+/// The key store's names for the account's secrets (see [`secret_name`]).
 const REFRESH_TOKEN: &str = "wundur-account-refresh-token";
 const API_KEY: &str = "wundur-account-api-key";
+
+/// Whether this is a test copy: a debug build, or one given its own settings folder.
+fn is_test_copy() -> bool {
+    cfg!(debug_assertions) || crate::env_var_os("CONFIG_DIR").is_some()
+}
+
+/// The name a secret is kept under: a test copy's are its own (`…-test`), so it never reads,
+/// replaces or removes the person's sign-in.
+pub fn secret_name(base: &str) -> String {
+    if is_test_copy() { format!("{base}-test") } else { base.to_string() }
+}
+
+/// Why the account was signed out, for the log (codes and the service's first line; never a
+/// token or key).
+fn log_sign_out(why: &str) {
+    eprintln!("wundur: account: {why}");
+}
 
 /// The account's settings (in Wundur's settings file; nothing secret).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -569,6 +592,10 @@ impl Tokens {
 /// Where the refresh token and the key are kept: the system's key store, or memory (tests).
 pub trait Store: Send + Sync {
     fn get(&self, name: &str) -> Option<String>;
+    /// Like `get`, but `Err` when the store couldn't be read (not the same as not kept).
+    fn lookup(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self.get(name))
+    }
     fn set(&self, name: &str, value: &str) -> Result<(), String>;
     fn remove(&self, name: &str);
 }
@@ -579,6 +606,9 @@ pub struct Keychain;
 impl Store for Keychain {
     fn get(&self, name: &str) -> Option<String> {
         crate::secrets::get(name)
+    }
+    fn lookup(&self, name: &str) -> Result<Option<String>, String> {
+        crate::secrets::lookup(name)
     }
     fn set(&self, name: &str, value: &str) -> Result<(), String> {
         crate::secrets::set(name, value).map_err(|e| e.to_string())
@@ -780,8 +810,9 @@ pub enum Auth {
 pub struct SignedIn {
     /// `None` when `/v1/me` failed (signed in all the same).
     pub me: Option<Me>,
-    /// This machine's key, made and kept: its info (the id goes in [`Config::key_id`]).
-    pub key: Result<KeyInfo, Error>,
+    /// This machine's key, made and kept: its info (the id goes in [`Config::key_id`]);
+    /// `Ok(None)` when the one already kept still works (signing in again after a lapse).
+    pub key: Result<Option<KeyInfo>, Error>,
 }
 
 /// A Wundur account on this machine: its tokens and key, and the API.
@@ -857,35 +888,71 @@ impl Account {
         self.endpoints().api_base
     }
 
-    /// Signed in on this machine (a refresh token is kept). Asks the key store the first time
-    /// (a process: call it off the UI thread), then remembers.
+    /// Signed in on this machine: a session (refresh token) or this machine's key is kept.
+    /// Asks the key store the first time (a process: call it off the UI thread), then
+    /// remembers; a store that can't be read now is asked again next time.
     pub fn is_signed_in(&self) -> bool {
+        self.has_session() || self.api_key().is_some()
+    }
+
+    /// Whether a session (a refresh token) is kept: what making keys and billing need.
+    pub fn has_session(&self) -> bool {
         if let Some(known) = self.signed_in.lock().ok().and_then(|s| *s) {
             return known;
         }
-        let kept = self.store.get(REFRESH_TOKEN).is_some();
-        if let Ok(mut s) = self.signed_in.lock() {
-            *s = Some(kept);
+        match self.store.lookup(&secret_name(REFRESH_TOKEN)) {
+            Ok(kept) => {
+                self.set_signed_in(kept.is_some());
+                kept.is_some()
+            }
+            // Not known: not remembered, so the next call asks again.
+            Err(_) => false,
         }
-        kept
     }
 
     /// Whether signed in, as known without asking the key store (`None`: not asked yet).
     pub fn known_signed_in(&self) -> Option<bool> {
-        self.signed_in.lock().ok().and_then(|s| *s)
+        let session = self.signed_in.lock().ok().and_then(|s| *s);
+        let key = self.key.lock().ok().and_then(|k| k.as_ref().map(Option::is_some));
+        match (session, key) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        }
     }
 
     /// This machine's API key (`kel_…`), for background calls; `None` when signed out or not
-    /// made yet. Asks the key store the first time, then remembers.
+    /// made yet (or the store can't be read right now). Asks the key store the first time,
+    /// then remembers.
     pub fn api_key(&self) -> Option<String> {
         if let Some(known) = self.key.lock().ok().and_then(|k| k.clone()) {
             return known;
         }
-        let key = self.store.get(API_KEY);
+        let key = self.store.lookup(&secret_name(API_KEY)).ok()?;
         if let Ok(mut k) = self.key.lock() {
             *k = Some(key.clone());
         }
         key
+    }
+
+    /// Whether the key store can be read now (so a missing secret really is missing).
+    pub fn store_error(&self) -> Option<String> {
+        self.store.lookup(&secret_name(API_KEY)).err()
+    }
+
+    /// Forget this machine's key here only (the API refused it: revoked elsewhere).
+    pub fn forget_key(&self) {
+        log_sign_out("this machine's key was refused by the API; forgotten here");
+        self.store.remove(&secret_name(API_KEY));
+        if let Ok(mut k) = self.key.lock() {
+            *k = Some(None);
+        }
+    }
+
+    /// `GET /v1/me` the sturdiest way: with this machine's key when there is one (it doesn't
+    /// expire), else with the session.
+    pub fn me_any(&self) -> Result<Me, Error> {
+        if self.api_key().is_some() { self.me_with(Auth::Key) } else { self.me() }
     }
 
     /// Start signing in: the loopback listener, and the address for the browser
@@ -926,11 +993,13 @@ impl Account {
         ]);
         let tokens: Tokens = parse(&read(resp)?)?;
         let refresh = tokens.refresh_token.clone().filter(|t| !t.is_empty()).ok_or_else(|| Error::Network("the sign-in service sent no refresh token".into()))?;
-        self.store.set(REFRESH_TOKEN, &refresh).map_err(Error::Store)?;
+        self.store.set(&secret_name(REFRESH_TOKEN), &refresh).map_err(Error::Store)?;
         self.set_signed_in(true);
         self.keep_name(&tokens);
         self.set_access(Some(tokens.access(Instant::now())));
-        let key = self.create_machine_key();
+        // Signing in again after the session lapsed: the key kept still works, so no second one.
+        let kept = self.api_key().is_some() && self.me_with(Auth::Key).is_ok();
+        let key = if kept { Ok(None) } else { self.create_machine_key().map(Some) };
         let me = self.me().ok();
         Ok(SignedIn { me, key })
     }
@@ -941,7 +1010,7 @@ impl Account {
         if new.key.is_empty() {
             return Err(Error::Network("the server sent no key".into()));
         }
-        self.store.set(API_KEY, &new.key).map_err(Error::Store)?;
+        self.store.set(&secret_name(API_KEY), &new.key).map_err(Error::Store)?;
         if let Ok(mut k) = self.key.lock() {
             *k = Some(Some(new.key.clone()));
         }
@@ -956,11 +1025,12 @@ impl Account {
             let auth = if self.api_key().is_some() { Auth::Key } else { Auth::Session };
             let _ = self.send(auth, "DELETE", &format!("/v1/keys/{}", encode(id)), None);
         }
+        log_sign_out("signed out here");
         self.forget_session();
         if let Ok(mut n) = self.name.lock() {
             *n = None;
         }
-        self.store.remove(API_KEY);
+        self.store.remove(&secret_name(API_KEY));
         if let Ok(mut k) = self.key.lock() {
             *k = Some(None);
         }
@@ -968,7 +1038,7 @@ impl Account {
 
     /// Forget the refresh and access tokens (the key stays until [`Account::sign_out`]).
     fn forget_session(&self) {
-        self.store.remove(REFRESH_TOKEN);
+        self.store.remove(&secret_name(REFRESH_TOKEN));
         self.set_signed_in(false);
         self.set_access(None);
     }
@@ -1001,9 +1071,14 @@ impl Account {
         if !force && let Some(t) = self.access.lock().ok().and_then(|a| a.clone()).filter(|t| t.fresh(Instant::now())) {
             return Ok(t.value);
         }
-        let Some(refresh) = self.store.get(REFRESH_TOKEN) else {
-            self.set_signed_in(false);
-            return Err(Error::SignedOut);
+        let refresh = match self.store.lookup(&secret_name(REFRESH_TOKEN)) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                self.set_signed_in(false);
+                return Err(Error::SignedOut);
+            }
+            // Can't read it now (a locked Keychain): not signed out; try again later.
+            Err(e) => return Err(Error::Store(e)),
         };
         let ep = self.endpoints();
         let resp = agent(Duration::from_secs(30)).post(&ep.token).send_form([
@@ -1015,13 +1090,14 @@ impl Account {
         let tokens: Tokens = match read(resp) {
             Ok(body) => parse(&body)?,
             Err(Error::Api(e)) if e.code == "invalid_grant" => {
+                log_sign_out(&format!("the session ended: the sign-in service refused the refresh token ({}: {})", e.code, e.message));
                 self.forget_session();
                 return Err(Error::SignedOut);
             }
             Err(e) => return Err(e),
         };
         if let Some(new) = tokens.refresh_token.as_deref().filter(|t| !t.is_empty() && *t != refresh) {
-            self.store.set(REFRESH_TOKEN, new).map_err(Error::Store)?;
+            self.store.set(&secret_name(REFRESH_TOKEN), new).map_err(Error::Store)?;
         }
         self.keep_name(&tokens);
         let access = tokens.access(Instant::now());
@@ -1139,7 +1215,9 @@ impl Account {
         }
         let note = note.trim();
         let body = if note.is_empty() { serde_json::json!({}) } else { serde_json::json!({ "note": note }) };
-        Ok(self.json::<Answer>(Auth::Session, "POST", "/v1/access/request", Some(&body))?.access)
+        // The session when there is one; else this machine's key (a lapsed session).
+        let auth = if self.has_session() || self.api_key().is_none() { Auth::Session } else { Auth::Key };
+        Ok(self.json::<Answer>(auth, "POST", "/v1/access/request", Some(&body))?.access)
     }
 
     /// `POST /v1/billing/portal`: the address of Stripe's customer portal.
@@ -1292,8 +1370,8 @@ mod tests {
     #[test]
     fn signed_in_state_and_key_come_from_the_store_and_go_on_signing_out() {
         let store = MemoryStore::default();
-        store.set(REFRESH_TOKEN, "rt").unwrap();
-        store.set(API_KEY, "kel_test").unwrap();
+        store.set(&secret_name(REFRESH_TOKEN), "rt").unwrap();
+        store.set(&secret_name(API_KEY), "kel_test").unwrap();
         let account = Account::new(Endpoints::default(), Box::new(store));
         assert!(account.is_signed_in());
         assert_eq!(account.api_key().as_deref(), Some("kel_test"));
@@ -1301,8 +1379,62 @@ mod tests {
         account.sign_out(None);
         assert!(!account.is_signed_in());
         assert_eq!(account.api_key(), None);
-        assert_eq!(account.store.get(REFRESH_TOKEN), None);
+        assert_eq!(account.store.get(&secret_name(REFRESH_TOKEN)), None);
         assert!(matches!(account.me(), Err(Error::SignedOut)), "no session: no call");
+    }
+
+    /// A key store that can't be read (a locked Keychain), with secrets in it all the same.
+    struct Locked(MemoryStore, Arc<AtomicBool>);
+
+    impl Store for Locked {
+        fn get(&self, name: &str) -> Option<String> {
+            self.lookup(name).ok().flatten()
+        }
+        fn lookup(&self, name: &str) -> Result<Option<String>, String> {
+            if self.1.load(Ordering::SeqCst) { Err("locked".into()) } else { Ok(self.0.get(name)) }
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            self.0.set(name, value)
+        }
+        fn remove(&self, name: &str) {
+            self.0.remove(name)
+        }
+    }
+
+    #[test]
+    fn a_key_store_that_cant_be_read_is_not_signed_out() {
+        let locked = Arc::new(AtomicBool::new(true));
+        let store = Locked(MemoryStore::default(), locked.clone());
+        store.0.set(&secret_name(REFRESH_TOKEN), "rt").unwrap();
+        store.0.set(&secret_name(API_KEY), "kel_test").unwrap();
+        let account = Account::new(Endpoints::default(), Box::new(store));
+        assert!(!account.is_signed_in(), "not known while locked");
+        assert_eq!(account.known_signed_in(), None, "and not remembered as signed out");
+        assert!(matches!(account.me(), Err(Error::Store(_))), "a refresh that can't read the token isn't a sign-out");
+        assert!(account.store_error().is_some());
+        // Unlocked: everything is still there.
+        locked.store(false, Ordering::SeqCst);
+        assert!(account.is_signed_in() && account.has_session());
+        assert_eq!(account.api_key().as_deref(), Some("kel_test"));
+    }
+
+    #[test]
+    fn the_key_alone_keeps_the_account_signed_in() {
+        let store = MemoryStore::default();
+        store.set(&secret_name(API_KEY), "kel_test").unwrap();
+        let account = Account::new(Endpoints::default(), Box::new(store));
+        assert!(account.is_signed_in(), "no session, but this machine's key");
+        assert!(!account.has_session());
+        assert_eq!(account.known_signed_in(), Some(true));
+        account.forget_key();
+        assert!(!account.is_signed_in());
+    }
+
+    #[test]
+    fn a_test_copy_keeps_its_own_secrets() {
+        // Tests are a debug build: a test copy.
+        assert_eq!(secret_name(REFRESH_TOKEN), "wundur-account-refresh-token-test");
+        assert_eq!(secret_name(API_KEY), "wundur-account-api-key-test");
     }
 
     #[test]

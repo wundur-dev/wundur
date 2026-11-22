@@ -46,37 +46,55 @@ pub fn kept(account: &str) -> bool {
     known(account).unwrap_or_else(|| get(account).is_some())
 }
 
-/// The secret named `account`, if there is one.
+/// The secret named `account`, if there is one (`None` too when the store couldn't be read:
+/// [`lookup`] tells the two apart).
 pub fn get(account: &str) -> Option<String> {
-    let value = read(account);
-    note(account, value.is_some());
-    value
+    lookup(account).ok().flatten()
 }
 
-fn read(account: &str) -> Option<String> {
-    if let Some(value) = read_in(SERVICE, account) {
-        return Some(value);
+/// The secret named `account`: `Ok(None)` when the store says there is none, `Err` when it
+/// couldn't be asked (the Keychain locked, `security` failing): not the same as not kept.
+pub fn lookup(account: &str) -> Result<Option<String>, String> {
+    let value = read(account)?;
+    note(account, value.is_some());
+    Ok(value)
+}
+
+fn read(account: &str) -> Result<Option<String>, String> {
+    if let Some(value) = read_in(SERVICE, account)? {
+        return Ok(Some(value));
     }
     // Kept under the app's earlier name: copied over. Removing it removes both, so the old one
     // doesn't come back.
-    let value = read_in(EARLIER, account)?;
+    let Some(value) = read_in(EARLIER, account)? else { return Ok(None) };
     let _ = set(account, &value);
-    Some(value)
+    Ok(Some(value))
 }
 
-fn read_in(service: &str, account: &str) -> Option<String> {
+/// `security`'s exit status for an item that isn't there (errSecItemNotFound).
+const NOT_FOUND: i32 = 44;
+
+fn read_in(service: &str, account: &str) -> Result<Option<String>, String> {
     let out = if cfg!(target_os = "macos") {
-        crate::platform::command("security").args(["find-generic-password", "-s", service, "-a", account, "-w"]).stderr(Stdio::null()).output().ok()?
+        crate::platform::command("security").args(["find-generic-password", "-s", service, "-a", account, "-w"]).stderr(Stdio::piped()).output()
     } else if cfg!(target_os = "linux") {
-        crate::platform::command("secret-tool").args(["lookup", "service", service, "account", account]).stderr(Stdio::null()).output().ok()?
+        crate::platform::command("secret-tool").args(["lookup", "service", service, "account", account]).stderr(Stdio::null()).output()
     } else {
-        return None;
+        return Ok(None);
     };
+    let out = out.map_err(|e| format!("can't ask the key store: {e}"))?;
     if !out.status.success() {
-        return None;
+        // On macOS only "not found" means there is none; anything else (a locked Keychain,
+        // interaction not allowed) is a failure to read. secret-tool says nothing to tell
+        // them apart.
+        if cfg!(target_os = "macos") && out.status.code() != Some(NOT_FOUND) {
+            let why = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("the Keychain couldn't be read ({}): {}", out.status.code().map_or("signal".into(), |c| c.to_string()), why.lines().last().unwrap_or("").trim()));
+        }
+        return Ok(None);
     }
     let value = String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string();
-    (!value.is_empty()).then_some(value)
+    Ok((!value.is_empty()).then_some(value))
 }
 
 /// `text` as one argument of a `security -i` command: in double quotes, with `"` and `\\`
@@ -162,9 +180,9 @@ mod tests {
         let status = std::process::Command::new("security").args(["add-generic-password", "-U", "-s", EARLIER, "-a", &account, "-w", "not-a-real-key"]).status().unwrap();
         assert!(status.success());
         assert_eq!(get(&account).as_deref(), Some("not-a-real-key"), "found under the earlier name");
-        assert_eq!(read_in(SERVICE, &account).as_deref(), Some("not-a-real-key"), "now under the new one");
-        assert_eq!(read_in(EARLIER, &account).as_deref(), Some("not-a-real-key"), "and still under the old one");
+        assert_eq!(read_in(SERVICE, &account).unwrap().as_deref(), Some("not-a-real-key"), "now under the new one");
+        assert_eq!(read_in(EARLIER, &account).unwrap().as_deref(), Some("not-a-real-key"), "and still under the old one");
         remove(&account);
-        assert_eq!((read_in(SERVICE, &account), read_in(EARLIER, &account)), (None, None), "removed from both");
+        assert_eq!((read_in(SERVICE, &account), read_in(EARLIER, &account)), (Ok(None), Ok(None)), "removed from both");
     }
 }
