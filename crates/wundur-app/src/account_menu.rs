@@ -76,8 +76,8 @@ fn build(menu: PopupMenu, cx: &mut App) -> PopupMenu {
             None => menu,
         };
         return menu
-            .item(PopupMenuItem::new("Sign in").disabled(signed_in.is_none()).on_click(|_, _, cx| acct::start_sign_in(false, cx)))
-            .item(PopupMenuItem::new("Create account").disabled(signed_in.is_none()).on_click(|_, _, cx| acct::start_sign_in(true, cx)));
+            .item(PopupMenuItem::new("Sign in…").disabled(signed_in.is_none()).on_click(|_, _, cx| acct::show_sign_in(cx)))
+            .item(PopupMenuItem::new("Create account…").disabled(signed_in.is_none()).on_click(|_, _, cx| acct::show_sign_in(cx)));
     }
     let Some(me) = acct::me(cx).cloned() else {
         let note = acct::error(cx).unwrap_or_else(|| "Getting your account…".into());
@@ -127,7 +127,7 @@ fn signed_in_menu(mut menu: PopupMenu, me: &Me, cx: &mut App) -> PopupMenu {
     }
     // Still signed in on this Mac's key; billing and new keys need a fresh sign-in.
     if acct::session_lapsed(cx) {
-        menu = menu.item(PopupMenuItem::new("Sign in again").on_click(|_, _, cx| acct::start_sign_in(false, cx)));
+        menu = menu.item(PopupMenuItem::new("Sign in again…").on_click(|_, _, cx| acct::show_sign_in(cx)));
     }
     menu.item(PopupMenuItem::new("Account settings…").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
         .item(PopupMenuItem::new("Sign out").on_click(|_, _, cx| acct::signed_out(None, cx)))
