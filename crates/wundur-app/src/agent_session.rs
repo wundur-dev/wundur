@@ -743,8 +743,10 @@ impl AgentSession {
         if !crate::prefs(cx).sandbox_writes || self.writes_anywhere {
             return None;
         }
-        // Its tool servers run inside it: where they write is allowed too.
+        // Its tool servers run inside it: where they write is allowed too; and the folders
+        // its project allows every session.
         let mut extra = self.writable.clone();
+        extra.extend(project_writable(&self.cwd, cx));
         extra.extend(wundur_core::mcp::writes(&self.mcp_servers(cx)));
         Some(wundur_core::sandbox::policy_for(&self.cwd, &self.backend.state_paths(), &extra))
     }
@@ -1082,6 +1084,32 @@ impl AgentSession {
     }
 
     /// Let the agent write in `folder` too (or, `allow` false, no longer); it restarts to apply.
+    /// Allow (or stop allowing) writes in `folder` for every session in this session's project;
+    /// this one restarts with it (the others take it when they next start).
+    pub fn set_project_writable(&mut self, folder: PathBuf, allow: bool, cx: &mut Context<Self>) {
+        let cwd = self.cwd.clone();
+        let mut changed = false;
+        crate::settings_window::change(cx, |s| {
+            let Some(root) = wundur_core::settings::project_of(&s.projects, &cwd).map(|p| p.root.clone()) else { return };
+            let Some(p) = s.projects.iter_mut().find(|p| p.root == root) else { return };
+            let has = p.writable.contains(&folder);
+            if has != allow {
+                if allow {
+                    p.writable.push(folder.clone());
+                } else {
+                    p.writable.retain(|f| *f != folder);
+                }
+                changed = true;
+            }
+        });
+        if !changed {
+            return;
+        }
+        let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
+        let said = if allow { format!("Writes allowed in {name} for the whole project") } else { format!("Writes no longer allowed in {name} for the project") };
+        self.restart_with(said, "with its writes changed".into(), cx);
+    }
+
     pub fn set_writable(&mut self, folder: PathBuf, allow: bool, cx: &mut Context<Self>) {
         let has = self.writable.contains(&folder);
         if has == allow {
@@ -2569,4 +2597,16 @@ fn session_instructions(cx: &App) -> Option<String> {
         Some(parent) => format!("{wundur}\n\n{parent}"),
         None => wundur.to_string(),
     })
+}
+
+/// The folders the project holding `folder` lets its sessions write to (none outside a project).
+pub fn project_writable(folder: &std::path::Path, cx: &App) -> Vec<PathBuf> {
+    let settings = cx.global::<crate::AppSettings>().0.borrow();
+    wundur_core::settings::project_of(&settings.projects, folder).map(|p| p.writable.clone()).unwrap_or_default()
+}
+
+/// The project holding `folder`, by name (for the menu's words).
+pub fn project_name(folder: &std::path::Path, cx: &App) -> Option<String> {
+    let settings = cx.global::<crate::AppSettings>().0.borrow();
+    wundur_core::settings::project_of(&settings.projects, folder).map(|p| p.name.clone())
 }

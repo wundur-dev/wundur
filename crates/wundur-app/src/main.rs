@@ -328,6 +328,8 @@ fn main() {
             });
             cx.set_global(AppSettings(Rc::new(RefCell::new(settings))));
             settings_account::init(cx);
+            // Where builds go (CARGO_TARGET_DIR, from the login shell): agents may write there.
+            wundur_core::sandbox::warm_build_cache();
             cx.set_window_appearance(forced);
             cx.set_global(panels::Names(Rc::new(RefCell::new(
                 wundur_core::tabs::NameStore::open_default(),

@@ -855,7 +855,10 @@ impl ChatPanel {
         let weak_session = self.session.downgrade();
         // Where its agent may write, for the menu: kept to the folder (and the folders allowed
         // too), or anywhere; nothing when it cannot be kept (Settings, this system, SSH).
-        let writes = session.can_confine(cx).then(|| (session.writes_anywhere, session.writable.clone()));
+        let writes = session.can_confine(cx).then(|| {
+            let project = crate::agent_session::project_name(&session.cwd, cx).map(|name| (name, crate::agent_session::project_writable(&session.cwd, cx)));
+            (session.writes_anywhere, session.writable.clone(), project)
+        });
         let sign_in = session.backend.sign_in().map(|_| format!("Sign in to {}…", session.backend.name()));
         // Sessions it may message (or be messaged by) without asking: a click asks again.
         let allowed = crate::messaging::allowed_with(&self.session, cx);
@@ -1009,7 +1012,7 @@ impl ChatPanel {
                                 }
                             }))
                         })
-                        .when_some(writes.clone(), |menu, (anywhere, writable)| write_items(menu, session.clone(), anywhere, writable))
+                        .when_some(writes.clone(), |menu, (anywhere, writable, project)| write_items(menu, session.clone(), anywhere, writable, project))
                         .when(!allowed.is_empty(), |menu| {
                             allowed.iter().fold(menu.separator(), |menu, (me, other, name)| {
                                 let (me, other) = (*me, *other);
@@ -1267,12 +1270,14 @@ fn spinner_at(phase: u32, color: Hsla) -> Icon {
 }
 
 /// The ⋯ menu's write items: writes anywhere or kept to the folder, the folders allowed too
-/// (each a click to stop), and one more to allow (picked).
+/// (each a click to stop), the project's (for every session in it), and one more to allow
+/// (picked), for this session or the whole project.
 fn write_items(
     menu: gpui_kit::component::menu::PopupMenu,
     session: WeakEntity<AgentSession>,
     anywhere: bool,
     writable: Vec<PathBuf>,
+    project: Option<(String, Vec<PathBuf>)>,
 ) -> gpui_kit::component::menu::PopupMenu {
     use gpui_kit::component::menu::PopupMenuItem;
     let toggle = session.clone();
@@ -1287,6 +1292,26 @@ fn write_items(
         let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
         menu = menu.item(PopupMenuItem::new(format!("Writes allowed in {name}")).checked(true).on_click(move |_, _, cx| {
             let _ = s2.update(cx, |s, cx| s.set_writable(f2.clone(), false, cx));
+        }));
+    }
+    let short = |f: &PathBuf| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.display().to_string());
+    if let Some((name, folders)) = &project {
+        for folder in folders {
+            let (s2, f2) = (session.clone(), folder.clone());
+            menu = menu.item(PopupMenuItem::new(format!("Writes allowed in {} (project {name})", short(folder))).checked(true).on_click(move |_, _, cx| {
+                let _ = s2.update(cx, |s, cx| s.set_project_writable(f2.clone(), false, cx));
+            }));
+        }
+        let s3 = session.clone();
+        menu = menu.item(PopupMenuItem::new(format!("Allow writes in a folder for all of {name}…")).on_click(move |_, _, cx| {
+            let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Allow".into()) });
+            let session = s3.clone();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let Ok(Ok(Some(paths))) = picked.await else { return };
+                let Some(folder) = paths.into_iter().next() else { return };
+                let _ = session.update(cx, |s, cx| s.set_project_writable(folder, true, cx));
+            })
+            .detach();
         }));
     }
     menu.item(PopupMenuItem::new("Allow writes in a folder…").on_click(move |_, _, cx| {
