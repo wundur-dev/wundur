@@ -279,6 +279,14 @@ fn open_window(start: shell::Start, cx: &mut App) {
 
 fn main() {
     START.get_or_init(Instant::now);
+    // Started with macOS's allocation logging on (MallocStackLogging=lite ./scripts/restart, to
+    // see what holds memory with malloc_history): it is read at launch, so Wundur keeps it, but
+    // nothing Wundur starts (agents, terminals, git, builds) should inherit it. Each would print
+    // a "MallocStackLogging: ..." line on stderr into agents' tool output, and run slower.
+    for name in ["MallocStackLogging", "MallocStackLoggingNoCompact", "MallocStackLoggingDirectory"] {
+        // SAFETY: the first thing main does; no other thread exists yet to read the environment.
+        unsafe { std::env::remove_var(name) };
+    }
     let (request, note) = match parse_args() {
         Ok(v) => v,
         Err(e) => {
