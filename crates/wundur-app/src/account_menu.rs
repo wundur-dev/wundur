@@ -125,6 +125,10 @@ fn signed_in_menu(mut menu: PopupMenu, me: &Me, cx: &mut App) -> PopupMenu {
     if let Some(e) = acct::error(cx) {
         menu = menu.item(text(e, true));
     }
+    // Still signed in on this Mac's key; billing and new keys need a fresh sign-in.
+    if acct::session_lapsed(cx) {
+        menu = menu.item(PopupMenuItem::new("Sign in again").on_click(|_, _, cx| acct::start_sign_in(false, cx)));
+    }
     menu.item(PopupMenuItem::new("Account settings…").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
         .item(PopupMenuItem::new("Sign out").on_click(|_, _, cx| acct::signed_out(None, cx)))
 }
