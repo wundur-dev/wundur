@@ -3096,7 +3096,7 @@ impl Shell {
             let pi = match projects.iter().skip(saved).position(|p| p.root == outer) {
                 Some(i) => saved + i,
                 None => {
-                    projects.push(wundur_core::settings::Project { name: project_default_name(&outer), root: outer, folded: false });
+                    projects.push(wundur_core::settings::Project { name: project_default_name(&outer), root: outer, ..Default::default() });
                     projects.len() - 1
                 }
             };
@@ -3111,7 +3111,7 @@ impl Shell {
         crate::settings_window::change(cx, move |s| match s.projects.iter_mut().find(|p| p.root == root) {
             Some(p) => p.folded = !p.folded,
             // One made of a folder's sessions: kept from now on, folded.
-            None => s.projects.push(wundur_core::settings::Project { name: project_default_name(&root), root, folded: true }),
+            None => s.projects.push(wundur_core::settings::Project { name: project_default_name(&root), root, folded: true, ..Default::default() }),
         });
     }
 
@@ -4534,6 +4534,6 @@ pub fn add_project(root: PathBuf, cx: &mut App) {
 fn name_project(root: PathBuf, name: String, cx: &mut App) {
     crate::settings_window::change(cx, move |s| match s.projects.iter_mut().find(|p| p.root == root) {
         Some(p) => p.name = name,
-        None => s.projects.push(wundur_core::settings::Project { name, root, folded: false }),
+        None => s.projects.push(wundur_core::settings::Project { name, root, ..Default::default() }),
     });
 }

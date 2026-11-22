@@ -69,6 +69,33 @@ pub fn apply(command: CommandSpec, policy: Option<&WritePolicy>) -> CommandSpec 
     }
 }
 
+/// Where Rust builds go when the person set `CARGO_TARGET_DIR` (a shared build cache, often on
+/// another drive): this process's own, else the login shell's (an app started from the Dock
+/// doesn't get `~/.zshenv`). Asked once; [`warm_build_cache`] asks early, off the UI thread.
+pub fn build_cache() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let usable = |v: &str| Some(PathBuf::from(v.trim())).filter(|p| p.is_absolute());
+        if let Some(dir) = std::env::var("CARGO_TARGET_DIR").ok().as_deref().and_then(usable) {
+            return Some(dir);
+        }
+        if cfg!(windows) {
+            return None;
+        }
+        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+        let out = crate::platform::command(&shell).args(["-lc", "printf %s \"$CARGO_TARGET_DIR\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+        usable(&String::from_utf8_lossy(&out.stdout))
+    })
+    .clone()
+}
+
+/// Look up [`build_cache`] now, on a thread of its own, so the first agent doesn't wait for it.
+pub fn warm_build_cache() {
+    std::thread::spawn(|| {
+        let _ = build_cache();
+    });
+}
+
 /// The usual policy for an agent working in `folder`: the folder, its repository's shared git
 /// folder (a worktree's lives in the main checkout), temporary folders, tool caches and `/dev`,
 /// plus the agent's own state (`state`: folders, or files by prefix) and `extra` folders the
@@ -94,6 +121,9 @@ pub fn policy_for(folder: &Path, state: &[PathBuf], extra: &[PathBuf]) -> WriteP
             folders.push(home.join("Library/Keychains"));
         }
     }
+    // The person's shared build cache, wherever `CARGO_TARGET_DIR` puts it: builds belong
+    // there as much as in the caches above.
+    folders.extend(build_cache());
     folders.extend(extra.iter().cloned());
     let mut file_prefixes = Vec::new();
     for p in state {
@@ -306,6 +336,16 @@ impl Sandbox for Unsupported {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shared_build_cache_is_writable() {
+        let policy = policy_for(Path::new("/tmp/some-project"), &[], &[]);
+        // Set (in this environment or the login shell): allowed like the other caches.
+        if let Some(dir) = build_cache() {
+            assert!(dir.is_absolute());
+            assert!(policy.folders.contains(&dir), "{dir:?}");
+        }
+    }
 
     #[test]
     fn refused_writes_are_found_with_their_path_in_each_form() {

@@ -242,6 +242,9 @@ pub struct Project {
     pub root: PathBuf,
     /// Its sessions hidden in the list.
     pub folded: bool,
+    /// Folders outside it its sessions' agents may write to too (a build cache, a shared
+    /// assets folder), on top of each session's own.
+    pub writable: Vec<PathBuf>,
 }
 
 impl Project {
@@ -447,7 +450,7 @@ pub fn encode_folder(folder: &std::path::Path) -> String {
 mod tests {
     #[test]
     fn a_session_belongs_to_the_deepest_project_holding_its_folder() {
-        let p = |name: &str, root: &str| Project { name: name.into(), root: root.into(), folded: false };
+        let p = |name: &str, root: &str| Project { name: name.into(), root: root.into(), ..Default::default() };
         let projects = [p("Games", "/work/games"), p("Jurassic Rampage", "/work/games/jurassic"), p("Empty", "")];
         let of = |f: &str| project_of(&projects, std::path::Path::new(f)).map(|p| p.name.as_str());
         assert_eq!(of("/work/games/jurassic"), Some("Jurassic Rampage"));
@@ -536,6 +539,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
     use super::*;
+
+    #[test]
+    fn a_project_from_before_writable_folders_reads_with_none() {
+        let p: Project = serde_json::from_str(r#"{"name":"Wundur","root":"/w","folded":false}"#).unwrap();
+        assert!(p.writable.is_empty());
+        let with: Project = serde_json::from_str(r#"{"name":"Wundur","root":"/w","writable":["/Volumes/SSD/caches"]}"#).unwrap();
+        assert_eq!(with.writable, [PathBuf::from("/Volumes/SSD/caches")]);
+    }
 
     #[test]
     fn notifications_are_on_unless_turned_off() {
