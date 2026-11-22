@@ -1,17 +1,27 @@
 //! A Wundur account: signing in to the hosted Wundur Studio API, and calling it.
 //!
-//! Signing in is OAuth 2.0's authorization code flow with PKCE (S256) in the system browser:
-//! [`Account::begin_sign_in`] opens a loopback listener on a free port (127.0.0.1 and ::1) and
-//! gives the address to open; [`Account::finish_sign_in`] waits for the browser to come back with
-//! the code, checks `state`, trades the code for tokens, keeps the refresh token in the system's
-//! key store ([`crate::secrets`]) and makes this machine's API key (`kel_…`), kept there too.
+//! The sign-in service is Supabase Auth (the Wundur project's), two ways:
+//!
+//! - **A provider** (Apple; more in [`Provider`]): PKCE (S256) in the system browser.
+//!   [`Account::begin_sign_in`] opens a loopback listener on a free port (127.0.0.1 and ::1) and
+//!   gives the address to open (`/authorize?provider=…`); Supabase sends the browser to the
+//!   provider and back to `redirect_to` with a `code`. It doesn't pass an OAuth `state` along, so
+//!   ours rides in `redirect_to`'s own query and is checked there. [`Account::finish_sign_in`]
+//!   trades the code for tokens (`/token?grant_type=pkce`).
+//! - **An email code**: [`Account::send_email_code`] (`/otp`, which makes the account the first
+//!   time), then [`Account::sign_in_with_email_code`] (`/verify`).
+//!
+//! Either way the refresh token is kept in the system's key store ([`crate::secrets`]) and this
+//! machine's API key (`kel_…`) is made and kept there too. Every call to the service carries the
+//! project's publishable key (`apikey`), which is public by design.
 //!
 //! The access token lives in memory only, with its expiry; it is refreshed shortly before it
-//! expires and when the API answers `401`. Entra hands out a new refresh token on each refresh,
-//! which replaces the kept one. A refresh refused with `invalid_grant` ends the session (the
-//! refresh token is forgotten), but not this machine's key: the account stays signed in on the
-//! key, which doesn't expire, and only what needs the session (making a key, billing) asks to
-//! sign in again. A key store that can't be read right now is never taken for signed out.
+//! expires and when the API answers `401`. Supabase's refresh tokens are single-use: each
+//! refresh hands out a new one, kept at once. A refresh the service refuses (the token unknown,
+//! already used, the session ended) ends the session (the refresh token is forgotten), but not
+//! this machine's key: the account stays signed in on the key, which doesn't expire, and only
+//! what needs the session (making a key, billing) asks to sign in again. A key store that can't
+//! be read right now is never taken for signed out.
 //!
 //! A test copy (a debug build, or one with its own `WUNDUR_CONFIG_DIR`) keeps its secrets under
 //! names of its own ([`secret_name`]), so it can't sign the person's own app in or out.
@@ -34,11 +44,39 @@ use sha2::Digest as _;
 /// The hosted API. Paths carry their version (`/v1/me`), so the base has none; a base given
 /// with `/v1` on the end has it taken off ([`normalize_api_base`]).
 pub const DEFAULT_API_BASE: &str = "https://api.wundur.ai";
-const AUTHORIZE_URL: &str = "https://wundurapi.ciamlogin.com/ea0a2010-c331-4354-beb2-375e88ffff9f/oauth2/v2.0/authorize";
-const TOKEN_URL: &str = "https://wundurapi.ciamlogin.com/ea0a2010-c331-4354-beb2-375e88ffff9f/oauth2/v2.0/token";
-/// The desktop app's registration: a public client, no secret.
-const CLIENT_ID: &str = "9e5707f1-b23d-4859-bde2-4e739ddd9a03";
-const SCOPE: &str = "api://eef7bdbb-5076-448f-8775-86c7adef384f/access openid offline_access profile";
+/// The sign-in service: Supabase Auth for the Wundur project.
+const AUTH_URL: &str = "https://qllofrmcvfaxccknkads.supabase.co/auth/v1";
+/// The project's publishable key: public by design (every client ships it); it names the
+/// project, it grants nothing.
+const AUTH_KEY: &str = "sb_publishable_CUAOPK0Ld4KA8aXjEwWxYg_S0EyChKm";
+/// Where the browser comes back to on the loopback listener.
+const CALLBACK_PATH: &str = "/callback";
+
+/// A sign-in provider the service has turned on. Adding one: a variant here, and turning it on
+/// in the Supabase project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    Apple,
+}
+
+impl Provider {
+    /// Every provider offered, in the order the buttons show.
+    pub const ALL: &[Provider] = &[Provider::Apple];
+
+    /// Supabase's name for it (`/authorize?provider=…`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Provider::Apple => "apple",
+        }
+    }
+
+    /// Its name on a button ("Continue with Apple").
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::Apple => "Apple",
+        }
+    }
+}
 
 /// How long the browser has to come back before signing in gives up.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -107,21 +145,15 @@ pub fn normalize_api_base(base: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Endpoints {
     pub api_base: String,
-    pub authorize: String,
-    pub token: String,
-    pub client_id: String,
-    pub scope: String,
+    /// The sign-in service (`…/auth/v1`).
+    pub auth: String,
+    /// The project's publishable key, sent as `apikey`.
+    pub auth_key: String,
 }
 
 impl Default for Endpoints {
     fn default() -> Self {
-        Self {
-            api_base: DEFAULT_API_BASE.into(),
-            authorize: AUTHORIZE_URL.into(),
-            token: TOKEN_URL.into(),
-            client_id: CLIENT_ID.into(),
-            scope: SCOPE.into(),
-        }
+        Self { api_base: DEFAULT_API_BASE.into(), auth: AUTH_URL.into(), auth_key: AUTH_KEY.into() }
     }
 }
 
@@ -164,9 +196,23 @@ impl ApiError {
             return Self { status, code: w.error.code, message: w.error.message, retry_after: None };
         }
         if let Ok(o) = serde_json::from_str::<OAuth>(body) {
-            // Entra's descriptions run to trace ids and timestamps: the first line says it.
+            // Descriptions can run to trace ids and timestamps: the first line says it.
             let message = o.error_description.lines().next().unwrap_or("").to_string();
             return Self { status, code: o.error, message, retry_after: None };
+        }
+        // Supabase Auth's: `{"code": 400, "error_code": "otp_expired", "msg": …}`.
+        #[derive(Deserialize)]
+        struct Supabase {
+            #[serde(default)]
+            error_code: Option<String>,
+            #[serde(default)]
+            msg: Option<String>,
+        }
+        if let Ok(e) = serde_json::from_str::<Supabase>(body)
+            && (e.error_code.is_some() || e.msg.is_some())
+        {
+            let code = e.error_code.filter(|c| !c.is_empty()).unwrap_or_else(|| format!("http_{status}"));
+            return Self { status, code, message: e.msg.unwrap_or_default(), retry_after: None };
         }
         Self { status, code: format!("http_{status}"), message: String::new(), retry_after: None }
     }
@@ -465,20 +511,46 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The address to open in the browser to sign in.
-pub fn authorize_url(endpoints: &Endpoints, redirect_uri: &str, challenge: &str, state: &str) -> String {
-    let params = [
-        ("client_id", endpoints.client_id.as_str()),
-        ("response_type", "code"),
-        ("redirect_uri", redirect_uri),
-        ("response_mode", "query"),
-        ("scope", endpoints.scope.as_str()),
-        ("code_challenge", challenge),
-        ("code_challenge_method", "S256"),
-        ("state", state),
-    ];
+/// Where the browser comes back to: the loopback listener's callback, with our `state` in its
+/// query (Supabase keeps `redirect_to`'s query and adds `code`).
+pub fn redirect_to(port: u16, state: &str) -> String {
+    format!("http://localhost:{port}{CALLBACK_PATH}?state={}", encode(state))
+}
+
+/// The address to open in the browser to sign in with `provider`.
+pub fn authorize_url(endpoints: &Endpoints, provider: Provider, redirect_to: &str, challenge: &str) -> String {
+    let params = [("provider", provider.id()), ("redirect_to", redirect_to), ("code_challenge", challenge), ("code_challenge_method", "s256")];
     let query: Vec<String> = params.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
-    format!("{}?{}", endpoints.authorize, query.join("&"))
+    format!("{}/authorize?{}", endpoints.auth, query.join("&"))
+}
+
+/// The body that asks for an email code (`/otp`): the account is made the first time.
+pub fn email_code_body(email: &str) -> serde_json::Value {
+    serde_json::json!({ "email": email.trim(), "create_user": true })
+}
+
+/// The body that trades an email code for a session (`/verify`). Spaces in the code (typed
+/// in groups, pasted with them) are dropped.
+pub fn verify_body(email: &str, code: &str) -> serde_json::Value {
+    let code: String = code.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    serde_json::json!({ "type": "email", "email": email.trim(), "token": code })
+}
+
+/// Whether the service refusing a refresh means the session is over (not a hiccup): the token
+/// unknown, malformed (`validation_failed`: the only thing a refresh sends is the token) or
+/// already used, the session ended or the user gone.
+pub fn ends_session(e: &ApiError) -> bool {
+    matches!(
+        e.code.as_str(),
+        "invalid_grant"
+            | "refresh_token_not_found"
+            | "refresh_token_already_used"
+            | "validation_failed"
+            | "session_not_found"
+            | "session_expired"
+            | "user_not_found"
+            | "user_banned"
+    )
 }
 
 /// What came back to the loopback listener.
@@ -494,12 +566,12 @@ pub enum Callback {
     Other,
 }
 
-/// Read a request line (`GET /?code=…&state=… HTTP/1.1`) that came to the listener.
+/// Read a request line (`GET /callback?state=…&code=… HTTP/1.1`) that came to the listener.
 pub fn parse_callback(request_line: &str, state: &str) -> Callback {
     let mut parts = request_line.split_whitespace();
     let (Some("GET"), Some(target)) = (parts.next(), parts.next()) else { return Callback::Other };
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if path != "/" {
+    if path != CALLBACK_PATH {
         return Callback::Other;
     }
     let params: HashMap<String, String> = query
@@ -553,37 +625,38 @@ impl std::fmt::Debug for AccessToken {
     }
 }
 
-/// The token endpoint's answer.
+/// A session from the sign-in service (`/token`, `/verify`).
 #[derive(Deserialize)]
 struct Tokens {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
-    /// Seconds; Entra sends a number (some servers a string).
+    /// Seconds (some servers send a string).
     #[serde(default, deserialize_with = "number")]
     expires_in: i64,
-    /// OpenID Connect's id token: only its `name` is read, to show who is signed in.
+    /// Who signed in: only the name is read, to show it.
     #[serde(default)]
-    id_token: Option<String>,
+    user: Option<User>,
 }
 
-/// The `name` claim of an id token (or given and family names), unverified: it is only shown.
-fn id_token_name(token: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let get = |k: &str| claims.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty() && *v != "unknown").map(String::from);
-    get("name").or_else(|| {
-        let full = [get("given_name"), get("family_name")].into_iter().flatten().collect::<Vec<_>>().join(" ");
-        (!full.is_empty()).then_some(full)
-    })
+#[derive(Deserialize, Default)]
+struct User {
+    #[serde(default)]
+    user_metadata: serde_json::Value,
 }
 
 impl Tokens {
     fn access(&self, now: Instant) -> AccessToken {
-        // No expiry given: assume Entra's usual hour, less to be safe.
+        // No expiry given: assume the usual hour, less to be safe.
         let secs = if self.expires_in > 0 { self.expires_in as u64 } else { 3000 };
         AccessToken::new(self.access_token.clone(), Duration::from_secs(secs), now)
+    }
+
+    /// The person's name, as the provider gave it (Apple only does the first time).
+    fn name(&self) -> Option<String> {
+        let meta = &self.user.as_ref()?.user_metadata;
+        let get = |k: &str| meta.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        get("full_name").or_else(|| get("name"))
     }
 }
 
@@ -664,7 +737,7 @@ pub struct SignIn {
 }
 
 impl SignIn {
-    /// The redirect address (`http://localhost:<port>/`).
+    /// The redirect address (`http://localhost:<port>/callback?state=…`).
     pub fn redirect_uri(&self) -> &str {
         &self.redirect_uri
     }
@@ -825,7 +898,7 @@ pub struct Account {
     /// Whether a refresh token is kept, and the key, as last read (`None`: not read yet).
     signed_in: Mutex<Option<bool>>,
     key: Mutex<Option<Option<String>>>,
-    /// The name in the last id token, to show who is signed in.
+    /// The name the sign-in service last gave, to show who is signed in.
     name: Mutex<Option<String>>,
 }
 
@@ -876,11 +949,22 @@ impl Account {
     }
 
     fn keep_name(&self, tokens: &Tokens) {
-        if let Some(name) = tokens.id_token.as_deref().and_then(id_token_name)
+        if let Some(name) = tokens.name()
             && let Ok(mut n) = self.name.lock()
         {
             *n = Some(name);
         }
+    }
+
+    /// POST `body` to the sign-in service at `path` (`/otp`, `/token?grant_type=pkce`), with the
+    /// project's key, and `bearer` (an access token) when given.
+    fn auth_post(&self, path: &str, body: &serde_json::Value, bearer: Option<&str>) -> Result<String, Error> {
+        let ep = self.endpoints();
+        let mut req = agent(Duration::from_secs(30)).post(&format!("{}{path}", ep.auth)).header("apikey", &ep.auth_key);
+        if let Some(token) = bearer {
+            req = req.header("Authorization", &format!("Bearer {token}"));
+        }
+        read(req.send_json(body))
     }
 
     /// The API's address in use.
@@ -955,25 +1039,16 @@ impl Account {
         if self.api_key().is_some() { self.me_with(Auth::Key) } else { self.me() }
     }
 
-    /// Start signing in: the loopback listener, and the address for the browser
+    /// Start signing in with `provider`: the loopback listener, and the address for the browser
     /// ([`SignIn::url`]; the caller opens it). Then [`Account::finish_sign_in`].
-    pub fn begin_sign_in(&self) -> io::Result<SignIn> {
-        self.begin_sign_in_with(false)
-    }
-
-    /// [`Self::begin_sign_in`]; `create`: open on the sign-up page (`prompt=create`; the same
-    /// flow, which offers signing in too).
-    pub fn begin_sign_in_with(&self, create: bool) -> io::Result<SignIn> {
+    pub fn begin_sign_in(&self, provider: Provider) -> io::Result<SignIn> {
         let listeners = loopback_listeners()?;
         let port = listeners[0].local_addr()?.port();
-        let redirect_uri = format!("http://localhost:{port}/");
         // 32 random bytes: a 43-character verifier, as RFC 7636 suggests.
         let verifier = random_text(32);
         let state = random_text(16);
-        let mut url = authorize_url(&self.endpoints(), &redirect_uri, &pkce_challenge(&verifier), &state);
-        if create {
-            url.push_str("&prompt=create");
-        }
+        let redirect_uri = redirect_to(port, &state);
+        let url = authorize_url(&self.endpoints(), provider, &redirect_uri, &pkce_challenge(&verifier));
         Ok(SignIn { url, redirect_uri, verifier, state, listeners, cancel: Cancel::default() })
     }
 
@@ -982,16 +1057,25 @@ impl Account {
     pub fn finish_sign_in(&self, sign_in: SignIn, timeout: Duration) -> Result<SignedIn, Error> {
         let code = sign_in.wait_for_code(timeout)?;
         drop(sign_in.listeners);
-        let ep = self.endpoints();
-        let resp = agent(Duration::from_secs(30)).post(&ep.token).send_form([
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("redirect_uri", sign_in.redirect_uri.as_str()),
-            ("client_id", ep.client_id.as_str()),
-            ("code_verifier", sign_in.verifier.as_str()),
-            ("scope", ep.scope.as_str()),
-        ]);
-        let tokens: Tokens = parse(&read(resp)?)?;
+        let body = serde_json::json!({ "auth_code": code, "code_verifier": sign_in.verifier });
+        let tokens: Tokens = parse(&self.auth_post("/token?grant_type=pkce", &body, None)?)?;
+        self.start_session(tokens)
+    }
+
+    /// Email a sign-in code to `email` (making the account the first time). Blocks.
+    pub fn send_email_code(&self, email: &str) -> Result<(), Error> {
+        self.auth_post("/otp", &email_code_body(email), None).map(|_| ())
+    }
+
+    /// Sign in with the `code` emailed to `email`; then as [`Self::finish_sign_in`]. Blocks.
+    pub fn sign_in_with_email_code(&self, email: &str, code: &str) -> Result<SignedIn, Error> {
+        let tokens: Tokens = parse(&self.auth_post("/verify", &verify_body(email, code), None)?)?;
+        self.start_session(tokens)
+    }
+
+    /// A new session: keep its refresh token, and make this machine's key unless the one kept
+    /// still works.
+    fn start_session(&self, tokens: Tokens) -> Result<SignedIn, Error> {
         let refresh = tokens.refresh_token.clone().filter(|t| !t.is_empty()).ok_or_else(|| Error::Network("the sign-in service sent no refresh token".into()))?;
         self.store.set(&secret_name(REFRESH_TOKEN), &refresh).map_err(Error::Store)?;
         self.set_signed_in(true);
@@ -1024,6 +1108,11 @@ impl Account {
             // With the key itself when there is one: it works even once the session is gone.
             let auth = if self.api_key().is_some() { Auth::Key } else { Auth::Session };
             let _ = self.send(auth, "DELETE", &format!("/v1/keys/{}", encode(id)), None);
+        }
+        // End the session at the service too (best effort; only with an access token held, so
+        // signing out never spends the refresh token).
+        if let Some(t) = self.access.lock().ok().and_then(|a| a.clone()).filter(|t| t.fresh(Instant::now())) {
+            let _ = self.auth_post("/logout?scope=local", &serde_json::json!({}), Some(&t.value));
         }
         log_sign_out("signed out here");
         self.forget_session();
@@ -1063,8 +1152,9 @@ impl Account {
         self.refresh(force)
     }
 
-    /// Trade the refresh token for a new access token (and refresh token, kept). `invalid_grant`
-    /// signs out: [`Error::SignedOut`].
+    /// Trade the refresh token for a new access token (and refresh token, kept at once: each is
+    /// single-use). A refusal that ends the session ([`ends_session`]) signs out:
+    /// [`Error::SignedOut`].
     fn refresh(&self, force: bool) -> Result<String, Error> {
         let _one = self.refreshing.lock().map_err(|_| Error::SignedOut)?;
         // Another call may have refreshed while this one waited.
@@ -1080,16 +1170,10 @@ impl Account {
             // Can't read it now (a locked Keychain): not signed out; try again later.
             Err(e) => return Err(Error::Store(e)),
         };
-        let ep = self.endpoints();
-        let resp = agent(Duration::from_secs(30)).post(&ep.token).send_form([
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh.as_str()),
-            ("client_id", ep.client_id.as_str()),
-            ("scope", ep.scope.as_str()),
-        ]);
-        let tokens: Tokens = match read(resp) {
+        let body = serde_json::json!({ "refresh_token": refresh });
+        let tokens: Tokens = match self.auth_post("/token?grant_type=refresh_token", &body, None) {
             Ok(body) => parse(&body)?,
-            Err(Error::Api(e)) if e.code == "invalid_grant" => {
+            Err(Error::Api(e)) if ends_session(&e) => {
                 log_sign_out(&format!("the session ended: the sign-in service refused the refresh token ({}: {})", e.code, e.message));
                 self.forget_session();
                 return Err(Error::SignedOut);
@@ -1262,39 +1346,41 @@ mod tests {
     }
 
     #[test]
-    fn the_authorize_url_has_what_entra_needs() {
-        let url = authorize_url(&Endpoints::default(), "http://localhost:53122/", "CHALLENGE", "STATE");
+    fn the_authorize_url_has_what_supabase_needs() {
+        let back = redirect_to(53122, "STATE");
+        assert_eq!(back, "http://localhost:53122/callback?state=STATE");
+        let url = authorize_url(&Endpoints::default(), Provider::Apple, &back, "CHALLENGE");
         let (base, query) = url.split_once('?').unwrap();
-        assert_eq!(base, AUTHORIZE_URL);
+        assert_eq!(base, format!("{AUTH_URL}/authorize"));
         let params: HashMap<String, String> = query.split('&').map(|p| p.split_once('=').unwrap()).map(|(k, v)| (k.to_string(), decode(v))).collect();
-        assert_eq!(params["client_id"], CLIENT_ID);
-        assert_eq!(params["response_type"], "code");
-        assert_eq!(params["redirect_uri"], "http://localhost:53122/");
-        assert_eq!(params["scope"], SCOPE);
+        assert_eq!(params["provider"], "apple");
+        assert_eq!(params["redirect_to"], "http://localhost:53122/callback?state=STATE");
         assert_eq!(params["code_challenge"], "CHALLENGE");
-        assert_eq!(params["code_challenge_method"], "S256");
-        assert_eq!(params["state"], "STATE");
-        assert!(query.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53122%2F"));
-        assert!(query.contains("scope=api%3A%2F%2Feef7bdbb-5076-448f-8775-86c7adef384f%2Faccess%20openid%20offline_access%20profile"));
+        assert_eq!(params["code_challenge_method"], "s256");
+        // The state's `?` and `=` are encoded, so they stay inside redirect_to.
+        assert!(query.contains("redirect_to=http%3A%2F%2Flocalhost%3A53122%2Fcallback%3Fstate%3DSTATE&"));
+        assert_eq!(Provider::ALL.iter().map(|p| p.id()).collect::<Vec<_>>(), ["apple"]);
     }
 
     #[test]
     fn the_redirect_gives_the_code_when_the_state_matches() {
-        assert_eq!(parse_callback("GET /?code=abc%2Fdef&state=s1 HTTP/1.1", "s1"), Callback::Code("abc/def".into()));
-        assert_eq!(parse_callback("GET /?state=s1&code=xyz&session_state=q HTTP/1.1", "s1"), Callback::Code("xyz".into()));
+        assert_eq!(parse_callback("GET /callback?state=s1&code=abc%2Fdef HTTP/1.1", "s1"), Callback::Code("abc/def".into()));
+        // Supabase re-encodes the query (sorted): the order doesn't matter.
+        assert_eq!(parse_callback("GET /callback?code=xyz&state=s1 HTTP/1.1", "s1"), Callback::Code("xyz".into()));
     }
 
     #[test]
     fn a_redirect_with_another_state_is_refused() {
-        assert_eq!(parse_callback("GET /?code=abc&state=other HTTP/1.1", "s1"), Callback::StateMismatch);
-        assert_eq!(parse_callback("GET /?code=abc HTTP/1.1", "s1"), Callback::StateMismatch);
-        assert_eq!(parse_callback("GET /?error=access_denied&state=other HTTP/1.1", "s1"), Callback::StateMismatch);
+        assert_eq!(parse_callback("GET /callback?code=abc&state=other HTTP/1.1", "s1"), Callback::StateMismatch);
+        assert_eq!(parse_callback("GET /callback?code=abc HTTP/1.1", "s1"), Callback::StateMismatch);
+        assert_eq!(parse_callback("GET /callback?error=access_denied&state=other HTTP/1.1", "s1"), Callback::StateMismatch);
     }
 
     #[test]
     fn a_denied_sign_in_says_so() {
+        // Supabase's error redirect: error, error_code and error_description in the query.
         assert_eq!(
-            parse_callback("GET /?error=access_denied&error_description=The+user+cancelled&state=s1 HTTP/1.1", "s1"),
+            parse_callback("GET /callback?error=access_denied&error_code=provider_email_needs_verification&error_description=The+user+cancelled&state=s1 HTTP/1.1", "s1"),
             Callback::Denied { error: "access_denied".into(), description: "The user cancelled".into() }
         );
     }
@@ -1302,9 +1388,43 @@ mod tests {
     #[test]
     fn other_requests_are_ignored() {
         assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "s1"), Callback::Other);
-        assert_eq!(parse_callback("GET / HTTP/1.1", "s1"), Callback::Other);
-        assert_eq!(parse_callback("POST /?code=a&state=s1 HTTP/1.1", "s1"), Callback::Other);
+        assert_eq!(parse_callback("GET /callback HTTP/1.1", "s1"), Callback::Other);
+        assert_eq!(parse_callback("GET /?code=a&state=s1 HTTP/1.1", "s1"), Callback::Other, "only the callback path");
+        assert_eq!(parse_callback("POST /callback?code=a&state=s1 HTTP/1.1", "s1"), Callback::Other);
         assert_eq!(parse_callback("", "s1"), Callback::Other);
+    }
+
+    #[test]
+    fn email_code_bodies() {
+        assert_eq!(email_code_body(" ada@example.com "), serde_json::json!({ "email": "ada@example.com", "create_user": true }));
+        assert_eq!(verify_body("ada@example.com", " 123 456 "), serde_json::json!({ "type": "email", "email": "ada@example.com", "token": "123456" }));
+        assert_eq!(verify_body("a@b.c", "123-456")["token"], "123456");
+    }
+
+    #[test]
+    fn a_session_is_read_with_its_name() {
+        let t: Tokens = serde_json::from_str(
+            r#"{"access_token":"a","token_type":"bearer","expires_in":3600,"expires_at":1,"refresh_token":"r",
+                "user":{"id":"u1","email":"ada@example.com","user_metadata":{"full_name":"Ada Lovelace","email_verified":true}}}"#,
+        )
+        .unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref(), t.expires_in), ("a", Some("r"), 3600));
+        assert_eq!(t.name().as_deref(), Some("Ada Lovelace"));
+        let t: Tokens = serde_json::from_str(r#"{"access_token":"a","user":{"user_metadata":{"name":" Ada "}}}"#).unwrap();
+        assert_eq!(t.name().as_deref(), Some("Ada"));
+        let t: Tokens = serde_json::from_str(r#"{"access_token":"a","user":{"email":"a@b.c","user_metadata":{}}}"#).unwrap();
+        assert_eq!(t.name(), None, "an email sign-in has no name");
+    }
+
+    #[test]
+    fn refusals_that_end_the_session() {
+        // As the live service answers them (a malformed token is `validation_failed`).
+        for code in ["refresh_token_not_found", "refresh_token_already_used", "validation_failed", "session_expired", "session_not_found", "invalid_grant"] {
+            assert!(ends_session(&ApiError { status: 400, code: code.into(), message: String::new(), retry_after: None }), "{code}");
+        }
+        for code in ["over_request_rate_limit", "http_500", "unexpected_failure"] {
+            assert!(!ends_session(&ApiError { status: 400, code: code.into(), message: String::new(), retry_after: None }), "{code}");
+        }
     }
 
     #[test]
@@ -1352,6 +1472,10 @@ mod tests {
         assert_eq!(Error::Api(e).code(), Some("image_allowance_used"));
         let e = ApiError::parse(400, r#"{"error":"invalid_grant","error_description":"AADSTS70008: expired.\r\nTrace ID: 1"}"#);
         assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_grant", "AADSTS70008: expired."));
+        let e = ApiError::parse(400, r#"{"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}"#);
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("refresh_token_already_used", "Invalid Refresh Token: Already Used"));
+        let e = ApiError::parse(429, r#"{"code":429,"msg":"Too many requests"}"#);
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("http_429", "Too many requests"));
         let e = ApiError::parse(502, "<html>Bad gateway</html>");
         assert_eq!((e.code.as_str(), e.message.as_str()), ("http_502", ""));
     }
@@ -1478,30 +1602,14 @@ mod tests {
         assert!(older.offers_upgrade(), "an API before the beta: Upgrade as before");
     }
 
-    #[test]
-    fn the_name_comes_from_the_id_token() {
-        let claims = |json: &str| format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json));
-        assert_eq!(id_token_name(&claims(r#"{"name":"Ada Lovelace"}"#)).as_deref(), Some("Ada Lovelace"));
-        assert_eq!(id_token_name(&claims(r#"{"given_name":"Ada","family_name":"L"}"#)).as_deref(), Some("Ada L"));
-        assert_eq!(id_token_name(&claims(r#"{"name":"unknown"}"#)), None);
-        assert_eq!(id_token_name("not a token"), None);
-    }
-
-    #[test]
-    fn create_account_opens_on_sign_up() {
-        let account = Account::new(Endpoints::default(), Box::new(MemoryStore::default()));
-        assert!(account.begin_sign_in_with(true).unwrap().url.ends_with("&prompt=create"));
-        assert!(!account.begin_sign_in().unwrap().url.contains("prompt="));
-    }
-
     /// The loopback listener over real sockets: a stray request and a wrong state are refused,
     /// the right one gives the code.
     #[test]
     fn the_listener_waits_for_the_right_redirect() {
         let account = Account::new(Endpoints::default(), Box::new(MemoryStore::default()));
-        let sign_in = account.begin_sign_in().unwrap();
+        let sign_in = account.begin_sign_in(Provider::Apple).unwrap();
         let (port, state) = (sign_in.port(), sign_in.state.clone());
-        assert!(sign_in.url.contains(&format!("redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F")));
+        assert!(sign_in.url.contains(&format!("redirect_to=http%3A%2F%2Flocalhost%3A{port}%2Fcallback%3Fstate%3D")));
         let get = move |target: String| {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
             write!(s, "GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
@@ -1511,8 +1619,8 @@ mod tests {
         };
         let client = std::thread::spawn(move || {
             let stray = get("/favicon.ico".into());
-            let wrong = get("/?code=evil&state=nope".into());
-            let right = get(format!("/?code=the-code&state={state}"));
+            let wrong = get("/callback?code=evil&state=nope".into());
+            let right = get(format!("/callback?code=the-code&state={state}"));
             (stray, wrong, right)
         });
         let code = sign_in.wait_for_code(Duration::from_secs(10)).unwrap();
@@ -1526,7 +1634,7 @@ mod tests {
     #[test]
     fn the_listener_can_be_cancelled_and_times_out() {
         let account = Account::new(Endpoints::default(), Box::new(MemoryStore::default()));
-        let sign_in = account.begin_sign_in().unwrap();
+        let sign_in = account.begin_sign_in(Provider::Apple).unwrap();
         assert_eq!(sign_in.wait_for_code(Duration::from_millis(100)), Err(Error::TimedOut));
         sign_in.canceller().cancel();
         assert_eq!(sign_in.wait_for_code(Duration::from_secs(10)), Err(Error::Cancelled));

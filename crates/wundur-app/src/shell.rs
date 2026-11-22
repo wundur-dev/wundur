@@ -999,7 +999,7 @@ impl Shell {
     /// Open Request access (signed out: sign in first).
     pub fn open_access_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::settings_account::signed_in(cx) != Some(true) {
-            crate::settings_account::start_sign_in(false, cx);
+            crate::settings_account::show_sign_in(cx);
             return;
         }
         self.access_request = Some(crate::account_menu::RequestDialog::new(window, cx, |s: &mut Self, ev, _, cx| match ev {
