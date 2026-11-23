@@ -735,7 +735,7 @@ impl ChatPanel {
                 .child(div().text_sm().text_color(fg).child("Game assets are made on your Wundur account."))
                 .child(div().text_xs().text_color(muted).child("Sign in (it's free: 5 images and 2 model credits a month) to describe an asset, review its views and build a 3D model."))
                 .into_any_element();
-            let sign_in = Button::new("new-asset-signin").small().primary().label("Sign in").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)).into_any_element();
+            let sign_in = Button::new("new-asset-signin").small().primary().label("Sign in").on_click(|_, _, cx| crate::settings_account::show_sign_in(cx)).into_any_element();
             return self.hosted_frame(frame(left, None, None, "", Some(sign_in), cancel), cx);
         }
         let (catalog, _) = hosted_store::catalog(cx);

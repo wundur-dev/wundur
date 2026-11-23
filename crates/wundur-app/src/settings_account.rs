@@ -1,7 +1,7 @@
-//! Settings > Account: signing in to a Wundur account ([`wundur_core::account`]): a provider
-//! (Apple) in the browser, or a code sent by email, typed here; the plan and
-//! what's left this month, the invite-only beta's access (asking for it), billing, signing out;
-//! the API's address.
+//! Settings > Account: the Wundur account ([`wundur_core::account`]): the plan and what's left
+//! this month, the invite-only beta's access (asking for it), billing, signing out; the API's
+//! address. Signing in (a provider in the browser, or a code sent by email) is the sign-in
+//! dialog's ([`crate::sign_in_dialog`]); its state lives here.
 //!
 //! The state is a global ([`AccountUi`]), so the page, the toolbar's account menu, the window
 //! (which refreshes it when it becomes active again, so an approval shows without a restart)
@@ -11,7 +11,6 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -23,17 +22,36 @@ use crate::settings_window::change;
 #[derive(Default)]
 pub struct AccountUi {
     /// Signed in on this machine (`None`: not looked up yet).
-    signed_in: Option<bool>,
+    pub(crate) signed_in: Option<bool>,
     /// A sign-in waiting for the browser.
-    waiting: Option<Cancel>,
+    pub(crate) waiting: Option<Cancel>,
     /// Signing in by email: the address a code went to (the code's field shows).
-    code_sent_to: Option<String>,
+    pub(crate) code_sent_to: Option<String>,
     /// Each code sent gets a fresh field.
-    code_round: usize,
+    pub(crate) code_round: usize,
     /// Sending a code, or checking one ("Sending a code…").
-    email_busy: Option<&'static str>,
-    /// Signed in on the key, but signing in again (the session lapsed): the form shows.
-    reauth: bool,
+    pub(crate) email_busy: Option<&'static str>,
+    /// Signed in on the key, but signing in again (the session lapsed).
+    pub(crate) reauth: bool,
+    /// The sign-in dialog is open.
+    pub(crate) dialog: bool,
+    /// Each opening of the dialog gets fresh fields.
+    pub(crate) dialog_round: usize,
+    /// The provider's page, while waiting for the browser (Open the page again).
+    pub(crate) provider_url: Option<String>,
+    /// What went wrong signing in with a provider (shown under its button).
+    pub(crate) provider_error: Option<String>,
+    /// When the last code was sent (Send again waits a little).
+    pub(crate) code_sent_at: Option<Instant>,
+    /// The dialog's email step (Continue with email), before a code is sent.
+    pub(crate) email_step: bool,
+    /// The address last typed, for the field when coming back to it.
+    pub(crate) last_email: String,
+    /// The code's length (`0`: [`crate::sign_in_dialog::CODE_LENGTH`]); a pasted code of
+    /// another length sets it.
+    pub(crate) code_len: usize,
+    /// Signed in from the dialog: who, shown a moment before it closes.
+    pub(crate) welcome: Option<String>,
     /// The account, as last fetched.
     me: Option<Me>,
     /// Fetching it.
@@ -41,7 +59,7 @@ pub struct AccountUi {
     /// An action under way ("Opening checkout…").
     busy: Option<&'static str>,
     /// What went wrong last.
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     last_fetch: Option<Instant>,
     /// A request for access on its way.
     requesting: bool,
@@ -305,21 +323,29 @@ pub fn sign_in_with(provider: Provider, open: bool, cx: &mut App) -> Result<u16,
         cx.open_url(&sign_in.url);
     }
     let cancel = sign_in.canceller();
+    let url = sign_in.url.clone();
     update(cx, |s| {
         s.waiting = Some(cancel);
+        s.provider_url = Some(url);
+        s.provider_error = None;
         s.error = None;
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
         let done = cx.background_spawn(async move { account::shared().finish_sign_in(sign_in, account::SIGN_IN_TIMEOUT) }).await;
         cx.update(|cx| match done {
             Ok(signed) => finished(signed, cx),
-            Err(Error::Cancelled) => update(cx, |s| s.waiting = None),
+            Err(Error::Cancelled) => update(cx, |s| {
+                s.waiting = None;
+                s.provider_url = None;
+            }),
             Err(e) => update(cx, |s| {
                 s.waiting = None;
-                s.error = Some(match e {
+                s.provider_url = None;
+                s.provider_error = Some(match e {
                     Error::TimedOut => "The browser didn't come back within 5 minutes. Try again.".into(),
                     Error::Denied { error, .. } if error == "access_denied" => "Signing in was cancelled.".into(),
                     Error::Api(a) if a.code.starts_with("flow_state_") => "That sign-in took too long or was already used. Try again.".into(),
+                    Error::Network(_) => "Can't reach the sign-in service. Check your connection and try again.".into(),
                     e => format!("Not signed in: {e}"),
                 });
             }),
@@ -327,6 +353,13 @@ pub fn sign_in_with(provider: Provider, open: bool, cx: &mut App) -> Result<u16,
     })
     .detach();
     Ok(port)
+}
+
+/// Open the provider's page again (the browser tab was closed).
+pub fn reopen_provider_page(cx: &mut App) {
+    if let Some(url) = cx.global::<AccountUi>().provider_url.clone() {
+        cx.open_url(&url);
+    }
 }
 
 /// Signed in (a provider or an email code): keep the key's id, show the account.
@@ -342,8 +375,21 @@ fn finished(signed: SignedIn, cx: &mut App) {
         Err(e) => Some(format!("Signed in, but couldn't make this machine's key: {e}")),
     };
     let fetched = signed.me.is_some();
+    let who = signed
+        .me
+        .as_ref()
+        .and_then(|m| (!m.name.is_empty()).then(|| m.name.clone()).or_else(|| (!m.email.is_empty()).then(|| m.email.clone())))
+        .or_else(|| account::shared().display_name())
+        .or_else(|| cx.global::<AccountUi>().code_sent_to.clone());
+    let in_dialog = cx.global::<AccountUi>().dialog;
     update(cx, |s| {
         s.waiting = None;
+        s.provider_url = None;
+        s.provider_error = None;
+        s.code_sent_at = None;
+        if s.dialog {
+            s.welcome = Some(who.unwrap_or_default());
+        }
         s.code_sent_to = None;
         s.email_busy = None;
         s.reauth = false;
@@ -356,6 +402,18 @@ fn finished(signed: SignedIn, cx: &mut App) {
     crate::hosted_store::catalog_changed(cx);
     if !fetched {
         refresh(cx);
+    }
+    // A moment to see it worked, then the dialog goes.
+    if in_dialog {
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            cx.background_executor().timer(Duration::from_millis(1400)).await;
+            cx.update(|cx| {
+                if cx.global::<AccountUi>().welcome.is_some() {
+                    close_sign_in(cx);
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -382,14 +440,31 @@ pub fn send_code(email: String, cx: &mut App) {
     if cx.global::<AccountUi>().email_busy.is_some() {
         return;
     }
-    if !email.contains('@') || email.starts_with('@') || email.ends_with('@') {
-        update(cx, |s| s.error = Some("Type your email address.".into()));
+    if !crate::sign_in_dialog::looks_like_email(&email) {
+        update(cx, |s| s.error = Some("That doesn't look like an email address.".into()));
         return;
     }
     update(cx, |s| {
         s.email_busy = Some("Sending a code…");
+        s.last_email = email.clone();
         s.error = None;
     });
+    // Send again counts down from here: the dialog redraws each second until it's on.
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let more = cx.update(|cx| {
+                let s = cx.global::<AccountUi>();
+                let more = (s.dialog && s.code_sent_to.is_some() && s.code_sent_at.is_some_and(|t| crate::sign_in_dialog::resend_wait(t.elapsed()).is_some())) || s.email_busy.is_some();
+                cx.refresh_windows();
+                more
+            });
+            if !more {
+                break;
+            }
+        }
+    })
+    .detach();
     cx.spawn(async move |cx: &mut AsyncApp| {
         let to = email.clone();
         let sent = cx.background_spawn(async move { account::shared().send_email_code(&to) }).await;
@@ -400,6 +475,7 @@ pub fn send_code(email: String, cx: &mut App) {
                     Ok(()) => {
                         s.code_sent_to = Some(email);
                         s.code_round += 1;
+                        s.code_sent_at = Some(Instant::now());
                     }
                     Err(e) => s.error = Some(email_problem(&e, true)),
                 }
@@ -430,6 +506,8 @@ pub fn verify_code(code: String, cx: &mut App) {
             Err(e) => update(cx, |s| {
                 s.email_busy = None;
                 s.error = Some(email_problem(&e, false));
+                // Empty boxes to type it again.
+                s.code_round += 1;
             }),
         });
     })
@@ -439,21 +517,92 @@ pub fn verify_code(code: String, cx: &mut App) {
 /// Back to the email field (a different address, or the code never came).
 pub fn change_email(cx: &mut App) {
     update(cx, |s| {
+        s.email_step = true;
         s.code_sent_to = None;
+        s.code_sent_at = None;
         s.error = None;
     });
 }
 
-/// Show the sign-in screen (Settings > Account): from the menu, a locked feature, Sign in again.
-pub fn show_sign_in(cx: &mut App) {
-    if signed_in(cx) == Some(true) {
-        update(cx, |s| {
-            s.reauth = true;
-            s.error = None;
-        });
-    }
-    crate::shell::open_settings_page("account", cx);
+/// The dialog's email step (`true`), or back to every way to sign in.
+pub fn email_step(on: bool, cx: &mut App) {
+    update(cx, |s| {
+        s.email_step = on;
+        s.code_sent_to = None;
+        s.code_sent_at = None;
+        s.error = None;
+        s.provider_error = None;
+    });
 }
+
+/// Open the sign-in dialog over the window: from the menu, Settings, a locked feature, Sign in
+/// again.
+pub fn show_sign_in(cx: &mut App) {
+    if cx.try_global::<AccountUi>().is_none_or(|s| s.dialog) {
+        return;
+    }
+    let again = signed_in(cx) == Some(true);
+    update(cx, |s| {
+        s.dialog = true;
+        s.dialog_round += 1;
+        s.reauth = again;
+        s.email_step = false;
+        s.welcome = None;
+        s.error = None;
+        s.provider_error = None;
+    });
+    crate::shell::activate_window(cx);
+}
+
+/// Close the sign-in dialog; a sign-in waiting for the browser stops.
+pub fn close_sign_in(cx: &mut App) {
+    cancel(cx);
+    update(cx, |s| {
+        s.dialog = false;
+        s.reauth = false;
+        s.welcome = None;
+        s.code_sent_to = None;
+        s.code_sent_at = None;
+        s.provider_error = None;
+        if s.signed_in != Some(true) {
+            s.error = None;
+        }
+    });
+}
+
+/// For the control channel: show a step of the dialog without the network, to look at it:
+/// `start`, `email`, `email-error`, `apple-error`, `code`, `code-error`, `welcome`.
+pub fn dialog_look(step: &str, cx: &mut App) {
+    show_sign_in(cx);
+    update(cx, |s| {
+        s.dialog = true;
+        s.signed_in.get_or_insert(false);
+        s.error = None;
+        s.provider_error = None;
+        s.code_sent_to = None;
+        s.welcome = None;
+        s.email_step = false;
+        match step {
+            "email" => s.email_step = true,
+            "email-error" => {
+                s.email_step = true;
+                s.error = Some("That doesn't look like an email address.".into());
+            }
+            "apple-error" => s.provider_error = Some("Signing in was cancelled.".into()),
+            "code" | "code-error" => {
+                s.code_sent_to = Some("name@example.com".into());
+                s.code_sent_at = Some(Instant::now());
+                s.code_round += 1;
+                if step == "code-error" {
+                    s.error = Some("That code is wrong or has expired. Check it, or send a new one.".into());
+                }
+            }
+            "welcome" => s.welcome = Some("name@example.com".into()),
+            _ => {}
+        }
+    });
+}
+
 
 /// Stop waiting for the browser.
 pub fn cancel(cx: &mut App) {
@@ -517,174 +666,28 @@ fn day(iso: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(iso).map(|t| t.format("%-d %B %Y").to_string()).unwrap_or_else(|_| iso.chars().take(10).collect())
 }
 
-/// The email and code fields, kept between frames.
-struct Fields {
-    email: Entity<InputState>,
-    _enter: Subscription,
-}
-
-struct CodeField {
-    code: Entity<InputState>,
-    _enter: Subscription,
-}
-
-/// What the sign-in screen shows, read from [`AccountUi`] before drawing it.
-struct FormState {
-    code_sent_to: Option<String>,
-    code_round: usize,
-    email_busy: Option<&'static str>,
-    signed_in: Option<bool>,
-}
-
-/// The sign-in screen: the providers' buttons, then an email and the code sent to it.
-fn sign_in_form(state: FormState, window: &mut Window, cx: &mut App) -> Div {
-    let theme = cx.theme();
-    let (fg, muted, border) = (theme.foreground, theme.muted_foreground, theme.border);
-    let note = |t: String| div().text_sm().text_color(muted).child(t);
-    let busy = state.email_busy.is_some() || state.signed_in.is_none();
-    let mut form = div().w_full().flex().flex_col().gap_2();
-
-    let mut providers = div().flex().flex_col().gap_2().pt_1();
-    for (i, provider) in Provider::ALL.iter().copied().enumerate() {
-        providers = providers.child(
-            div().w(px(280.)).child(
-                Button::new(("account-provider", i))
-                    .small()
-                    .primary()
-                    .w_full()
-                    .label(format!("Continue with {}", provider.label()))
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        if let Err(e) = sign_in_with(provider, true, cx) {
-                            update(cx, |s| s.error = Some(e));
-                        }
-                    }),
-            ),
-        );
-    }
-    form = form.child(providers);
-    form = form.child(
-        div()
-            .w(px(280.))
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(div().flex_1().h(px(1.)).bg(border))
-            .child(div().text_xs().text_color(muted).child("or"))
-            .child(div().flex_1().h(px(1.)).bg(border)),
-    );
-
-    match state.code_sent_to {
-        None => {
-            let fields = window.use_keyed_state("account-email-field", cx, |window, cx| {
-                let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
-                let _enter = cx.subscribe(&email, |_, input, ev: &InputEvent, cx| {
-                    if let InputEvent::PressEnter { .. } = ev {
-                        let value = input.read(cx).value().to_string();
-                        send_code(value, cx);
-                    }
-                });
-                Fields { email, _enter }
-            });
-            let email = fields.read(cx).email.clone();
-            let input = email.clone();
-            form = form.child(div().text_sm().text_color(fg).child("Email")).child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(px(280.)).child(Input::new(&email).disabled(busy)))
-                    .child(Button::new("account-send-code").small().outline().label("Send code").disabled(busy).on_click(move |_, _, cx| {
-                        let value = input.read(cx).value().to_string();
-                        send_code(value, cx);
-                    })),
-            );
-            form = form.child(note("We'll email you a code to sign in. New here? The same code makes your account.".into()));
-        }
-        Some(to) => {
-            let key = SharedString::from(format!("account-code-field-{}", state.code_round));
-            let field = window.use_keyed_state(key, cx, |window, cx| {
-                let code = cx.new(|cx| InputState::new(window, cx).placeholder("Code from the email"));
-                code.update(cx, |s, cx| s.focus(window, cx));
-                let _enter = cx.subscribe(&code, |_, input, ev: &InputEvent, cx| {
-                    if let InputEvent::PressEnter { .. } = ev {
-                        let value = input.read(cx).value().to_string();
-                        verify_code(value, cx);
-                    }
-                });
-                CodeField { code, _enter }
-            });
-            let code = field.read(cx).code.clone();
-            let input = code.clone();
-            let again = to.clone();
-            form = form
-                .child(note(format!("We sent a code to {to}. Type it here.")))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().w(px(280.)).child(Input::new(&code).disabled(busy)))
-                        .child(Button::new("account-verify").small().primary().label("Sign in").disabled(busy).on_click(move |_, _, cx| {
-                            let value = input.read(cx).value().to_string();
-                            verify_code(value, cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(Button::new("account-resend").small().ghost().label("Send a new code").disabled(busy).on_click(move |_, _, cx| send_code(again.clone(), cx)))
-                        .child(Button::new("account-change-email").small().ghost().label("Use a different email").disabled(busy).on_click(|_, _, cx| change_email(cx))),
-                )
-                .child(note("No email? Check your spam folder, or send a new code in a minute.".into()));
-        }
-    }
-    if let Some(b) = state.email_busy {
-        form = form.child(note(b.into()));
-    }
-    form
-}
-
 /// The page.
-pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
-    // The sign-in screen first: drawing it needs the app mutably (its fields).
-    let form = cx.try_global::<AccountUi>().filter(|s| s.waiting.is_none() && (s.signed_in != Some(true) || s.reauth)).map(|s| FormState {
-        code_sent_to: s.code_sent_to.clone(),
-        code_round: s.code_round,
-        email_busy: s.email_busy,
-        signed_in: s.signed_in,
-    });
-    let form = form.map(|f| sign_in_form(f, window, cx));
+pub fn render(_window: &mut Window, cx: &mut App) -> AnyElement {
     let theme = cx.theme();
     let (fg, muted, danger) = (theme.foreground, theme.muted_foreground, theme.danger);
     let Some(state) = cx.try_global::<AccountUi>() else { return div().into_any_element() };
     let note = |t: String| div().text_sm().text_color(muted).child(t);
     let mut body = div().w_full().flex().flex_col().gap_2();
 
-    if let Some(_waiting) = &state.waiting {
+    if state.signed_in != Some(true) {
         body = body
-            .child(div().font_weight(FontWeight::MEDIUM).text_color(fg).child("Waiting for the browser…"))
-            .child(note("Sign in on the page that opened in your browser, then come back here.".into()))
-            .child(div().flex().child(Button::new("account-cancel").small().outline().label("Cancel").on_click(|_, _, cx| cancel(cx))));
-    } else if state.signed_in != Some(true) || state.reauth {
-        let reauth = state.signed_in == Some(true);
-        body = body
-            .child(note(if reauth {
-                "Sign in again to manage billing and make keys. Everything else keeps working meanwhile.".into()
-            } else {
-                "A Wundur account gives you images, 3D models and turn summaries without your own keys. The free plan has a small monthly allowance to try them.".into()
-            }))
-            .children(form);
-        body = if reauth {
-            body.child(div().flex().child(Button::new("account-reauth-cancel").small().ghost().label("Cancel").on_click(|_, _, cx| update(cx, |s| {
-                s.reauth = false;
-                s.code_sent_to = None;
-                s.error = None;
-            }))))
-        } else {
-            body.child(note("You must be 13 or older to create an account.".into()))
-        };
+            .child(note("A Wundur account gives you images, 3D models and turn summaries without your own keys. The free plan has a small monthly allowance to try them.".into()))
+            .child(
+                div().flex().pt_1().child(
+                    Button::new("account-sign-in")
+                        .small()
+                        .primary()
+                        .label(if state.waiting.is_some() { "Signing in…" } else { "Sign in or create an account…" })
+                        .disabled(state.signed_in.is_none() || state.dialog)
+                        .on_click(|_, _, cx| show_sign_in(cx)),
+                ),
+            )
+            .child(note("You must be 13 or older to create an account.".into()));
     } else {
         match &state.me {
             None => {

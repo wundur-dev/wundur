@@ -64,6 +64,7 @@ mod native_spinner;
 mod sheet_tabs;
 mod skill_installer;
 mod settings_account;
+mod sign_in_dialog;
 mod settings_fonts;
 mod settings_mcp;
 mod settings_packs;

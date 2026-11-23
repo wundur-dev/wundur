@@ -170,7 +170,7 @@ impl ChatPanel {
                 .gap_2()
                 .child(div().flex_1().text_xs().text_color(muted).child("Images and sound effects come from your Wundur account. Sign in to make them here."))
                 .child(Button::new(key("cancel")).small().ghost().label("Cancel").on_click(cx.listener(move |p, _, _, cx| p.close_make(id, cx))))
-                .child(Button::new(key("signin")).small().primary().label("Sign in").on_click(|_, _, cx| crate::shell::open_settings_page("account", cx)))
+                .child(Button::new(key("signin")).small().primary().label("Sign in").on_click(|_, _, cx| crate::settings_account::show_sign_in(cx)))
                 .into_any_element()
         } else {
             match &card.state {

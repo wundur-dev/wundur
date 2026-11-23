@@ -97,6 +97,8 @@ icon_assets!(
         // The model viewer: pause, reset view.
         Pause,
         RotateCcw,
+        // The sign-in dialog's Continue with email.
+        Mail,
     ]
 );
 
