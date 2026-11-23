@@ -53,6 +53,7 @@ pub mod output_colors;
 pub mod packs;
 pub mod paste;
 pub mod platform;
+pub mod play_link;
 pub mod questions;
 pub mod sandbox;
 pub mod secrets;

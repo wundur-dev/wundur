@@ -99,6 +99,9 @@ icon_assets!(
         RotateCcw,
         // The sign-in dialog's Continue with email.
         Mail,
+        // The title bar's Share and the Play link sheet's Open.
+        Share2,
+        ExternalLink,
     ]
 );
 
