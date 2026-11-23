@@ -669,7 +669,7 @@ fn day(iso: &str) -> String {
 /// The page.
 pub fn render(_window: &mut Window, cx: &mut App) -> AnyElement {
     let theme = cx.theme();
-    let (fg, muted, danger) = (theme.foreground, theme.muted_foreground, theme.danger);
+    let (fg, muted, danger, mono) = (theme.foreground, theme.muted_foreground, theme.danger, theme.mono_font_family.clone());
     let Some(state) = cx.try_global::<AccountUi>() else { return div().into_any_element() };
     let note = |t: String| div().text_sm().text_color(muted).child(t);
     let mut body = div().w_full().flex().flex_col().gap_2();
@@ -716,6 +716,25 @@ pub fn render(_window: &mut Window, cx: &mut App) -> AnyElement {
                 body = body
                     .when_some(name, |d, n| d.child(row("Name", n)))
                     .child(row("Signed in as", if me.email.is_empty() { "your account".into() } else { me.email.clone() }))
+                    .when(!me.account_id.is_empty(), |d| {
+                        let id = me.account_id.clone();
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().w(px(150.)).flex_none().text_sm().text_color(muted).child("Account ID"))
+                                .child(div().min_w_0().truncate().font_family(mono.clone()).text_sm().text_color(fg).child(id.clone()))
+                                .child(
+                                    Button::new("account-id-copy")
+                                        .icon(gpui_kit::assets::IconName::Copy)
+                                        .xsmall()
+                                        .ghost()
+                                        .tooltip("Copy the account ID")
+                                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))),
+                                ),
+                        )
+                    })
                     .child(row("Plan", plan))
                     .when(!me.access.message.is_empty(), |d| d.child(row("Access", me.access.message.clone())))
                     .child(div().pt_2().font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Left this month"))
