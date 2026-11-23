@@ -173,11 +173,31 @@ pub fn forget_record(root: &Path) {
 /// Look for the project's web build. Blocking (reads files, looks for Godot): run it off the UI
 /// thread.
 pub fn detect(root: &Path) -> Detection {
+    let found = candidates(root);
+    let d = detect_by_engine(root, &found);
+    if d.setting.as_ref().is_some_and(|s| !s.output.is_empty()) {
+        return d;
+    }
+    // Nothing the engine names: the newest folder that looks like a build, shown in the
+    // sheet's list as the choice.
+    match found.first() {
+        Some(c) => {
+            let threads = d.setting.as_ref().is_some_and(|s| s.threads);
+            Detection {
+                note: format!("Picked the newest web build: {}/ ({}). Choose another in the list if it isn't the one.", c.output, c.kind.label()),
+                setting: Some(PlayLink { build: String::new(), output: c.output.clone(), threads }),
+            }
+        }
+        None => d,
+    }
+}
+
+fn detect_by_engine(root: &Path, found: &[Candidate]) -> Detection {
     if root.join("project.godot").is_file() {
         return detect_godot(root);
     }
     if root.join("ProjectSettings/ProjectVersion.txt").is_file() {
-        return detect_unity(root);
+        return detect_unity(root, found);
     }
     if let Some(d) = detect_package(root) {
         return d;
@@ -281,40 +301,16 @@ fn godot_program() -> Option<PathBuf> {
     })
 }
 
-fn detect_unity(root: &Path) -> Detection {
+fn detect_unity(root: &Path, found: &[Candidate]) -> Detection {
     let threads = std::fs::read_to_string(root.join("ProjectSettings/ProjectSettings.asset"))
         .unwrap_or_default()
         .lines()
         .any(|l| matches!(l.trim().split_once(':'), Some(("webGLThreadsSupport", v)) if v.trim() == "1"));
-    let skip = ["Assets", "Library", "Logs", "Packages", "ProjectSettings", "Temp", "UserSettings", "obj", "node_modules"];
-    let mut found: Option<String> = None;
-    let mut look = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = look.pop() {
-        if depth > 0 && is_unity_build(&dir) {
-            let rel = dir.strip_prefix(root).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
-            if found.as_ref().is_none_or(|f| rel < *f) {
-                found = Some(rel);
-            }
-            continue;
-        }
-        if depth >= 2 {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || (depth == 0 && skip.contains(&name.as_str())) {
-                continue;
-            }
-            if e.file_type().is_ok_and(|t| t.is_dir()) {
-                look.push((e.path(), depth + 1));
-            }
-        }
-    }
-    match found {
-        Some(output) => Detection {
-            note: format!("Found a Unity WebGL build in {output}/. Build it again in Unity before you update the link.{}", if threads { " Multithreading is on." } else { "" }),
-            setting: Some(PlayLink { build: String::new(), output, threads }),
+    // The newest Unity build anywhere in the project (an agent may build into a hidden copy).
+    match found.iter().find(|c| c.kind == BuildKind::Unity) {
+        Some(c) => Detection {
+            note: format!("Found a Unity WebGL build in {}/. Build it again in Unity before you update the link.{}", c.output, if threads { " Multithreading is on." } else { "" }),
+            setting: Some(PlayLink { build: String::new(), output: c.output.clone(), threads }),
         },
         None => Detection {
             setting: Some(PlayLink { threads, ..Default::default() }),
@@ -323,10 +319,120 @@ fn detect_unity(root: &Path) -> Detection {
     }
 }
 
-/// A Unity WebGL build: `index.html` beside a `Build/` folder with the loader.
-fn is_unity_build(dir: &Path) -> bool {
-    dir.join("index.html").is_file()
-        && std::fs::read_dir(dir.join("Build")).is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".loader.js")))
+// ----- folders that look like builds -----
+
+/// What kind of web build a folder looks like.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildKind {
+    /// `index.html` beside `Build/*.loader.js`.
+    Unity,
+    /// `index.html` with a `.wasm` and a `.pck`.
+    Godot,
+    /// A bundler's output (`dist/`, `build/`, `out/`…) whose `index.html` loads a script that's
+    /// there.
+    JavaScript,
+}
+
+impl BuildKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            BuildKind::Unity => "Unity WebGL",
+            BuildKind::Godot => "Godot web",
+            BuildKind::JavaScript => "JavaScript",
+        }
+    }
+}
+
+/// A folder in the project that looks like a web game build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// Relative to the project's folder, with forward slashes.
+    pub output: String,
+    pub kind: BuildKind,
+    /// When its `index.html` was written: when it was built.
+    pub built: std::time::SystemTime,
+}
+
+/// Folders never looked in: version control, Wundur's own, other tasks' worktrees, packages,
+/// and Unity's caches.
+const NOT_SEARCHED: [&str; 10] = [".git", ".wundur", ".worktrees", "node_modules", "Library", "Temp", "Logs", "obj", "UserSettings", "ProjectSettings"];
+
+/// Names a bundler's output folder goes by.
+const OUTPUT_NAMES: [&str; 7] = ["dist", "build", "out", "release", "www", "web-build", "public_html"];
+
+/// The folders in `root` that look like web game builds, newest first. Looks in hidden folders
+/// too (`.build/`), up to six levels down. Blocking.
+pub fn candidates(root: &Path) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    let mut look = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = look.pop() {
+        seen += 1;
+        if seen > 20_000 {
+            break;
+        }
+        if let Some(kind) = build_kind(&dir) {
+            let built = std::fs::metadata(dir.join("index.html")).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            let rel = dir.strip_prefix(root).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
+            out.push(Candidate { output: if rel.is_empty() { ".".into() } else { rel }, kind, built });
+            // A build's own folders aren't builds of their own.
+            continue;
+        }
+        if depth >= 6 {
+            continue;
+        }
+        // A Unity project's Assets are its source (its WebGL templates aren't builds).
+        let unity = dir.join("ProjectSettings/ProjectVersion.txt").is_file();
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if NOT_SEARCHED.contains(&name.as_str()) || (unity && (name == "Assets" || name == "Packages")) {
+                continue;
+            }
+            // Not through links: they can loop.
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                look.push((e.path(), depth + 1));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.built.cmp(&a.built).then_with(|| a.output.cmp(&b.output)));
+    out
+}
+
+/// What kind of build `dir` looks like, if any.
+fn build_kind(dir: &Path) -> Option<BuildKind> {
+    let html = std::fs::read_to_string(dir.join("index.html")).ok()?;
+    let names: Vec<String> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    if std::fs::read_dir(dir.join("Build")).is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".loader.js"))) {
+        return Some(BuildKind::Unity);
+    }
+    if names.iter().any(|n| n.ends_with(".wasm")) && names.iter().any(|n| n.ends_with(".pck")) {
+        return Some(BuildKind::Godot);
+    }
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    // Source folders have the project's package.json; output folders don't.
+    if OUTPUT_NAMES.contains(&name.as_str()) && !names.iter().any(|n| n == "package.json") && loads_local_script(dir, &html) {
+        return Some(BuildKind::JavaScript);
+    }
+    None
+}
+
+/// Whether `html` loads a script file that is in `dir` (`./assets/index-abc.js`, `/assets/…`).
+fn loads_local_script(dir: &Path, html: &str) -> bool {
+    let mut rest = html;
+    while let Some(at) = rest.find("src=") {
+        rest = &rest[at + 4..];
+        let Some(q) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else { continue };
+        let value: String = rest[1..].chars().take_while(|c| *c != q).collect();
+        let path = value.split(['?', '#']).next().unwrap_or("");
+        if path.ends_with(".js") && !path.contains("://") && !path.starts_with("//") {
+            let rel = path.trim_start_matches("./").trim_start_matches('/');
+            if !rel.contains("..") && dir.join(rel).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn detect_package(root: &Path) -> Option<Detection> {
@@ -407,10 +513,12 @@ pub struct Build {
     pub warnings: Vec<String>,
 }
 
-/// Names that never go up: hidden files and folders (`.git`, `.wundur`, `.DS_Store`) and
-/// `node_modules`.
+/// Names that never go up: hidden files and folders (`.git`, `.wundur`, `.DS_Store`),
+/// `node_modules`, and Unity's debug folders marked not to ship.
 fn skipped(name: &str) -> bool {
-    name.starts_with('.') || name == "node_modules"
+    // Unity leaves debug folders it says not to ship in the build folder: Burst's
+    // `<Game>_BurstDebugInformation_DoNotShip` and IL2CPP's `…_BackUpThisFolder_ButDontShipItWithYourGame`.
+    name.starts_with('.') || name == "node_modules" || name.ends_with("_DoNotShip") || name.ends_with("ButDontShipItWithYourGame")
 }
 
 /// List the build in `folder`. Blocking.
@@ -782,6 +890,67 @@ mod tests {
         assert!(s.build.is_empty());
     }
 
+    /// Mark `rel`'s index.html as built `hours_ago`.
+    fn built(root: &Path, rel: &str, hours_ago: u64) {
+        let f = std::fs::File::options().write(true).open(root.join(rel).join("index.html")).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600)).unwrap();
+    }
+
+    #[test]
+    fn candidates_are_builds_only_newest_first_hidden_folders_included() {
+        let root = scratch("candidates");
+        write(&root, "ProjectSettings/ProjectVersion.txt", "");
+        // An old Unity build, and a newer one an agent made in a hidden copy of the project.
+        write(&root, "Builds/WebGL/index.html", "<html></html>");
+        write(&root, "Builds/WebGL/Build/a.loader.js", "");
+        write(&root, ".build/copy/ProjectSettings/ProjectVersion.txt", "");
+        write(&root, ".build/copy/Builds/WebGLRelease/index.html", "<html></html>");
+        write(&root, ".build/copy/Builds/WebGLRelease/Build/b.loader.js", "");
+        // Not builds: Unity templates (source), a tool page, Unity's cache, a source index.html.
+        write(&root, "Assets/WebGLTemplates/Mine/index.html", "{{{ PRODUCT_NAME }}}");
+        write(&root, ".build/copy/Assets/WebGLTemplates/Mine/index.html", "x");
+        write(&root, "tools/viewer/index.html", "<script src=\"./viewer.js\"></script>");
+        write(&root, "tools/viewer/viewer.js", "");
+        write(&root, "Library/x/dist/index.html", "<script src=\"a.js\"></script>");
+        write(&root, "Library/x/dist/a.js", "");
+        write(&root, "web/package.json", "{}");
+        write(&root, "web/index.html", "<script type=\"module\" src=\"/src/main.js\"></script>");
+        write(&root, "web/src/main.js", "");
+        // Builds: a Vite build and a Godot export.
+        write(&root, "web/dist/index.html", "<script type=\"module\" crossorigin src=\"./assets/index-abc.js?v=1\"></script>");
+        write(&root, "web/dist/assets/index-abc.js", "");
+        write(&root, "exports/godot/index.html", "<html></html>");
+        write(&root, "exports/godot/index.wasm", "");
+        write(&root, "exports/godot/index.pck", "");
+        built(&root, "Builds/WebGL", 300);
+        built(&root, ".build/copy/Builds/WebGLRelease", 2);
+        built(&root, "web/dist", 30);
+        built(&root, "exports/godot", 50);
+        let found: Vec<(String, BuildKind)> = candidates(&root).into_iter().map(|c| (c.output, c.kind)).collect();
+        assert_eq!(
+            found,
+            [
+                (".build/copy/Builds/WebGLRelease".to_string(), BuildKind::Unity),
+                ("web/dist".to_string(), BuildKind::JavaScript),
+                ("exports/godot".to_string(), BuildKind::Godot),
+                ("Builds/WebGL".to_string(), BuildKind::Unity),
+            ]
+        );
+        // Unity's detection takes the newest Unity build.
+        assert_eq!(detect(&root).setting.unwrap().output, ".build/copy/Builds/WebGLRelease");
+    }
+
+    #[test]
+    fn with_nothing_named_the_newest_build_is_picked() {
+        let root = scratch("fallback");
+        write(&root, "package.json", r#"{"scripts":{"build":"webpack"}}"#);
+        write(&root, "out/index.html", "<script src=\"bundle.js\"></script>");
+        write(&root, "out/bundle.js", "");
+        let d = detect(&root);
+        assert_eq!(d.setting.unwrap().output, "out");
+        assert!(d.note.starts_with("Picked the newest web build: out/"), "{}", d.note);
+    }
+
     #[test]
     fn unity_before_a_build_has_no_output() {
         let root = scratch("unity-none");
@@ -878,6 +1047,8 @@ mod tests {
         write(&root, ".git/HEAD", "x");
         write(&root, ".DS_Store", "x");
         write(&root, "node_modules/x/index.js", "x");
+        write(&root, "Game_BurstDebugInformation_DoNotShip/Data/x.txt", "x");
+        write(&root, "Game_BackUpThisFolder_ButDontShipItWithYourGame/x.cpp", "x");
         let b = scan(&root).unwrap();
         let paths: Vec<&str> = b.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["Build/a.wasm.br", "game.js", "index.html"]);

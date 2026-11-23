@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use wundur_core::play_link::{self as pl, Build, PlayLink, ShareRecord, ShareView, Step};
+use wundur_core::play_link::{self as pl, Build, Candidate, PlayLink, ShareRecord, ShareView, Step};
 
 /// The sheet asks to be closed.
 pub struct CloseSheet;
@@ -35,6 +36,8 @@ pub struct PlayLinkSheet {
     setting: PlayLink,
     /// What detection found, while the setting isn't saved yet.
     note: Option<String>,
+    /// The folders in the project that look like web builds, newest first: the folder list.
+    candidates: Vec<Candidate>,
     detecting: bool,
     build_input: Entity<InputState>,
     title_input: Entity<InputState>,
@@ -73,6 +76,7 @@ impl PlayLinkSheet {
             record_root: None,
             setting: PlayLink::default(),
             note: None,
+            candidates: Vec::new(),
             detecting: true,
             build_input,
             title_input,
@@ -102,12 +106,14 @@ impl PlayLinkSheet {
             let detected = if saved.is_none() { Some(pl::detect(&root)) } else { None };
             let record_root = pl::record_root(&root);
             let record = pl::record(&record_root);
-            (saved, detected, record_root, record)
+            let found = pl::candidates(&root);
+            (saved, detected, record_root, record, found)
         });
         cx.spawn_in(window, async move |this, cx| {
-            let (saved, detected, record_root, record) = task.await;
+            let (saved, detected, record_root, record, found) = task.await;
             let _ = this.update_in(cx, |s, window, cx| {
                 s.detecting = false;
+                s.candidates = found;
                 match (saved, detected) {
                     (Some(saved), _) => s.setting = saved,
                     (None, Some(d)) => {
@@ -174,6 +180,35 @@ impl PlayLinkSheet {
         match pl::save_setting(&self.root, &self.setting) {
             Ok(()) => self.note = None,
             Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Use the build in `output` (from the folder list).
+    fn pick(&mut self, output: String, cx: &mut Context<Self>) {
+        self.setting.output = output;
+        self.error = None;
+        self.save_setting(cx);
+        cx.notify();
+    }
+
+    /// When the chosen folder's build was made.
+    fn chosen_built(&self) -> Option<std::time::SystemTime> {
+        if let Some(c) = self.candidates.iter().find(|c| c.output == self.setting.output) {
+            return Some(c.built);
+        }
+        let folder = self.setting.output_in(&self.root)?;
+        std::fs::metadata(folder.join("index.html")).and_then(|m| m.modified()).ok()
+    }
+
+    /// A build newer than the chosen one, elsewhere in the project.
+    fn newer(&self) -> Option<&Candidate> {
+        let newest = self.candidates.first()?;
+        if newest.output == self.setting.output {
+            return None;
+        }
+        match self.chosen_built() {
+            Some(t) if newest.built <= t => None,
+            _ => Some(newest),
         }
     }
 
@@ -392,23 +427,16 @@ impl PlayLinkSheet {
                     .flex_col()
                     .gap_1()
                     .child(div().text_xs().text_color(fg).child("Web build folder (with index.html at its top)"))
-                    .child(
+                    .child(self.render_folder_picker(folder, busy, cx))
+                    .children(self.newer().map(|c| {
+                        let output = c.output.clone();
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(if self.setting.output.is_empty() { muted } else { fg })
-                                    .font_family(crate::fonts::code(cx))
-                                    .child(folder),
-                            )
-                            .child(Button::new("play-folder").small().ghost().label("Choose…").disabled(busy).on_click(cx.listener(|s, _, _, cx| s.choose_folder(cx)))),
-                    ),
+                            .child(div().flex_1().min_w_0().text_xs().text_color(muted).child(format!("Newer build: {}/ ({}, built {})", c.output, c.kind.label(), ago(c.built))))
+                            .child(Button::new("play-use-newer").xsmall().label("Use it").disabled(busy).on_click(cx.listener(move |s, _, _, cx| s.pick(output.clone(), cx))))
+                    })),
             )
             .child(
                 div()
@@ -432,6 +460,62 @@ impl PlayLinkSheet {
                         s.save_setting(cx);
                         cx.notify();
                     }))),
+            )
+            .into_any_element()
+    }
+
+    /// The chosen folder, and the list of builds in the project (newest first) to pick from,
+    /// with Choose another folder… for one the list doesn't have.
+    fn render_folder_picker(&self, folder: String, busy: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (fg, muted) = (theme.foreground, theme.muted_foreground);
+        let when = (!self.setting.output.is_empty()).then(|| self.chosen_built()).flatten().map(|t| format!("built {}", ago(t)));
+        let shown = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().min_w_0().truncate().text_xs().text_color(if self.setting.output.is_empty() { muted } else { fg }).font_family(crate::fonts::code(cx)).child(folder))
+            .children(when.map(|w| div().flex_none().text_xs().text_color(muted).child(w)));
+        if self.candidates.is_empty() {
+            return div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(shown)
+                .child(Button::new("play-folder").small().ghost().label("Choose…").disabled(busy).on_click(cx.listener(|s, _, _, cx| s.choose_folder(cx))))
+                .into_any_element();
+        }
+        let me = cx.entity().downgrade();
+        let list = self.candidates.clone();
+        let chosen = self.setting.output.clone();
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(shown)
+            .child(
+                Button::new("play-folder")
+                    .small()
+                    .ghost()
+                    .label(format!("{} found", count(list.len() as u64, "build")))
+                    .dropdown_caret(true)
+                    .disabled(busy)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for c in &list {
+                            let me = me.clone();
+                            let output = c.output.clone();
+                            let label = format!("{}/   {} · built {}", c.output, c.kind.label(), ago(c.built));
+                            menu = menu.item(PopupMenuItem::new(label).checked(c.output == chosen).on_click(move |_, _, cx| {
+                                let _ = me.update(cx, |s, cx| s.pick(output.clone(), cx));
+                            }));
+                        }
+                        let me = me.clone();
+                        menu.separator().item(PopupMenuItem::new("Choose another folder…").on_click(move |_, _, cx| {
+                            let _ = me.update(cx, |s, cx| s.choose_folder(cx));
+                        }))
+                    }),
             )
             .into_any_element()
     }
@@ -778,6 +862,18 @@ fn until(s: &str) -> String {
     }
 }
 
+/// How long ago `t` was: "just now", "5 minutes ago", "2 hours ago", "3 days ago".
+fn ago(t: std::time::SystemTime) -> String {
+    let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    let (n, unit) = match secs {
+        0..60 => return "just now".into(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86_400 => (secs / 3600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{} ago", count(n, unit))
+}
+
 fn count(n: u64, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
@@ -804,7 +900,7 @@ fn gone_word(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would take the place of the standard one.
-    use super::{count, revivable, size, until};
+    use super::{ago, count, revivable, size, until};
     use wundur_core::play_link::ShareView;
 
     #[test]
@@ -814,6 +910,11 @@ mod tests {
         assert_eq!(size(18_234_567), "18.2 MB");
         assert_eq!(size(4_200), "4 KB");
         assert_eq!(size(12), "12 bytes");
+        let now = std::time::SystemTime::now();
+        assert_eq!(ago(now), "just now");
+        assert_eq!(ago(now - std::time::Duration::from_secs(5 * 60 + 3)), "5 minutes ago");
+        assert_eq!(ago(now - std::time::Duration::from_secs(3600)), "1 hour ago");
+        assert_eq!(ago(now - std::time::Duration::from_secs(3 * 86_400)), "3 days ago");
     }
 
     #[test]
