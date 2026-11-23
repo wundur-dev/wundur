@@ -148,6 +148,25 @@ impl Texture {
         }
         Texture { levels }
     }
+
+    /// Keep at most `max` pixels on the longer side: the larger levels are dropped (the smaller
+    /// ones are already there). For a view that never draws it bigger, a quarter or a sixteenth
+    /// of the memory.
+    pub fn cap(&mut self, max: u32) {
+        while self.levels.len() > 1 && self.levels[0].0.max(self.levels[0].1) > max {
+            self.levels.remove(0);
+        }
+        self.levels.shrink_to_fit();
+    }
+}
+
+impl Model {
+    /// [`Texture::cap`] for every texture. The facts keep the sizes as the file has them.
+    pub fn cap_textures(&mut self, max: u32) {
+        for t in self.images.iter_mut().flatten() {
+            t.cap(max);
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -747,4 +766,26 @@ fn vec3(v: &Value, d: Vec3) -> Vec3 {
 fn vec4(v: &Value, d: Vec4) -> Vec4 {
     let f = floats(v);
     if f.len() >= 4 { Vec4::new(f[0], f[1], f[2], f[3]) } else { d }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_capped_texture_keeps_only_the_levels_that_fit() {
+        let mut t = Texture::new(image::RgbaImage::new(4096, 2048));
+        t.cap(1024);
+        assert_eq!((t.levels[0].0, t.levels[0].1), (1024, 512));
+        assert_eq!(t.levels[0].2.len(), 1024 * 512 * 4);
+        assert_eq!(t.levels.last().map(|l| (l.0, l.1)), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_small_texture_is_left_alone() {
+        let mut t = Texture::new(image::RgbaImage::new(512, 512));
+        let n = t.levels.len();
+        t.cap(1024);
+        assert_eq!((t.levels[0].0, t.levels.len()), (512, n));
+    }
 }
