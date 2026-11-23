@@ -1846,7 +1846,15 @@ impl Shell {
             }
             "play-link" => {
                 // Tests: the Play link sheet for the shown session's folder; `play-link share`
-                // presses Share in the open sheet (a first Share stops at its confirm step).
+                // presses Share in the open sheet (a first Share stops at its confirm step); `play-link look`
+                // shows a live link with sample numbers.
+                if arg == "look" {
+                    match self.play_link.as_ref().map(|(p, _)| p.clone()) {
+                        Some(p) => p.update(cx, |p, cx| p.look(cx)),
+                        None => return Some("no sheet".into()),
+                    }
+                    return Some("ok".into());
+                }
                 if arg == "share" {
                     match self.play_link.as_ref().map(|(p, _)| p.clone()) {
                         Some(p) => p.update(cx, |p, cx| p.share(cx)),

@@ -583,7 +583,7 @@ pub fn root_paths(html: &str) -> Vec<String> {
 // ----- the API -----
 
 /// A share as the API shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ShareView {
     pub id: String,
@@ -603,6 +603,22 @@ pub struct ShareView {
     /// `expires_soon` within two days of lapsing.
     pub warning: Option<String>,
     pub isolated: bool,
+    /// Distinct visitors who opened the page (today, and in all).
+    pub views_today: u64,
+    pub views_total: u64,
+    /// Average focused, visible time per counted play (none until there's one).
+    pub avg_play_seconds: Option<f64>,
+    /// Players' stars, for the owner only (none before the API sent them).
+    pub rating: Option<Rating>,
+}
+
+/// Players' 1–5 stars on a link.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Rating {
+    /// None with no ratings yet.
+    pub average: Option<f64>,
+    pub count: u64,
 }
 
 impl ShareView {
@@ -1085,5 +1101,12 @@ mod tests {
         .unwrap();
         assert_eq!((v.plays_total, v.players_today, v.warning.as_deref(), v.isolated), (12, 3, Some("expires_soon"), true));
         assert!(!v.gone());
+        // Before views and ratings, and with them.
+        assert_eq!((v.views_total, v.avg_play_seconds, v.rating.clone()), (0, None, None));
+        let v: ShareView = serde_json::from_str(r#"{"id":"a","views_today":9,"views_total":40,"avg_play_seconds":312,"rating":{"average":4.3,"count":7}}"#).unwrap();
+        assert_eq!((v.views_today, v.views_total, v.avg_play_seconds), (9, 40, Some(312.0)));
+        assert_eq!(v.rating, Some(Rating { average: Some(4.3), count: 7 }));
+        let v: ShareView = serde_json::from_str(r#"{"id":"a","avg_play_seconds":null,"rating":{"average":null,"count":0}}"#).unwrap();
+        assert_eq!(v.rating, Some(Rating { average: None, count: 0 }));
     }
 }
