@@ -1128,7 +1128,10 @@ impl ChatPanel {
             let s = self.session.read(cx);
             let chat = &s.chat;
             let turn = chat.items.iter().rposition(|i| matches!(i, Item::User(_))).and_then(|from| wundur_core::summary::TurnText::key_at(chat, from));
-            (s.cwd().to_path_buf(), chat.session_id.clone().map(|session| wundur_core::assets::Origin { session, turn }))
+            // Made while the agent is replying: the turn's key isn't settled yet, so the card
+            // is told its place when the turn ends (see `claim_assets`).
+            let session = chat.session_id.clone().filter(|_| !chat.busy);
+            (s.cwd().to_path_buf(), session.map(|session| wundur_core::assets::Origin { session, turn }))
         };
         let references = form.references.clone();
         match hosted_store::create(&project, &kind.id, &name, &description, fields, references, origin, cx) {

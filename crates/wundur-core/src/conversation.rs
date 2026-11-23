@@ -620,17 +620,26 @@ impl Conversation {
 
     /// Show the kept summaries of the turns they belong to (a session read back from its file).
     /// Put the cards of the assets started in this chat back (`found`: each asset's folder and
-    /// the turn it was started in, by key): after that turn, or at the end when it isn't here.
+    /// the turn it was started in, by key): after that turn. One started before the first
+    /// message goes first. One whose turn isn't here waits while earlier parts are still unread
+    /// (this is called again as each is read in), and only goes at the end when the whole chat
+    /// is here and its turn still isn't (a record whose key was taken from an unfinished turn).
     pub fn attach_assets(&mut self, found: &[(std::path::PathBuf, Option<String>)]) {
         for (dir, turn) in found {
             if self.items.iter().any(|i| matches!(i, Item::Asset(d) if d == dir)) {
                 continue;
             }
-            let starts: Vec<usize> = self.items.iter().enumerate().filter(|(_, i)| matches!(i, Item::User(_))).map(|(ix, _)| ix).collect();
-            let at = turn
-                .as_ref()
-                .and_then(|key| starts.into_iter().find(|from| crate::summary::TurnText::key_at(self, *from).as_ref() == Some(key)))
-                .map_or(self.items.len(), |from| self.turn_end(from));
+            let at = match turn {
+                None => 0,
+                Some(key) => {
+                    let starts: Vec<usize> = self.items.iter().enumerate().filter(|(_, i)| matches!(i, Item::User(_))).map(|(ix, _)| ix).collect();
+                    match starts.into_iter().find(|from| crate::summary::TurnText::key_at(self, *from).as_ref() == Some(key)) {
+                        Some(from) => self.turn_end(from),
+                        None if self.items.iter().any(|i| matches!(i, Item::Earlier { .. })) => continue,
+                        None => self.items.len(),
+                    }
+                }
+            };
             self.items.insert(at, Item::Asset(dir.clone()));
             self.revision += 1;
         }
@@ -1791,5 +1800,36 @@ mod asset_card_tests {
         // Once is enough.
         read.attach_assets(&[(dir.clone(), None)]);
         assert_eq!(read.items.iter().filter(|i| matches!(i, Item::Asset(_))).count(), 1);
+    }
+
+    #[test]
+    fn a_card_waits_for_the_part_its_turn_is_in() {
+        let dir = std::path::PathBuf::from("/p/assets/humanoids/orc");
+        let mut whole = Conversation::new("/p");
+        whole.items = vec![
+            Item::User("make an orc".into()),
+            Item::Assistant { text: "Opening the card.".into(), streaming: false },
+            Item::User("thanks".into()),
+            Item::Assistant { text: "Sure.".into(), streaming: false },
+        ];
+        let turn = whole.turn_key_before(2);
+        // The first turn isn't read yet: the card isn't put at the end.
+        let mut read = whole.clone();
+        read.items.splice(0..2, [Item::Earlier { from: 0, to: 10, messages: 2 }]);
+        read.attach_assets(&[(dir.clone(), turn.clone())]);
+        assert!(!read.items.iter().any(|i| matches!(i, Item::Asset(_))));
+        // Read in: it goes after its turn.
+        read.items.splice(0..1, whole.items[..2].to_vec());
+        read.attach_assets(&[(dir.clone(), turn)]);
+        assert!(matches!(&read.items[2], Item::Asset(d) if *d == dir));
+    }
+
+    #[test]
+    fn a_card_from_before_the_first_message_goes_first() {
+        let dir = std::path::PathBuf::from("/p/assets/humanoids/orc");
+        let mut chat = Conversation::new("/p");
+        chat.items = vec![Item::User("hello".into()), Item::Assistant { text: "Hi.".into(), streaming: false }];
+        chat.attach_assets(&[(dir.clone(), None)]);
+        assert!(matches!(&chat.items[0], Item::Asset(d) if *d == dir));
     }
 }
