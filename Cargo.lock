@@ -9980,7 +9980,7 @@ dependencies = [
 
 [[package]]
 name = "wundur-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -10016,7 +10016,7 @@ dependencies = [
 
 [[package]]
 name = "wundur-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10042,7 +10042,7 @@ dependencies = [
 
 [[package]]
 name = "wundur-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "glam",
