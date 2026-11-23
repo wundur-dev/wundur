@@ -2068,6 +2068,15 @@ impl Shell {
                     None => "settings are not open".into(),
                 }
             }
+            "update" => {
+                // Tests: `update` (what the updater knows), `update check`, `update offer`.
+                match arg {
+                    "check" => crate::updater::check_now(cx),
+                    "offer" => crate::updater::offer(window.window_handle(), cx),
+                    _ => {}
+                }
+                crate::updater::describe(cx)
+            }
             "account" => {
                 // Tests: `account` (signed in or not, the plan; never tokens), `account refresh`,
                 // `account sign-in` (starts the loopback listener without opening the browser;
@@ -3329,6 +3338,25 @@ impl Shell {
                     }))
             })
             .child(div().flex_1())
+            // An update downloaded and checked: restart to install it (asks first).
+            .when_some(crate::updater::ready_version(cx), |d, version| {
+                d.child(
+                    div()
+                        .id("tb-update")
+                        .relative()
+                        .size(px(36.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(10.))
+                        .cursor_pointer()
+                        .text_color(accent)
+                        .hover(|d| d.bg(hover))
+                        .child(Icon::new(gpui_kit::assets::IconName::CircleArrowDown).size(px(20.)))
+                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Wundur Studio {version} is ready: restart to update")).build(w, cx))
+                        .on_click(|_, window, cx| crate::updater::offer(window.window_handle(), cx)),
+                )
+            })
             .child(
                 item("tb-settings", lit(Icon::new(IconName::Settings), "settings", view == "settings"), "Settings (Cmd+,)", view == "settings").on_click(cx.listener(|s, _, window, cx| {
                     if s.settings.is_some() {

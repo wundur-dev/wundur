@@ -93,6 +93,23 @@ jobs:
           ditto -c -k --keepParent "$RUNNER_TEMP/bundle/Wundur Studio.app" "dist/Wundur-${VERSION}-universal.zip"
           spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/bundle/Wundur Studio.app"
 
+      # The updater's manifest: the app checks releases/latest/download/latest.json, downloads
+      # the zip, and installs it only if its sha256 matches and the app inside is signed by our
+      # Developer ID team and notarized (crates/wundur-core/src/update.rs).
+      - name: Update manifest
+        run: |
+          ZIP="Wundur-${VERSION}-universal.zip"
+          SHA=$(shasum -a 256 "dist/$ZIP" | cut -d' ' -f1)
+          SIZE=$(stat -f%z "dist/$ZIP")
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          python3 -I - "$VERSION" "$BASE/$ZIP" "$SHA" "$SIZE" "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" > dist/latest.json <<'PY'
+          import json, sys
+          version, url, sha, size, notes = sys.argv[1:6]
+          print(json.dumps({"version": version, "notes": notes,
+                            "platforms": {"macos-universal": {"url": url, "sha256": sha, "size": int(size)}}}, indent=2))
+          PY
+          cat dist/latest.json
+
       # The installer: a disk image whose window has the app, Applications and an arrow over a
       # night sky (scripts/make-dmg), signed, notarized and stapled like the app.
       - name: Disk image
@@ -118,6 +135,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*.dmg
+            dist/latest.json
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -130,9 +148,9 @@ jobs:
             for old in $(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name'); do
               gh release delete-asset "$GITHUB_REF_NAME" "$old" --yes
             done
-            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/latest.json --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip --title "Wundur Studio $VERSION" --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/latest.json --title "Wundur Studio $VERSION" --generate-notes
           fi
 
       - name: Clean up the keychain

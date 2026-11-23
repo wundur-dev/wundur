@@ -30,6 +30,8 @@ icon_assets!(
         UserRound,
         // Settings > Account.
         CircleUser,
+        // The toolbar's update, when one is ready.
+        CircleArrowDown,
         SquareSlash,
         ScrollText,
         FolderCode,

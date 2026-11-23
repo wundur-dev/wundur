@@ -28,6 +28,7 @@ mod project_wizard;
 mod inbox;
 mod tasks;
 mod tasks_web;
+mod updater;
 mod asset_panel;
 mod asset_store;
 mod hosted_store;
@@ -143,7 +144,7 @@ fn full_path(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Quit, asking first when a session is working (see `Shell::confirm_quit`).
-fn request_quit(cx: &mut App) {
+pub fn request_quit(cx: &mut App) {
     let target = cx.global::<control::ControlTargets>().workspace.clone();
     let asked = target.is_some_and(|(handle, shell)| {
         handle
@@ -159,6 +160,8 @@ fn request_quit(cx: &mut App) {
 pub fn quit_now(cx: &mut App) {
     instance::stop_listening();
     hooks::cleanup(cx);
+    // An update the person agreed to goes in as the app ends.
+    updater::on_quit(cx);
     cx.quit();
 }
 
@@ -340,6 +343,7 @@ fn main() {
             settings_account::init(cx);
             // Where builds go (CARGO_TARGET_DIR, from the login shell): agents may write there.
             wundur_core::sandbox::warm_build_cache();
+            updater::init(cx);
             cx.set_window_appearance(forced);
             cx.set_global(panels::Names(Rc::new(RefCell::new(
                 wundur_core::tabs::NameStore::open_default(),

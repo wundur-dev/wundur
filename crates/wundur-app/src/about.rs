@@ -174,6 +174,8 @@ impl About {
             .child(img(self.icon.clone()).size(px(128.)))
             .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Wundur Studio"))
             .child(div().text_sm().text_color(muted).child(format!("Version {}", env!("CARGO_PKG_VERSION"))))
+            // Why it can't update itself, when that's the person's to fix (Applications).
+            .children(crate::updater::blocked(cx).map(|why| div().text_xs().text_color(muted).child(format!("Updates: {why}"))))
             .child(
                 div()
                     .pt_2()
