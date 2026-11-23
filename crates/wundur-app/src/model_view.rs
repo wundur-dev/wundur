@@ -5,6 +5,12 @@
 //! [`renderer`] picks which, so the CPU one used now can be swapped (for a GPU one) without
 //! this view changing. While something moves, frames are drawn smaller and stretched; once it
 //! settles, one is drawn at full size.
+//!
+//! Memory: a model is read only once its tab is first shown, its textures are kept at most
+//! [`TEXTURE_MAX`] on a side (the view never draws them bigger), and a tab hidden for
+//! [`UNLOAD_AFTER`] lets the model go; showing it again reads it again (a tenth to a third of a
+//! second), with the camera where it was. Hidden: not drawn, which [`ModelView::watch`] checks by
+//! asking for a redraw and seeing whether one comes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,6 +50,14 @@ impl EventEmitter<PanelEvent> for ModelView {}
 /// Where the camera starts: a three-quarter view from a little above.
 const HOME: (f32, f32) = (35.0, 12.0);
 
+/// The largest texture side kept for drawing (a 4096² texture is 64 MB as pixels, 1024² 4 MB).
+const TEXTURE_MAX: u32 = 1024;
+/// How often a tab checks whether it is still shown.
+const WATCH_EVERY: Duration = Duration::from_secs(10);
+/// Hidden this long, a tab lets its model go. Long enough that switching between tabs doesn't
+/// read the model again each time.
+const UNLOAD_AFTER: Duration = Duration::from_secs(30);
+
 struct Loaded {
     model: Arc<Model>,
     /// Triangles, size, textures: one line.
@@ -57,6 +71,8 @@ struct Loaded {
 }
 
 enum State {
+    /// Not read yet (never shown), or let go while hidden.
+    Unloaded,
     Loading,
     Failed(String),
     Ready(Loaded),
@@ -104,6 +120,16 @@ pub struct ModelView {
     pending_clip: Option<String>,
     settle: Option<Task<()>>,
     player: Option<Task<()>>,
+    /// Reading the model; dropped with it.
+    load_task: Option<Task<()>>,
+    /// Taking the drawing thread's frames; ends with the model.
+    draw_task: Option<Task<()>>,
+    /// Bumped by every render: whether the tab was drawn (so is shown) since a look.
+    drawn: u64,
+    /// Looks in a row (one each [`WATCH_EVERY`]) that found the tab not drawn.
+    hidden_looks: u32,
+    /// The camera when the model was let go, to put back when it is read again.
+    kept_orbit: Option<Orbit>,
     _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -123,20 +149,11 @@ impl ModelView {
                 v.request(!done, cx);
             }
         });
-        let load_path = path.clone();
-        let load = cx.spawn_in(window, async move |this, cx| {
-            let loaded = cx.background_spawn(async move { load(&load_path) }).await;
-            let _ = this.update_in(cx, |v, window, cx| {
-                v.loaded(loaded, cx);
-                if let Some(clip) = v.pending_clip.take() {
-                    v.play_named(&clip, window, cx);
-                }
-            });
-        });
+        let watch = cx.spawn(async move |this, cx| Self::watch(this, cx).await);
         Self {
             path,
             focus: cx.focus_handle(),
-            state: State::Loading,
+            state: State::Unloaded,
             orbit: Orbit { yaw: HOME.0, pitch: HOME.1, distance: 1.0, target: Vec3::ZERO },
             clip: None,
             time: 0.0,
@@ -157,8 +174,80 @@ impl ModelView {
             pending_clip: None,
             settle: None,
             player: None,
+            load_task: None,
+            draw_task: None,
+            drawn: 0,
+            hidden_looks: 0,
+            kept_orbit: None,
             _subs: vec![sub],
-            _tasks: vec![load],
+            _tasks: vec![watch],
+        }
+    }
+
+    /// Read the model, if it isn't read or being read.
+    fn start_load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.state, State::Unloaded) {
+            return;
+        }
+        self.state = State::Loading;
+        let load_path = self.path.clone();
+        self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let loaded = cx.background_spawn(async move { load(&load_path) }).await;
+            let _ = this.update_in(cx, |v, window, cx| {
+                v.loaded(loaded, cx);
+                if let Some(clip) = v.pending_clip.take() {
+                    v.play_named(&clip, window, cx);
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Let the model go (its pixels, the drawing thread); it is read again when shown.
+    fn unload(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.state, State::Ready(_)) {
+            return;
+        }
+        self.kept_orbit = Some(self.orbit);
+        self.state = State::Unloaded;
+        // The thread stops once its job channel closes, and the frames task with it.
+        self.jobs = None;
+        self.draw_task = None;
+        self.load_task = None;
+        self.playing = false;
+        self.player = None;
+        self.settle = None;
+        if let Some(old) = self.frame.take() {
+            cx.drop_image(old, None);
+        }
+    }
+
+    /// Every [`WATCH_EVERY`]: ask for a redraw, and if none comes the tab isn't shown (gpui
+    /// draws only what's on screen); hidden for [`UNLOAD_AFTER`], let the model go. Ends with
+    /// the view.
+    async fn watch(this: WeakEntity<Self>, cx: &mut AsyncApp) {
+        loop {
+            cx.background_executor().timer(WATCH_EVERY).await;
+            let Ok(before) = this.update(cx, |v, cx| {
+                cx.notify();
+                v.drawn
+            }) else {
+                return;
+            };
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            let alive = this.update(cx, |v, cx| {
+                if v.drawn != before {
+                    v.hidden_looks = 0;
+                } else {
+                    v.hidden_looks += 1;
+                    if WATCH_EVERY * v.hidden_looks >= UNLOAD_AFTER {
+                        v.unload(cx);
+                    }
+                }
+            });
+            if alive.is_err() {
+                return;
+            }
         }
     }
 
@@ -166,7 +255,10 @@ impl ModelView {
     pub fn play_named(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let want = name.trim().to_lowercase();
         match &self.state {
-            State::Loading => self.pending_clip = Some(want),
+            State::Unloaded | State::Loading => {
+                self.pending_clip = Some(want);
+                self.start_load(window, cx);
+            }
             State::Ready(l) => {
                 let found = l.clips.iter().position(|c| c.0.to_lowercase() == want).or_else(|| l.clips.iter().position(|c| c.0.to_lowercase().contains(&want)));
                 if found.is_some() {
@@ -186,10 +278,16 @@ impl ModelView {
                 return;
             }
         };
+        let clips = l.clips.len();
         self.state = State::Ready(l);
         self.refit();
         let Some((home, model)) = self.ready().map(|l| (l.home, l.model.clone())) else { return };
-        self.orbit = home;
+        // Read again after being let go: the camera where it was (the file may have changed
+        // since, so the clip only if it is still there).
+        self.orbit = self.kept_orbit.take().unwrap_or(home);
+        if self.clip.is_some_and(|c| c >= clips) {
+            self.clip = None;
+        }
         // The drawing thread: the newest job wins; it stops when this view is gone.
         let (tx, rx) = mpsc::channel::<Job>();
         let (dtx, drx) = async_channel::unbounded::<Done>();
@@ -230,7 +328,7 @@ impl ModelView {
             })
             .ok();
         self.jobs = Some(tx);
-        self._tasks.push(cx.spawn(async move |this, cx| {
+        self.draw_task = Some(cx.spawn(async move |this, cx| {
             while let Ok(done) = drx.recv().await {
                 if this.update(cx, |v, cx| v.got(done, cx)).is_err() {
                     break;
@@ -398,8 +496,12 @@ impl ModelView {
     /// a ZIP of an OBJ and its textures (the form Mixamo takes), open mixamo.com, and show the
     /// ZIP in the file manager, so uploading is one drag.
     fn send_to_mixamo(&mut self, cx: &mut Context<Self>) {
-        let Some(l) = self.ready() else { return };
-        let model = l.model.clone();
+        if self.ready().is_none() {
+            return;
+        }
+        // Read again: the view keeps its textures smaller than the file's, and the export
+        // should have them as they are.
+        let path = self.path.clone();
         let stem = self.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into());
         let name: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
         let Some(out) = dirs::cache_dir().map(|d| d.join("wundur-studio").join("mixamo").join(format!("{name}-mixamo.zip"))) else { return };
@@ -407,7 +509,7 @@ impl ModelView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (zip, n) = (out.clone(), name.clone());
-            let done = cx.background_spawn(async move { wundur_render::export::obj_zip(&model, &n, &zip) }).await;
+            let done = cx.background_spawn(async move { wundur_render::gltf::load(&path).and_then(|model| wundur_render::export::obj_zip(&model, &n, &zip)) }).await;
             let _ = this.update(cx, |v, cx| {
                 v.note = Some(match done {
                     Ok(e) => {
@@ -695,7 +797,8 @@ fn trim(x: f32) -> String {
 
 /// Read the model and what to say about it (off the UI thread).
 fn load(path: &Path) -> Result<Loaded, String> {
-    let model = wundur_render::gltf::load(path)?;
+    let mut model = wundur_render::gltf::load(path)?;
+    model.cap_textures(TEXTURE_MAX);
     let rest = wundur_render::pose::pose(&model, None);
     let size = rest.max - rest.min;
     let f = &model.facts;
@@ -734,11 +837,14 @@ impl Focusable for ModelView {
 
 impl Render for ModelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drawn means shown: read the model now if it isn't.
+        self.drawn += 1;
+        self.start_load(window, cx);
         let theme = cx.theme();
         let (bg, fg, muted, warn) = (theme.background, theme.foreground, theme.muted_foreground, theme.warning);
         let root = div().id("model-view").track_focus(&self.focus).size_full().flex().flex_col().bg(bg).text_color(fg);
         match &self.state {
-            State::Loading => root.child(div().flex_1().flex().items_center().justify_center().text_sm().text_color(muted).child(format!("Loading {}…", self.path.display()))),
+            State::Unloaded | State::Loading => root.child(div().flex_1().flex().items_center().justify_center().text_sm().text_color(muted).child(format!("Loading {}…", self.path.display()))),
             State::Failed(e) => root.child(div().flex_1().flex().items_center().justify_center().p_4().text_sm().text_color(muted).child(format!("Couldn't show {}: {e}", self.path.display()))),
             State::Ready(l) => {
                 let (summary, warnings) = (l.summary.clone(), l.warnings.clone());
@@ -800,6 +906,19 @@ impl BasePanel for ModelView {
     }
 }
 
+impl ModelView {
+    /// For tests: "unloaded", "loading", "ready" or "failed".
+    #[cfg(test)]
+    fn state_name(&self) -> &'static str {
+        match self.state {
+            State::Unloaded => "unloaded",
+            State::Loading => "loading",
+            State::Ready(_) => "ready",
+            State::Failed(_) => "failed",
+        }
+    }
+}
+
 impl Panel for ModelView {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let name = self.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Model".into());
@@ -807,5 +926,104 @@ impl Panel for ModelView {
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use base64::Engine as _;
+    use gpui_kit::component::dock::{DockLayout, panel_handle};
+    use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+    use gpui_kit::{AppContext, Entity, TestAppContext, WindowBounds, WindowOptions, div, prelude::*, px, size};
+
+    use super::ModelView;
+    use crate::dock_skin::WundurSkin;
+
+    struct Root(Entity<gpui_kit::component::dock::DockArea>);
+    impl Render for Root {
+        fn render(&mut self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// One triangle, its buffer inline.
+    fn triangle(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let floats: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let uri = format!("data:application/octet-stream;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
+        let doc = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "mesh": 0 }],
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+            "buffers": [{ "byteLength": bytes.len(), "uri": uri }],
+            "bufferViews": [{ "buffer": 0, "byteLength": bytes.len() }],
+            "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] }],
+        });
+        let path = dir.join(name);
+        std::fs::write(&path, doc.to_string()).unwrap();
+        path
+    }
+
+    /// A hidden model tab reads nothing until it is shown, and lets its model go after
+    /// UNLOAD_AFTER hidden; the shown one keeps its model.
+    #[gpui_kit::test]
+    async fn a_model_tab_holds_its_model_only_while_shown(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = std::env::temp_dir().join(format!("wundur-model-view-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pa, pb) = (triangle(&dir, "a.gltf"), triangle(&dir, "b.gltf"));
+        let mut views = Vec::new();
+        let handle = cx.update(|cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(gpui_kit::Bounds { origin: Default::default(), size: size(px(900.), px(600.)) })),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, |window, cx| {
+                let (area, _) = WundurSkin::dock_area("test", None, window, cx);
+                let a = cx.new(|cx| ModelView::new(pa.clone(), window, cx));
+                let b = cx.new(|cx| ModelView::new(pb.clone(), window, cx));
+                views = vec![a.clone(), b.clone()];
+                let layout = DockLayout::tabs().panel_view(panel_handle(a), cx).panel_view(panel_handle(b), cx);
+                area.update(cx, |ar, cx| ar.set_center(layout, window, cx));
+                cx.new(|_| Root(area))
+            })
+            .unwrap()
+            .0
+        });
+        let (a, b) = (views[0].clone(), views[1].clone());
+        let state = |v: &Entity<ModelView>, cx: &mut TestAppContext| cx.update(|cx| v.read(cx).state_name());
+        let frame = |cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx)).unwrap();
+            cx.run_until_parked();
+        };
+
+        frame(cx);
+        cx.wait_for(handle, Duration::from_secs(5), |_, cx| a.read(cx).state_name() == "ready").await;
+        assert_eq!(state(&b, cx), "unloaded", "the hidden tab reads nothing");
+
+        // Show B: it reads its model; A is hidden from now on.
+        cx.update_window(handle, |_, window, cx| window.click(("sheet-tab", b.entity_id().as_u64() as usize), cx)).unwrap();
+        frame(cx);
+        cx.wait_for(handle, Duration::from_secs(5), |_, cx| b.read(cx).state_name() == "ready").await;
+
+        // Past UNLOAD_AFTER, the window drawing what's shown as it goes.
+        for _ in 0..5 {
+            cx.executor().advance_clock(super::WATCH_EVERY);
+            frame(cx);
+            cx.executor().advance_clock(Duration::from_millis(600));
+            frame(cx);
+        }
+        assert_eq!(state(&a, cx), "unloaded", "hidden past UNLOAD_AFTER, A let its model go");
+        assert_eq!(state(&b, cx), "ready", "the shown tab keeps its model");
+
+        // Shown again, A reads it again.
+        cx.update_window(handle, |_, window, cx| window.click(("sheet-tab", a.entity_id().as_u64() as usize), cx)).unwrap();
+        frame(cx);
+        cx.wait_for(handle, Duration::from_secs(5), |_, cx| a.read(cx).state_name() == "ready").await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
