@@ -119,6 +119,9 @@ pub struct TerminalView {
     /// The image whose `[Image #N]` marker is under the pointer, and where.
     hover_image: Option<(std::path::PathBuf, Point<Pixels>)>,
     error: Option<String>,
+    /// A kept shell not started yet: it starts when its tab is first laid out (or a command
+    /// is run in it), so the tabs of a saved layout that are never shown cost no shell.
+    pending: Option<Box<Pending>>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     cell: Rc<Cell<Size<Pixels>>>,
     selecting: bool,
@@ -193,6 +196,14 @@ pub struct TerminalView {
 
 /// The gutter left of the grid in a terminal whose shell marks its commands.
 const GUTTER: f32 = 36.;
+
+/// What a shell not started yet starts with.
+struct Pending {
+    spec: wundur_core::host::CommandSpec,
+    /// What it showed last time, written to the grid first.
+    preface: Option<Vec<u8>>,
+    saved_marks: Option<wundur_core::term_marks::SavedMarks>,
+}
 
 /// A command's header: the rows of its prompt and command line, drawn as one.
 struct Header {
@@ -522,11 +533,24 @@ impl TerminalView {
     }
 
     /// A shell terminal kept across restarts as `id`: what it showed last time comes first.
+    /// Its shell starts when the tab is first laid out, or a command is run in it.
     pub fn kept(spec: wundur_core::host::CommandSpec, id: String, cx: &mut Context<Self>) -> Self {
         Self::start(spec, Some(id), cx)
     }
 
+    /// Not started yet (see `pending`).
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Start the shell now if it has not started, at the size it last had (or the default).
+    pub fn ensure_started(&mut self, cx: &mut Context<Self>) {
+        self.launch(None, cx);
+    }
+
     fn start(spec: wundur_core::host::CommandSpec, history: Option<String>, cx: &mut Context<Self>) -> Self {
+        // A kept shell waits until it is shown; an agent's interface starts at once.
+        let lazy = history.is_some();
         // Settings: not kept, so neither shown again nor saved.
         let history = history.filter(|_| crate::prefs(cx).keep_terminal_history);
         // A shell on this machine marks its commands (a remote one has no `cwd` here).
@@ -549,67 +573,9 @@ impl TerminalView {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|json| serde_json::from_str::<wundur_core::term_marks::SavedMarks>(&json).ok());
         let focus = cx.focus_handle();
-        // Until it is first drawn (an agent's interface may start in a hidden view).
-        let initial = GridSize {
-            cols: 120,
-            rows: 36,
-            cell_w: 8,
-            cell_h: 16,
-        };
-        let (pty, error, events) = match Pty::spawn(&spec, initial, preface.as_deref(), saved_marks) {
-            Ok((pty, rx)) => {
-                let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                    while let Ok(first) = rx.recv().await {
-                        // Take everything already queued: one redraw for the lot.
-                        let mut batch = vec![first];
-                        while let Ok(more) = rx.try_recv() {
-                            batch.push(more);
-                        }
-                        let alive = this.update(cx, |view, cx| {
-                            // What the tab's title shows, before: a change there redraws even
-                            // when the screen is not shown.
-                            let before = (view.unseen, view.exited, view.title.clone());
-                            for ev in batch {
-                                match ev {
-                                    PtyEvent::Wakeup => {
-                                        view.generation += 1;
-                                        crate::perf::pty_output();
-                                        view.unseen = true;
-                                        view.schedule_save(cx);
-                                        if !view.drawn && !view.screen_text().trim().is_empty() {
-                                            view.drawn = true;
-                                            crate::perf::switch_step("terminal drew its first screen");
-                                        }
-                                        view.output_came(cx);
-                                        view.keep_following();
-                                    }
-                                    PtyEvent::Title(t) => view.title = Some(t),
-                                    PtyEvent::Copy(text) => {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text))
-                                    }
-                                    PtyEvent::Exited => {
-                                        view.exited = true;
-                                        crate::perf::switch_step("terminal process exited");
-                                    }
-                                }
-                            }
-                            cx.emit(TerminalEvent::Output);
-                            let titled = before != (view.unseen, view.exited, view.title.clone()) || view.program_changed();
-                            if view.on_screen.now() || titled {
-                                cx.notify();
-                            }
-                        });
-                        if alive.is_err() {
-                            break;
-                        }
-                    }
-                });
-                (Some(Rc::new(pty)), None, Some(task))
-            }
-            Err(e) => (None, Some(format!("Could not start the shell: {e}")), None),
-        };
-        Self {
-            pty,
+        let pending = Some(Box::new(Pending { spec, preface, saved_marks }));
+        let mut view = Self {
+            pty: None,
             focus,
             title: None,
             exited: false,
@@ -625,7 +591,8 @@ impl TerminalView {
             hover_image: None,
             pending_link: None,
             hover_link: None,
-            error,
+            error: None,
+            pending,
             bounds: Rc::new(Cell::new(Bounds::default())),
             cell: Rc::new(Cell::new(size(px(8.), px(16.)))),
             selecting: false,
@@ -640,7 +607,7 @@ impl TerminalView {
             program: Default::default(),
             folder: std::path::PathBuf::new(),
             branch: None,
-            _events: events,
+            _events: None,
             _on_quit: history.is_some().then(|| {
                 cx.on_app_quit(|view: &mut Self, cx| {
                     view.save_now(cx);
@@ -679,6 +646,80 @@ impl TerminalView {
             last_history: Cell::new(0),
             pending_part: None,
             copied: None,
+        };
+        if !lazy {
+            view.launch(None, cx);
+        }
+        view
+    }
+
+    /// Start the shell if it is pending: at `size` (the grid of its first layout), else at the
+    /// default until it is drawn.
+    fn launch(&mut self, size: Option<GridSize>, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending.take() else { return };
+        let Pending { spec, preface, saved_marks } = *pending;
+        // Until it is first drawn (an agent's interface may start in a hidden view).
+        let initial = size.unwrap_or(GridSize {
+            cols: 120,
+            rows: 36,
+            cell_w: 8,
+            cell_h: 16,
+        });
+        self.started = std::time::Instant::now();
+        match Pty::spawn(&spec, initial, preface.as_deref(), saved_marks) {
+            Ok((pty, rx)) => {
+                self.pty = Some(Rc::new(pty));
+                self._events = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    while let Ok(first) = rx.recv().await {
+                        // Take everything already queued: one redraw for the lot.
+                        let mut batch = vec![first];
+                        while let Ok(more) = rx.try_recv() {
+                            batch.push(more);
+                        }
+                        let alive = this.update(cx, |view, cx| view.take_events(batch, cx));
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(e) => self.error = Some(format!("Could not start the shell: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// A batch of the shell's events.
+    fn take_events(&mut self, batch: Vec<PtyEvent>, cx: &mut Context<Self>) {
+        let view = self;
+        // What the tab's title shows, before: a change there redraws even when the screen is
+        // not shown.
+        let before = (view.unseen, view.exited, view.title.clone());
+        for ev in batch {
+            match ev {
+                PtyEvent::Wakeup => {
+                    view.generation += 1;
+                    crate::perf::pty_output();
+                    view.unseen = true;
+                    view.schedule_save(cx);
+                    if !view.drawn && !view.screen_text().trim().is_empty() {
+                        view.drawn = true;
+                        crate::perf::switch_step("terminal drew its first screen");
+                    }
+                    view.output_came(cx);
+                    view.keep_following();
+                }
+                PtyEvent::Title(t) => view.title = Some(t),
+                PtyEvent::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+                PtyEvent::Exited => {
+                    view.exited = true;
+                    crate::perf::switch_step("terminal process exited");
+                }
+            }
+        }
+        cx.emit(TerminalEvent::Output);
+        let titled = before != (view.unseen, view.exited, view.title.clone()) || view.program_changed();
+        if view.on_screen.now() || titled {
+            cx.notify();
         }
     }
 
@@ -1779,6 +1820,8 @@ impl Render for TerminalView {
         };
         let pty = self.pty.clone();
         let pty_paint = self.pty.clone();
+        // A pending shell starts at the size of this, its first layout.
+        let launch = self.pending.is_some().then(|| cx.entity().downgrade());
         let on_screen = self.on_screen.clone();
         // The placeholder covers the screen until it fades: nothing of the grid shows.
         let covered = self.placeholder.is_some() && !self.settled && !self.exited && self.revealed.is_none();
@@ -1951,14 +1994,17 @@ impl Render for TerminalView {
                     // While zoom steps follow each other, the program keeps its size (the grid is
                     // drawn at the new font meanwhile); it is told once they stop.
                     let zooming = zoomed_at.get().is_some_and(|t| t.elapsed() < ZOOM_SETTLE);
+                    let grid = GridSize {
+                        cols: ((bounds.size.width / cw).floor() as u16).max(2),
+                        rows: ((bounds.size.height / ch).floor() as u16).max(1),
+                        cell_w: f32::from(cw) as u16,
+                        cell_h: f32::from(ch) as u16,
+                    };
                     if let Some(pty) = pty.as_ref().filter(|_| !zooming) {
-                        let cols = ((bounds.size.width / cw).floor() as u16).max(2);
-                        let rows = ((bounds.size.height / ch).floor() as u16).max(1);
-                        pty.resize(GridSize {
-                            cols,
-                            rows,
-                            cell_w: f32::from(cw) as u16,
-                            cell_h: f32::from(ch) as u16,
+                        pty.resize(grid);
+                    } else if let Some(view) = launch.clone() {
+                        cx.defer(move |cx| {
+                            let _ = view.update(cx, |v, cx| v.launch(Some(grid), cx));
                         });
                     }
                 },
@@ -2824,5 +2870,45 @@ mod link_tests {
         assert_eq!(web_span_at(line, start + 3), Some((start, start + "http://localhost:5173/".len())));
         assert_eq!(web_span_at(line, 2), None, "not on the address");
         assert_eq!(web_span_at("see https://example.com.", 10), Some((4, 23)), "the full stop is not part of it");
+    }
+}
+
+#[cfg(test)]
+mod lazy_tests {
+    use super::TerminalView;
+    use gpui_kit::{AppContext, TestAppContext};
+
+    /// A kept shell's tab that is never laid out starts no shell; laid out, it starts one.
+    #[gpui_kit::test]
+    fn a_kept_terminal_starts_when_first_laid_out(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            cx.set_global(crate::AppSettings(std::rc::Rc::new(std::cell::RefCell::new(wundur_core::settings::Settings::load(None)))));
+        });
+        let spec = wundur_core::host::CommandSpec { program: "/bin/sh".into(), args: vec![], cwd: None, env: vec![] };
+        let hidden = cx.update(|cx| cx.new(|cx| TerminalView::kept(spec.clone(), "lazy-test-hidden".into(), cx)));
+        cx.run_until_parked();
+        hidden.read_with(cx, |v, _| assert!(v.is_pending() && v.pty.is_none(), "a tab never shown starts no shell"));
+
+        let mut shown = None;
+        let window = cx
+            .update(|cx| {
+                gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                    let v = cx.new(|cx| TerminalView::kept(spec, "lazy-test-shown".into(), cx));
+                    shown = Some(v.clone());
+                    v
+                })
+            })
+            .unwrap();
+        cx.update_window(window.0, |_, window, cx| { use gpui_kit::test::TestWindowExt; window.render_frame(cx) }).unwrap();
+        cx.run_until_parked();
+        let shown = shown.unwrap();
+        shown.read_with(cx, |v, _| assert!(!v.is_pending() && (v.pty.is_some() || v.error.is_some()), "a tab laid out starts its shell"));
+        // At the size of its layout, not the default.
+        shown.read_with(cx, |v, _| {
+            if let Some(pty) = &v.pty {
+                assert_ne!((pty.size().cols, pty.size().rows), (120, 36));
+            }
+        });
     }
 }

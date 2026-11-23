@@ -1092,20 +1092,34 @@ impl Workspace {
     /// new one, given a moment for its shell to start. Typed with Enter, as a person would.
     pub fn run_in_terminal(&mut self, command: String, window: &mut Window, cx: &mut Context<Self>) {
         let line = format!("{command}\r").into_bytes();
+        // Idle: at its shell's prompt, or not started yet (a saved tab never shown).
         let idle = self.terminals.borrow().iter().rev().find(|t| {
-            t.read(cx).pty.as_ref().is_some_and(|p| p.foreground_program().is_none_or(|n| is_shell(&n)))
+            let t = t.read(cx);
+            t.is_pending() || t.pty.as_ref().is_some_and(|p| p.foreground_program().is_none_or(|n| is_shell(&n)))
         }).cloned();
         if let Some(view) = idle {
             self.show_panel(PanelId::from(view.entity_id()), window, cx);
             let handle = view.read(cx).focus.clone();
             window.focus(&handle, cx);
-            if let Some(pty) = view.read(cx).pty.clone() {
-                pty.write(line);
+            if !view.read(cx).is_pending() {
+                if let Some(pty) = view.read(cx).pty.clone() {
+                    pty.write(line);
+                }
+                return;
             }
+            // Its shell starts now; the command goes once it has.
+            view.update(cx, |v, cx| v.ensure_started(cx));
+            Self::write_when_started(view, line, cx);
             return;
         }
         self.new_terminal(window, cx);
         let Some(view) = self.terminals.borrow().last().cloned() else { return };
+        view.update(cx, |v, cx| v.ensure_started(cx));
+        Self::write_when_started(view, line, cx);
+    }
+
+    /// Type `line` into a shell just started, once it has had a moment to come up.
+    fn write_when_started(view: Entity<TerminalView>, line: Vec<u8>, cx: &mut Context<Self>) {
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(SHELL_START_MS)).await;
             cx.update(|cx| {
