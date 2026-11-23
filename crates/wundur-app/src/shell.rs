@@ -2917,8 +2917,10 @@ impl Shell {
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| folder_name(&root));
         let sheet = cx.new(|cx| crate::play_link_sheet::PlayLinkSheet::new(root, name, window, cx));
-        let sub = cx.subscribe_in(&sheet, window, |s, _, _: &crate::play_link_sheet::CloseSheet, _, cx| {
+        let sub = cx.subscribe_in(&sheet, window, |s, _, _: &crate::play_link_sheet::CloseSheet, window, cx| {
             s.play_link = None;
+            // The keyboard goes back to the window, not to the closed sheet.
+            window.focus(&s.focus, cx);
             cx.notify();
         });
         self.play_link = Some((sheet, sub));

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -29,6 +29,12 @@ enum Phase {
 }
 
 pub struct PlayLinkSheet {
+    /// Focused while the sheet is open, so Esc reaches it.
+    focus: FocusHandle,
+    /// When the link's numbers were last read from the API.
+    refreshed_at: Option<Instant>,
+    /// Reads the numbers again every [`REFRESH_EVERY`] while the sheet is open.
+    _poll: Option<Task<()>>,
     /// The session's folder (where the build runs and `project.json` is).
     root: PathBuf,
     /// Where the link is kept (the main checkout), once known.
@@ -71,7 +77,12 @@ impl PlayLinkSheet {
                 s.setting.build = input.read(cx).value().trim().to_string();
             }
         });
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         let mut sheet = Self {
+            focus,
+            refreshed_at: None,
+            _poll: None,
             root,
             record_root: None,
             setting: PlayLink::default(),
@@ -94,6 +105,25 @@ impl PlayLinkSheet {
             _subs: vec![sub],
         };
         sheet.load(window, cx);
+        // The numbers move while friends play: read them again now and then, while the sheet
+        // is open (the task ends with it).
+        sheet._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(REFRESH_EVERY).await;
+                let open = this
+                    .update(cx, |s, cx| {
+                        if !s.working() {
+                            s.refresh(true, cx);
+                        }
+                        // "Updated 2 minutes ago" moves on too.
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !open {
+                    break;
+                }
+            }
+        }));
         sheet
     }
 
@@ -127,16 +157,21 @@ impl PlayLinkSheet {
                 s.record_root = Some(record_root);
                 s.record = record;
                 cx.notify();
-                s.refresh(cx);
+                s.refresh(false, cx);
             });
         })
         .detach();
     }
 
-    /// Ask the API how the link is now.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Ask the API how the link is now. `quiet` (the timer's): a failure doesn't show, the
+    /// numbers stay as they were.
+    fn refresh(&mut self, quiet: bool, cx: &mut Context<Self>) {
         let Some(id) = self.record.as_ref().map(|r| r.id.clone()) else { return };
+        if self.loading {
+            return;
+        }
         self.loading = true;
+        cx.notify();
         let task = cx.background_spawn(async move { pl::list() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -153,8 +188,10 @@ impl PlayLinkSheet {
                             }
                             None => s.missing = true,
                         }
+                        s.refreshed_at = Some(Instant::now());
                     }
                     Err(wundur_core::account::Error::SignedOut) => s.signed_out = true,
+                    Err(_) if quiet => {}
                     Err(e) => s.error = Some(pl::message(&e)),
                 }
                 cx.notify();
@@ -415,6 +452,7 @@ impl PlayLinkSheet {
         self.missing = false;
         self.signed_out = false;
         self.loading = false;
+        self.refreshed_at = Some(Instant::now());
         cx.notify();
     }
 
@@ -616,15 +654,33 @@ impl PlayLinkSheet {
                     }))
                     .into_any_element(),
             );
+            let updated = if self.loading {
+                "Updating…".to_string()
+            } else {
+                self.refreshed_at.map(|t| format!("Updated {}", ago(std::time::SystemTime::now() - t.elapsed()))).unwrap_or_default()
+            };
             lines.push(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .text_xs()
                     .text_color(muted)
-                    .child(format!(
+                    .child(div().flex_1().min_w_0().truncate().child(format!(
                         "Version {}{} · ratings are only shown to you",
                         v.version,
                         if v.isolated { " · served for a threaded build" } else { "" }
-                    ))
+                    )))
+                    .child(div().flex_none().child(updated))
+                    .child(
+                        Button::new("play-refresh")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::RotateCw)
+                            .tooltip("Refresh (the numbers also refresh every 30 seconds)")
+                            .disabled(self.loading)
+                            .on_click(cx.listener(|s, _, _, cx| s.refresh(false, cx))),
+                    )
                     .into_any_element(),
             );
         } else if self.missing {
@@ -810,6 +866,7 @@ impl Render for PlayLinkSheet {
         };
         div()
             .id("play-link-sheet")
+            .track_focus(&self.focus)
             .absolute()
             .inset_0()
             .flex()
@@ -894,6 +951,9 @@ impl Render for PlayLinkSheet {
             )
     }
 }
+
+/// How often an open sheet reads the link's numbers again.
+const REFRESH_EVERY: Duration = Duration::from_secs(30);
 
 /// An expired link can still be extended (within its grace).
 fn revivable(v: &ShareView) -> bool {
