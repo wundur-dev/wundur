@@ -391,6 +391,33 @@ impl PlayLinkSheet {
         .detach();
     }
 
+    /// For the control channel: show a live link with sample numbers, without the network, to
+    /// look at it.
+    pub fn look(&mut self, cx: &mut Context<Self>) {
+        let record = self.record.get_or_insert_with(|| ShareRecord { id: "k7x2m9ab".into(), url: "https://gummy-dash-k7x2m9ab.wundur.games".into(), title: "Gummy Dash".into() });
+        let in_days = |d: i64| (chrono::Utc::now() + chrono::Duration::days(d)).to_rfc3339();
+        self.view = Some(ShareView {
+            id: record.id.clone(),
+            title: record.title.clone(),
+            url: record.url.clone(),
+            status: "live".into(),
+            version: 3,
+            expires_at: Some(in_days(5)),
+            revivable_until: Some(in_days(19)),
+            players_today: 3,
+            plays_total: 12,
+            views_today: 9,
+            views_total: 40,
+            avg_play_seconds: Some(312.),
+            rating: Some(pl::Rating { average: Some(4.3), count: 7 }),
+            ..Default::default()
+        });
+        self.missing = false;
+        self.signed_out = false;
+        self.loading = false;
+        cx.notify();
+    }
+
     fn working(&self) -> bool {
         !matches!(self.phase, Phase::Idle | Phase::Confirm(_)) || self.busy_other.is_some()
     }
@@ -556,14 +583,45 @@ impl PlayLinkSheet {
                     .child(div().text_color(muted).child(when))
                     .into_any_element(),
             );
+            let rating = v.rating.as_ref().and_then(|r| r.average.map(|a| (a, r.count)));
+            let tiles = [
+                ("Views", v.views_today.to_string(), format!("{} in all", v.views_total)),
+                ("Players", v.players_today.to_string(), format!("{} in all", count(v.plays_total, "play"))),
+                ("Avg. play", v.avg_play_seconds.map_or_else(|| "–".to_string(), duration), "per play".to_string()),
+                (
+                    "Rating",
+                    rating.map_or_else(|| "–".to_string(), |(a, _)| format!("★ {a:.1}")),
+                    rating.map_or_else(|| "no ratings yet".to_string(), |(_, n)| count(n, "rating")),
+                ),
+            ];
+            let today = ["today", "today", "", ""];
+            lines.push(
+                div()
+                    .flex()
+                    .gap_2()
+                    .children(tiles.into_iter().zip(today).map(|((label, big, small), when)| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .px_2()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(border.opacity(0.35))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(div().text_xs().text_color(muted).child(if when.is_empty() { label.to_string() } else { format!("{label} {when}") }))
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(if label == "Rating" && rating.is_some() { yellow } else { fg }).child(big))
+                            .child(div().text_xs().text_color(muted).truncate().child(small))
+                    }))
+                    .into_any_element(),
+            );
             lines.push(
                 div()
                     .text_xs()
                     .text_color(muted)
                     .child(format!(
-                        "{} today · {} in total · version {}{}",
-                        count(v.players_today, "player"),
-                        count(v.plays_total, "play"),
+                        "Version {}{} · ratings are only shown to you",
                         v.version,
                         if v.isolated { " · served for a threaded build" } else { "" }
                     ))
@@ -874,6 +932,16 @@ fn ago(t: std::time::SystemTime) -> String {
     format!("{} ago", count(n, unit))
 }
 
+/// A play's length: "45s", "5m 12s", "1h 3m".
+fn duration(secs: f64) -> String {
+    let s = secs.max(0.).round() as u64;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 fn count(n: u64, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
@@ -900,7 +968,7 @@ fn gone_word(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would take the place of the standard one.
-    use super::{ago, count, revivable, size, until};
+    use super::{ago, count, duration, revivable, size, until};
     use wundur_core::play_link::ShareView;
 
     #[test]
@@ -910,6 +978,7 @@ mod tests {
         assert_eq!(size(18_234_567), "18.2 MB");
         assert_eq!(size(4_200), "4 KB");
         assert_eq!(size(12), "12 bytes");
+        assert_eq!((duration(45.2), duration(312.), duration(3780.)), ("45s".to_string(), "5m 12s".to_string(), "1h 3m".to_string()));
         let now = std::time::SystemTime::now();
         assert_eq!(ago(now), "just now");
         assert_eq!(ago(now - std::time::Duration::from_secs(5 * 60 + 3)), "5 minutes ago");
