@@ -23,6 +23,7 @@ use wundur_core::settings::Settings;
 
 mod about;
 mod account_menu;
+mod play_link_sheet;
 mod project_wizard;
 mod inbox;
 mod tasks;

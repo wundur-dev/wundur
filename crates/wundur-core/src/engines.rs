@@ -190,12 +190,12 @@ macro_rules! pack_files {
 const THREEJS: &[(&str, &[u8])] = pack_files!("threejs";
     "pack.json", "card.jpg",
     "template/common/package.json", "template/common/index.html", "template/common/src/main.js",
-    "template/common/.gitignore", "template/common/AGENTS.md",
+    "template/common/vite.config.js", "template/common/.gitignore", "template/common/AGENTS.md",
 );
 const PHASER: &[(&str, &[u8])] = pack_files!("phaser";
     "pack.json", "card.jpg",
     "template/common/package.json", "template/common/index.html", "template/common/src/main.js",
-    "template/common/.gitignore", "template/common/AGENTS.md",
+    "template/common/vite.config.js", "template/common/.gitignore", "template/common/AGENTS.md",
 );
 const GODOT: &[(&str, &[u8])] = pack_files!("godot";
     "pack.json", "card.jpg",

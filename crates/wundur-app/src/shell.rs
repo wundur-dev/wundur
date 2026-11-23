@@ -259,6 +259,8 @@ pub struct Shell {
     project_form: Option<ProjectForm>,
     /// The New Project wizard, while it is open.
     wizard: Option<(Entity<crate::project_wizard::ProjectWizard>, Subscription)>,
+    /// The Play link sheet (the title bar's Share), while it is open.
+    play_link: Option<(Entity<crate::play_link_sheet::PlayLinkSheet>, Subscription)>,
     /// Go to session (Cmd+K): what is typed, and the match picked.
     switcher: Option<Switcher>,
     /// The tool panel shown under the sessions (Files, Changes, Agent, Skills).
@@ -323,6 +325,7 @@ impl Shell {
             access_request: None,
             project_form: None,
             wizard: None,
+            play_link: None,
             switcher: None,
             tools_tab: "Files",
             list_resizing: false,
@@ -1841,6 +1844,19 @@ impl Shell {
                 self.new_project(window, cx);
                 "ok".into()
             }
+            "play-link" => {
+                // Tests: the Play link sheet for the shown session's folder; `play-link share`
+                // presses Share in the open sheet (a first Share stops at its confirm step).
+                if arg == "share" {
+                    match self.play_link.as_ref().map(|(p, _)| p.clone()) {
+                        Some(p) => p.update(cx, |p, cx| p.share(cx)),
+                        None => return Some("no sheet".into()),
+                    }
+                    return Some("ok".into());
+                }
+                self.open_play_link(window, cx);
+                if self.play_link.is_some() { "ok".into() } else { "no local session".into() }
+            }
             "wizard" => {
                 // Tests: a step in the open New Project wizard (see `ProjectWizard::command`).
                 match self.wizard.as_ref().map(|(w, _)| w.clone()) {
@@ -2857,6 +2873,38 @@ impl Shell {
             cx.notify();
         });
         self.wizard = Some((wizard, sub));
+        cx.notify();
+    }
+
+    /// The Play link sheet for the shown session's folder: its web build and its one link.
+    fn open_play_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ws) = self.active_workspace() else { return };
+        let (host, root) = {
+            let w = ws.read(cx);
+            (w.host(), w.root().to_path_buf())
+        };
+        if host.is_remote() {
+            return;
+        }
+        // The project's name (a task's worktree is inside its project's folder): the first
+        // link's title.
+        let name = cx
+            .global::<AppSettings>()
+            .0
+            .borrow()
+            .projects
+            .iter()
+            .filter(|p| root.starts_with(&p.root))
+            .max_by_key(|p| p.root.as_os_str().len())
+            .map(|p| p.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| folder_name(&root));
+        let sheet = cx.new(|cx| crate::play_link_sheet::PlayLinkSheet::new(root, name, window, cx));
+        let sub = cx.subscribe_in(&sheet, window, |s, _, _: &crate::play_link_sheet::CloseSheet, _, cx| {
+            s.play_link = None;
+            cx.notify();
+        });
+        self.play_link = Some((sheet, sub));
         cx.notify();
     }
 
@@ -4088,6 +4136,8 @@ impl Render for Shell {
         };
         // The session's own buttons, only while it shows.
         let has_session = !self.tabs.is_empty() && self.browser.is_none() && !showing_settings;
+        // Share: a play link of the session's folder, on this machine.
+        let can_share = has_session && self.active_workspace().is_some_and(|w| !w.read(cx).host().is_remote());
         // The tool panels by name, each opening the sidebar on it: what the icon strip beside
         // the folded sidebar did.
         // The whole menu (Appearance in it), from a button at the right end, as Chrome has it.
@@ -4146,6 +4196,12 @@ impl Render for Shell {
                             .items_center()
                             .gap_1()
                             .pr_1()
+                            .when(can_share, |d| {
+                                d.child(
+                                    button("t-share", Icon::new(gpui_kit::assets::IconName::Share2), "Share a play link of your game")
+                                        .on_click(cx.listener(|s, _, window, cx| s.open_play_link(window, cx))),
+                                )
+                            })
                             .child(
                                 button("t-terminal", Icon::new(IconName::SquareTerminal), "New terminal (Cmd+T)")
                                     .on_click(to_ws(|w, win, cx| w.new_terminal(win, cx))),
@@ -4193,11 +4249,12 @@ impl Render for Shell {
         let access_request = self.render_access_request(cx);
         let project_form = self.render_project_form(cx);
         let wizard = self.wizard.as_ref().map(|(w, _)| w.clone());
+        let play_link = self.play_link.as_ref().map(|(p, _)| p.clone());
         let switcher = self.render_switcher(cx);
         let sign_in = crate::sign_in_dialog::render(window, cx);
         // Web pages are native views over the window: they hide while an overlay is open.
         crate::web_panel::set_covered(
-            self.folder_rename.is_some() || self.access_request.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
+            self.folder_rename.is_some() || self.access_request.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.play_link.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
                 || crate::skill_installer::is_open(cx)
                 || sign_in.is_some(),
         );
@@ -4316,6 +4373,7 @@ impl Render for Shell {
             .children(access_request)
             .children(project_form)
             .children(wizard)
+            .children(play_link)
             .children(switcher)
             .children(crate::skill_installer::render(cx))
             .children(crate::image_view::render(cx))
