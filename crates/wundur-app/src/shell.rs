@@ -2065,6 +2065,11 @@ impl Shell {
                         });
                     }
                     "cancel" => crate::settings_account::cancel(cx),
+                    // `account dialog`, `account dialog-close`, `account dialog-look <step>`:
+                    // the sign-in dialog, and its steps without the network (to look at it).
+                    "dialog" => crate::settings_account::show_sign_in(cx),
+                    "dialog-close" => crate::settings_account::close_sign_in(cx),
+                    a if a.starts_with("dialog-look ") => crate::settings_account::dialog_look(&a["dialog-look ".len()..], cx),
                     // `account access-request`: the Request access dialog.
                     "access-request" => self.open_access_request(window, cx),
                     // `account me-json <json>`: show this account (a `GET /v1/me` answer)
@@ -4189,10 +4194,12 @@ impl Render for Shell {
         let project_form = self.render_project_form(cx);
         let wizard = self.wizard.as_ref().map(|(w, _)| w.clone());
         let switcher = self.render_switcher(cx);
+        let sign_in = crate::sign_in_dialog::render(window, cx);
         // Web pages are native views over the window: they hide while an overlay is open.
         crate::web_panel::set_covered(
             self.folder_rename.is_some() || self.access_request.is_some() || self.project_form.is_some() || self.wizard.is_some() || self.switcher.is_some() || self.inbox_open || self.tasks_open || crate::image_view::is_open(cx)
-                || crate::skill_installer::is_open(cx),
+                || crate::skill_installer::is_open(cx)
+                || sign_in.is_some(),
         );
         div()
             .size_full()
@@ -4312,6 +4319,7 @@ impl Render for Shell {
             .children(switcher)
             .children(crate::skill_installer::render(cx))
             .children(crate::image_view::render(cx))
+            .children(sign_in)
     }
 }
 
@@ -4429,6 +4437,14 @@ pub fn open_settings_page(name: &'static str, cx: &mut App) {
         let _ = handle.update(cx, |_, window, cx| {
             let _ = shell.update(cx, |s, cx| s.show_settings_at(name, false, window, cx));
         });
+    });
+}
+
+/// Bring the window forward (the sign-in dialog opened in it).
+pub fn activate_window(cx: &mut App) {
+    let Some((handle, _)) = cx.try_global::<crate::control::ControlTargets>().and_then(|t| t.workspace.clone()) else { return };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
     });
 }
 
