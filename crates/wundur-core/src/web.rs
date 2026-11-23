@@ -78,21 +78,26 @@ pub fn web_link_at(line: &str, at: usize) -> Option<String> {
 
 /// Where in `line` (bytes) the web address at byte `at` is, if there is one.
 pub fn web_link_span(line: &str, at: usize) -> Option<(usize, usize)> {
+    web_link_spans(line).into_iter().find(|&(from, to)| from <= at && at < to)
+}
+
+/// Where each web address in `text` is (bytes), in order: each from its scheme to the first
+/// space, quote or bracket, without a trailing full stop or comma.
+pub fn web_link_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     let mut from = 0;
-    while let Some(i) = line[from..].find("http").map(|i| from + i) {
-        let rest = &line[i..];
+    while let Some(i) = text[from..].find("http").map(|i| from + i) {
+        let rest = &text[i..];
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let len = rest.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']' | '`')).unwrap_or(rest.len());
             let url = rest[..len].trim_end_matches(['.', ',', ';', ':']);
-            if i <= at && at < i + url.len() {
-                return Some((i, i + url.len()));
-            }
+            spans.push((i, i + url.len()));
             from = i + len.max(1);
         } else {
             from = i + 4;
         }
     }
-    None
+    spans
 }
 
 /// A short name for a URL, for a tab before the page has a title: its host (with the port),
@@ -120,6 +125,14 @@ mod tests {
         assert_eq!(web_link_at(line, 50).as_deref(), Some("https://example.com"));
         assert_eq!(web_link_at(line, 2), None);
         assert!(is_web_link("HTTPS://x.y") && !is_web_link("file:///a") && !is_web_link("mailto:a@b"));
+    }
+
+    #[test]
+    fn every_web_link_in_a_text() {
+        let text = "see https://a.test/x?y=1&z=2, then (http://localhost:3000). Not a link: xhttp-ish.";
+        let found: Vec<&str> = web_link_spans(text).into_iter().map(|(a, b)| &text[a..b]).collect();
+        assert_eq!(found, ["https://a.test/x?y=1&z=2", "http://localhost:3000"]);
+        assert!(web_link_spans("no links here").is_empty());
     }
 
     use super::*;

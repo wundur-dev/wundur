@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::native_spinner::NativeSpinner;
+use gpui_kit::base::TestSupportExt;
 use wundur_core::conversation::Delivery;
 
 impl ChatPanel {
@@ -10,24 +11,26 @@ impl ChatPanel {
     /// The person's message, its long pastes folded to a line that opens them.
     pub(super) fn render_user_text(&self, key: &str, text: &str, cx: &mut Context<Self>) -> AnyElement {
         let parts = paste::parts(text);
-        if !parts.iter().any(|p| matches!(p, paste::Part::Pasted(_))) {
-            return self.marked_text(text, cx);
-        }
-        let mut col = div().flex().flex_col().gap_2();
-        for (k, part) in parts.into_iter().enumerate() {
-            match part {
-                paste::Part::Text(t) => {
-                    if !t.trim().is_empty() {
-                        col = col.child(self.marked_text(t.trim(), cx));
+        let shown = if !parts.iter().any(|p| matches!(p, paste::Part::Pasted(_))) {
+            self.marked_text(key, text, cx)
+        } else {
+            let mut col = div().flex().flex_col().gap_2();
+            for (k, part) in parts.into_iter().enumerate() {
+                match part {
+                    paste::Part::Text(t) => {
+                        if !t.trim().is_empty() {
+                            col = col.child(self.marked_text(&format!("{key}:{k}"), t.trim(), cx));
+                        }
+                    }
+                    paste::Part::Pasted(p) => {
+                        let id = format!("paste:{key}:{k}");
+                        col = col.child(paste_card(id.clone(), p, self.toggled.contains(&id), cx));
                     }
                 }
-                paste::Part::Pasted(p) => {
-                    let id = format!("paste:{key}:{k}");
-                    col = col.child(paste_card(id.clone(), p, self.toggled.contains(&id), cx));
-                }
             }
-        }
-        col.into_any_element()
+            col.into_any_element()
+        };
+        div().id(SharedString::from(format!("text-{key}"))).test_support().child(shown).into_any_element()
     }
 
     pub(super) fn render_compacted(&self, summary: &str, trigger: Option<&str>, tokens: Option<u64>, cx: &mut Context<Self>) -> AnyElement {
@@ -781,8 +784,9 @@ impl ChatPanel {
     /// Plain text, its find matches marked (as `find_marks` marks Markdown's).
     /// The person's typed text: the find marks on it, and each `[Image 1]` (where they put an
     /// image) in the accent, like its token in the message box.
-    fn marked_text(&self, text: &str, cx: &App) -> AnyElement {
+    fn marked_text(&self, id: &str, text: &str, cx: &mut Context<Self>) -> AnyElement {
         let text = &keep_with_word(text);
+        let panel = cx.entity().downgrade();
         let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
         if let Some(marks) = &self.marking {
             for (n, r) in wundur_core::find::ranges(text, &marks.query).into_iter().enumerate() {
@@ -795,7 +799,7 @@ impl ChatPanel {
         }
         let refs = image_refs(text);
         if highlights.is_empty() && !refs.is_empty() {
-            return image_ref_text(text, &refs, cx);
+            return image_ref_text(id, text, &refs, &panel, cx);
         }
         let ring = cx.theme().ring;
         let image = HighlightStyle { color: Some(ring), background_color: Some(ring.opacity(0.1)), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
@@ -804,11 +808,8 @@ impl ChatPanel {
                 highlights.push((r, image));
             }
         }
-        if highlights.is_empty() {
-            return text.to_string().into_any_element();
-        }
         highlights.sort_by_key(|(r, _)| r.start);
-        StyledText::new(text.to_string()).with_highlights(highlights).into_any_element()
+        link_text(id, text, highlights, &panel, cx)
     }
 
     pub(super) fn markdown(&self, id: SharedString, text: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -987,6 +988,7 @@ impl ChatPanel {
                         .child(
                             div()
                                 .id(SharedString::from(format!("bubble-{key}-{ix}")))
+                                .test_support()
                                 .max_w(relative(0.8))
                                 .px_3()
                                 .py_2()
@@ -1357,7 +1359,7 @@ fn image_refs(text: &str) -> Vec<std::ops::Range<usize>> {
 
 /// A message that names its images: its words wrapping around a pill for each `[Image 1]`
 /// (an image icon, its number), like the image's token in the message box.
-fn image_ref_text(text: &str, refs: &[std::ops::Range<usize>], cx: &App) -> AnyElement {
+fn image_ref_text(id: &str, text: &str, refs: &[std::ops::Range<usize>], panel: &WeakEntity<ChatPanel>, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let (ring, fg) = (theme.ring, theme.foreground);
     let pill = |n: String| {
@@ -1382,8 +1384,10 @@ fn image_ref_text(text: &str, refs: &[std::ops::Range<usize>], cx: &App) -> AnyE
     let mut lines = div().flex().flex_col();
     let mut row = div().flex().flex_wrap().items_center();
     let mut last = 0;
-    let words = |row: Div, chunk: &str| -> (Div, Vec<Div>) {
-        // Each word its own piece (with the space after it), so the line wraps between words.
+    let mut piece = 0;
+    let words = |row: Div, chunk: &str, piece: &mut usize| -> (Div, Vec<Div>) {
+        // Each word its own piece (with the space after it), so the line wraps between words. A
+        // piece may shrink and wrap inside itself, so a word longer than the line still wraps.
         let mut row = row;
         let mut done = Vec::new();
         for (k, line) in chunk.split('\n').enumerate() {
@@ -1391,13 +1395,15 @@ fn image_ref_text(text: &str, refs: &[std::ops::Range<usize>], cx: &App) -> AnyE
                 done.push(std::mem::replace(&mut row, div().flex().flex_wrap().items_center()));
             }
             for word in line.split_inclusive(' ') {
-                row = row.child(div().whitespace_nowrap().child(word.replace(' ', "\u{a0}")));
+                *piece += 1;
+                let shown = link_text(&format!("{id}:{piece}"), &word.replace(' ', "\u{a0}"), Vec::new(), panel, cx);
+                row = row.child(div().min_w_0().child(shown));
             }
         }
         (row, done)
     };
     for r in refs {
-        let (r2, done) = words(row, &text[last..r.start]);
+        let (r2, done) = words(row, &text[last..r.start], &mut piece);
         row = r2;
         for d in done {
             lines = lines.child(d.min_h(px(20.)));
@@ -1406,11 +1412,55 @@ fn image_ref_text(text: &str, refs: &[std::ops::Range<usize>], cx: &App) -> AnyE
         row = row.child(pill(n));
         last = r.end;
     }
-    let (r2, done) = words(row, &text[last..]);
+    let (r2, done) = words(row, &text[last..], &mut piece);
     for d in done {
         lines = lines.child(d.min_h(px(20.)));
     }
     lines.child(r2).into_any_element()
+}
+
+/// The text as one piece, its web addresses as links: a click opens one in the Web panel, or in
+/// the system browser with Cmd held, as a link in Claude's replies does. `extra` are the styles
+/// the text already has (find marks, images); a link under one of them keeps that style.
+fn link_text(id: &str, text: &str, extra: Vec<(std::ops::Range<usize>, HighlightStyle)>, panel: &WeakEntity<ChatPanel>, cx: &App) -> AnyElement {
+    let spans = wundur_core::web::web_link_spans(text);
+    if spans.is_empty() {
+        return if extra.is_empty() {
+            text.to_string().into_any_element()
+        } else {
+            StyledText::new(text.to_string()).with_highlights(extra).into_any_element()
+        };
+    }
+    let link_color = cx.theme().link;
+    let link = HighlightStyle {
+        color: Some(link_color),
+        underline: Some(UnderlineStyle { thickness: px(1.), color: Some(link_color), wavy: false }),
+        ..Default::default()
+    };
+    let mut highlights = extra;
+    for &(from, to) in &spans {
+        if !highlights.iter().any(|(h, _)| h.start < to && from < h.end) {
+            highlights.push((from..to, link));
+        }
+    }
+    highlights.sort_by_key(|(r, _)| r.start);
+    let ranges: Vec<std::ops::Range<usize>> = spans.iter().map(|&(from, to)| from..to).collect();
+    let targets: Vec<String> = spans.iter().map(|&(from, to)| text[from..to].to_string()).collect();
+    let panel = panel.clone();
+    InteractiveText::new(
+        ElementId::Name(SharedString::from(format!("link:{id}"))),
+        StyledText::new(text.to_string()).with_highlights(highlights),
+    )
+    .on_click(ranges, move |ix, window, cx| {
+        let Some(url) = targets.get(ix) else { return };
+        if window.modifiers().platform {
+            cx.open_url(url);
+        } else {
+            let url = url.clone();
+            let _ = panel.update(cx, |_, cx| cx.emit(ChatPanelEvent::OpenWeb(url)));
+        }
+    })
+    .into_any_element()
 }
 
 /// A paste in one of the person's messages, as a card: a file tile, what it is (a pasted text,
@@ -1728,6 +1778,112 @@ mod table_tests {
         let saved = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(saved, "\u{feff}Region,Revenue\r\n\"North, East\",\"1,234\"\r\nsouth.rs,980\r\n");
+    }
+}
+
+#[cfg(test)]
+mod user_message_tests {
+    use crate::agent_session::AgentSession;
+    use crate::chat_panel::ChatPanel;
+    use crate::chat_panel::ChatPanelEvent;
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{div, point, px, AnyWindowHandle, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use wundur_core::conversation::Item;
+
+    /// The width of the column the message is drawn in: a chat on a narrow window.
+    const COLUMN: f32 = 360.;
+
+    /// Draws one of the person's messages through the chat's own item view.
+    struct Message(Entity<ChatPanel>, String);
+
+    impl Render for Message {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let item = Item::User(self.1.clone());
+            let rows = self.0.update(cx, |p, cx| p.render_items(std::slice::from_ref(&item), "test", cx));
+            div().w(px(COLUMN)).children(rows)
+        }
+    }
+
+    /// A window drawing `text` as the person's message, and the chat panel that draws it.
+    fn message_window(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<ChatPanel>) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            cx.set_global(crate::AppSettings(std::rc::Rc::new(std::cell::RefCell::new(wundur_core::settings::Settings::load(None)))));
+            cx.set_global(crate::backends::Backends(crate::backends::registry()));
+        });
+        let text = text.to_string();
+        let mut chat = None;
+        let handle = cx
+            .update(|cx| {
+                let backend = crate::backends::backend(None, cx);
+                gpui_kit::open_window(Default::default(), cx, |window, cx| {
+                    let session = cx.new(|_| AgentSession::new(Arc::new(wundur_core::host::LocalHost), backend, PathBuf::from("/")));
+                    let panel = cx.new(|cx| ChatPanel::new(session, window, cx));
+                    chat = Some(panel.clone());
+                    cx.new(|_| Message(panel, text))
+                })
+            })
+            .unwrap();
+        (handle.0, chat.unwrap())
+    }
+
+    /// The message's text sits in its bubble and wraps onto lines there. A text that runs out of
+    /// its bubble keeps the bubble's width, so the height is what shows it: a long link that does
+    /// not wrap is a line or two tall, where it should be many.
+    fn assert_wraps_in_bubble(text: &str, cx: &mut TestAppContext) {
+        let (window, _) = message_window(cx, text);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let bubble = window.find("bubble-test-0").bounds();
+            let shown = window.find("text-test-0").bounds();
+            assert!(shown.right() <= bubble.right() + px(0.5), "the text is wider than its bubble: text {shown:?}, bubble {bubble:?}");
+            assert!(shown.size.height >= px(80.), "the text does not wrap onto lines inside its bubble: {shown:?}");
+        })
+        .unwrap();
+    }
+
+    const LINK: &str = "https://appleid.apple.com/auth/authorize?client_id=com.wundur.ai.studio&redirect_uri=https%3A%2F%2Fapi.wundur.ai%2Fv1%2Fcallback&response_type=code&scope=name%20email&state=abcdef0123456789";
+
+    /// The message in the screenshot: a long sign-in link after the words.
+    #[gpui_kit::test]
+    fn a_long_link_wraps_inside_its_bubble(cx: &mut TestAppContext) {
+        assert_wraps_in_bubble(&format!("okay it failed to login with this url {LINK}"), cx);
+    }
+
+    /// A web address in the message is a link: a click opens it in the Web panel.
+    #[gpui_kit::test]
+    fn a_click_on_a_link_opens_it_in_the_web_panel(cx: &mut TestAppContext) {
+        let (window, panel) = message_window(cx, "https://example.test/page");
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = opened.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&panel, move |_, event: &ChatPanelEvent, _| {
+                if let ChatPanelEvent::OpenWeb(url) = event {
+                    seen.borrow_mut().push(url.clone());
+                }
+            })
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // The link starts at the top left of the text, where the first character is.
+            window.click_at("text-test-0", point(px(4.), px(4.)), cx);
+        })
+        .unwrap();
+        assert_eq!(opened.borrow().as_slice(), ["https://example.test/page"]);
+    }
+
+    /// The same with an image, whose words are laid out one by one.
+    #[gpui_kit::test]
+    fn a_long_link_beside_an_image_wraps_inside_its_bubble(cx: &mut TestAppContext) {
+        assert_wraps_in_bubble(&format!("and this view [Image 1] {LINK}"), cx);
+    }
+
+    /// Any long run without a space, not only a link.
+    #[gpui_kit::test]
+    fn a_long_word_wraps_inside_its_bubble(cx: &mut TestAppContext) {
+        assert_wraps_in_bubble(&"x".repeat(300), cx);
     }
 }
 
