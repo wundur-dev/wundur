@@ -870,8 +870,13 @@ mod tests {
 
     /// One watcher serves every watch: two on one folder both hear a change, and ending one
     /// leaves the other watching.
+    /// The watch tests run one at a time: they share the one watcher, and a folder added or
+    /// dropped by one makes the system's stream start again under the other.
+    static WATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn watches_share_one_watcher() {
+        let _one_at_a_time = WATCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("wb-shared-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let dir = dir.canonicalize().unwrap();
@@ -906,15 +911,28 @@ mod tests {
 
     #[test]
     fn local_watch_reports_a_write() {
+        let _one_at_a_time = WATCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("wb-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let _watch = LocalHost.watch(&dir, Arc::new(move |c| drop(tx.send(c)))).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        std::fs::write(dir.join("x.txt"), "1").unwrap();
-        let change = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(change.paths.iter().any(|p| p.ends_with("x.txt")));
+        // Written until it is heard, not once: the tests share one watcher (as the app's
+        // sessions do), and the system's stream starts again each time another test adds or
+        // drops a folder; a write that lands in that moment is not reported. One write and one
+        // wait failed whenever the suite's other watch test ran alongside.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut n = 0;
+        let heard = loop {
+            n += 1;
+            std::fs::write(dir.join("x.txt"), n.to_string()).unwrap();
+            match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                Ok(change) if change.paths.iter().any(|p| p.ends_with("x.txt")) => break true,
+                _ if std::time::Instant::now() > deadline => break false,
+                _ => {}
+            }
+        };
+        assert!(heard, "a write in a watched folder is reported");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

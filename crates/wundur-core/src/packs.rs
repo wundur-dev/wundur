@@ -748,6 +748,29 @@ fn send(url: &str, opts: &str, hosts: &[String], allow_http: bool, deadline: Ins
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A whole request off a test server's connection: its head, then as much body as the
+    /// head says. One `read` often got the head alone (the body comes in a packet of its
+    /// own), and the test then failed for not finding the body it had not waited for.
+    fn read_request(s: &mut std::net::TcpStream) -> String {
+        let mut got: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = s.read(&mut buf).unwrap();
+            got.extend(&buf[..n]);
+            if let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&got[..end]).to_lowercase();
+                let length: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                if got.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&got).to_string()
+    }
     use std::io::{Read, Write};
 
     #[test]
@@ -809,9 +832,7 @@ mod tests {
         let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG fake");
         let seen = std::thread::spawn(move || {
             let (mut s, _) = server.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let n = s.read(&mut buf).unwrap();
-            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let request = read_request(&mut s);
             let body = format!("{{\"data\":[{{\"b64_json\":\"{png}\"}}]}}");
             let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
             request
@@ -875,11 +896,10 @@ mod tests {
         let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG coin");
         let seen = std::thread::spawn(move || {
             let (mut s, _) = server.accept().unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = s.read(&mut buf).unwrap();
+            let request = read_request(&mut s);
             let body = format!("{{\"created\":1,\"data\":[{{\"b64_json\":\"{png}\"}}]}}");
             let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
         let cwd = std::env::temp_dir().join(format!("wundur-pack-game-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cwd);

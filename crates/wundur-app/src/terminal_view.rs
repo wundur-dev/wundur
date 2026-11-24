@@ -2573,9 +2573,19 @@ mod lazy_tests {
                 })
             })
             .unwrap();
-        cx.update_window(window.0, |_, window, cx| { use gpui_kit::test::TestWindowExt; window.render_frame(cx) }).unwrap();
-        cx.run_until_parked();
         let shown = shown.unwrap();
+        // Laid out until its shell has started, not once: the start waits on the layout's
+        // size reaching the view, which one frame did not always manage (the test failed about
+        // one run in four under load).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.update_window(window.0, |_, window, cx| { use gpui_kit::test::TestWindowExt; window.render_frame(cx) }).unwrap();
+            cx.run_until_parked();
+            if shown.read_with(cx, |v, _| !v.is_pending()) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         shown.read_with(cx, |v, _| assert!(!v.is_pending() && (v.pty.is_some() || v.error.is_some()), "a tab laid out starts its shell"));
         // At the size of its layout, not the default.
         shown.read_with(cx, |v, _| {
