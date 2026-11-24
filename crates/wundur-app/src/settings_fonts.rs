@@ -66,7 +66,7 @@ pub fn render(page: &WeakEntity<SettingsPage>, which: Which, cx: &mut App) -> An
     let (title, description) = match which {
         Which::App => ("App font", "Panels, lists, inputs and menus."),
         Which::Chat => ("Chat font", "The conversation and the message box."),
-        Which::Terminal => ("Terminal font", "Terminals, the agents' own interfaces, and code, commands and diffs in the chat."),
+        Which::Terminal => ("Terminal font", "Terminals, and code, commands and diffs in the chat."),
     };
     let settings = cx.global::<crate::AppSettings>().0.borrow().clone();
     let current = match which {

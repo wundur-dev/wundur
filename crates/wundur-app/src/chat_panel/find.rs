@@ -42,9 +42,6 @@ pub(super) struct FindBar {
 impl ChatPanel {
     /// Show the bar (its field focused, its text selected), or focus it when it shows.
     pub(super) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.session.read(cx).view == View::Terminal {
-            return;
-        }
         if self.find.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in conversation"));
             let sub = cx.subscribe_in(&input, window, |p, input, ev: &InputEvent, window, cx| match ev {

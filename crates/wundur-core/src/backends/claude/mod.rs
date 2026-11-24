@@ -4,14 +4,12 @@
 //! summaries ([`summary`]) and where skills, agents and commands are kept ([`skills`]).
 
 pub mod history;
-pub mod hooks;
 pub mod issues;
 pub mod live;
 pub mod map;
 pub mod messages;
 pub mod pricing;
 pub mod process;
-pub mod screen;
 pub mod skills;
 pub mod stream;
 pub mod summary;
@@ -21,9 +19,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::agent::{Agent, Backend, Capabilities, Follow, Hook, LiveSession, Message, Running, SessionInfo, Sink, StartOptions};
+use crate::agent::{Agent, Backend, Capabilities, LiveSession, Message, Running, SessionInfo, Sink, StartOptions};
 use crate::conversation::Conversation;
-use crate::host::{Host, ProgramSpec};
+use crate::host::Host;
 use map::Mapper;
 use process::{Line, Options, Process};
 
@@ -103,7 +101,6 @@ impl Backend for ClaudeBackend {
             accept_edits_mode: Some("acceptEdits".into()),
             // Claude Code's aliases, each the latest of its family; any other name is typed in.
             models: ["fable", "opus", "sonnet", "haiku"].map(String::from).into(),
-            terminal_view: true,
         }
     }
 
@@ -180,23 +177,12 @@ impl Backend for ClaudeBackend {
         history::load_session(host, &path, &project.to_string_lossy())
     }
 
-    fn session_has_messages(&self, host: &dyn Host, project: &Path, id: &str) -> bool {
-        let Some(home) = skills::claude_home(host) else { return false };
-        let path = history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"));
-        history::has_messages(host, &path)
-    }
-
     fn session_modified(&self, host: &dyn Host, project: &Path, id: &str) -> Option<std::time::SystemTime> {
         if host.is_remote() {
             return None;
         }
         let home = skills::claude_home(host)?;
         std::fs::metadata(history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"))).and_then(|m| m.modified()).ok()
-    }
-
-    fn session_len(&self, host: &dyn Host, project: &Path, id: &str) -> Option<u64> {
-        let home = skills::claude_home(host)?;
-        host.len(&history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"))).ok()
     }
 
     fn rewind_point(&self, host: &dyn Host, project: &Path, id: &str) -> Result<Option<crate::agent::Rewind>, String> {
@@ -213,92 +199,10 @@ impl Backend for ClaudeBackend {
         history::rewind_point(&text).ok_or_else(|| "no message to undo in the conversation".into())
     }
 
-    fn session_moved_on(&self, host: &dyn Host, project: &Path, id: &str, since: u64) -> bool {
-        let Some(home) = skills::claude_home(host) else { return true };
-        let path = history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"));
-        !host.len(&path).is_ok_and(|n| n == since) && history::has_messages_from(host, &path, since)
-    }
-
     fn load_segment(&self, host: &dyn Host, project: &Path, id: &str, from: u64, to: u64) -> std::io::Result<Vec<crate::conversation::Item>> {
         let home = skills::claude_home(host).ok_or_else(|| std::io::Error::other("no home folder"))?;
         let path = history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"));
         history::load_segment(host, &path, &project.to_string_lossy(), from, to)
-    }
-
-    fn terminal_program(&self, options: &StartOptions, id: &str, new: bool) -> Option<ProgramSpec> {
-        let mut args: Vec<String> = Vec::new();
-        args.extend([if new { "--session-id" } else { "--resume" }.to_string(), id.to_string()]);
-        if options.fork && !new {
-            args.push("--fork-session".into());
-        }
-        if let Some(settings) = &options.settings {
-            args.extend(["--settings".into(), settings.to_string_lossy().to_string()]);
-        }
-        if let Some(config) = &options.mcp_config {
-            // Wundur's own tools need no asking: every message they send is the person's to allow.
-            args.extend(["--mcp-config".into(), config.to_string_lossy().to_string(), "--allowedTools".into(), "mcp__wundur".into()]);
-        }
-        if let Some(model) = &options.model {
-            args.extend(["--model".into(), model.clone()]);
-        }
-        if let Some(effort) = &options.effort {
-            args.extend(["--effort".into(), effort.clone()]);
-        }
-        if let Some(mode) = &options.permission_mode {
-            args.extend(["--permission-mode".into(), mode.clone()]);
-        }
-        if let Some(text) = &options.instructions {
-            args.extend(["--append-system-prompt".into(), text.clone()]);
-        }
-        Some(ProgramSpec {
-            program: self.program_name(),
-            args,
-            env: options.env.clone(),
-            unset: process::inherited_session_vars(),
-            cwd: options.cwd.clone(),
-        })
-    }
-
-    fn follow_session(&self, host: Arc<dyn Host>, project: &Path, id: &str, sink: Sink) -> Option<Follow> {
-        let home = skills::claude_home(host.as_ref())?;
-        let path = history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"));
-        let (follow, stop) = Follow::new();
-        let cwd = project.to_string_lossy().to_string();
-        std::thread::spawn(move || history::follow(host.as_ref(), &path, &cwd, &sink, &stop));
-        Some(follow)
-    }
-
-    fn hook_settings(&self, command: &dyn Fn(&str) -> String) -> Option<String> {
-        Some(hooks::settings(command))
-    }
-
-    fn parse_hook(&self, event: &str, payload: &Value, cwd: &str) -> Option<Hook> {
-        hooks::parse(event, payload, cwd)
-    }
-
-    fn hook_reply(&self, allow: bool) -> String {
-        hooks::reply(allow)
-    }
-
-    fn hook_reply_with(&self, input: &Value) -> String {
-        hooks::reply_with(input)
-    }
-
-    fn terminal_attach(&self, path: &Path, bracketed: bool) -> Option<Vec<u8>> {
-        // A pasted image path becomes `[Image #N]`, the image itself attached.
-        let p = path.to_string_lossy();
-        Some(if bracketed { format!("\x1b[200~{p}\x1b[201~") } else { p.to_string() }.into_bytes())
-    }
-
-    fn terminal_paste_image(&self) -> Option<Vec<u8>> {
-        // Claude Code reads an image from the clipboard on Ctrl+V.
-        Some(vec![0x16])
-    }
-
-    /// A message typed while it works is queued by the interface and read into the running
-    /// turn (its record keeps it as a queued attachment).
-    fn terminal_takes_mid_turn(&self) -> bool {
-        true
     }
 
     fn builtin_commands(&self) -> &'static [(&'static str, &'static str)] {
@@ -325,16 +229,6 @@ impl Backend for ClaudeBackend {
         Some(format!("/model {model}"))
     }
 
-    fn mode_cycle(&self) -> Option<crate::agent::ModeCycle> {
-        let modes = [("default", ""), ("acceptEdits", "accept edits on"), ("plan", "plan mode on"), ("auto", "auto mode on")];
-        // Shift+Tab cycles the modes.
-        Some((modes.iter().map(|(m, l)| (m.to_string(), l.to_string())).collect(), b"\x1b[Z".to_vec()))
-    }
-
-    fn hook_mode(&self, payload: &Value) -> Option<String> {
-        payload.get("permission_mode").and_then(Value::as_str).map(str::to_string)
-    }
-
     fn billed_per_use(&self, host: &dyn Host, project: &Path) -> Option<bool> {
         let env = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
         let settings = [
@@ -344,12 +238,6 @@ impl Backend for ClaudeBackend {
         ];
         let texts: Vec<String> = settings.into_iter().flatten().filter_map(|p| host.read_to_string(&p).ok()).collect();
         Some(pricing::billed_per_use(!host.is_remote(), &env, &texts))
-    }
-
-    fn folder_trusted(&self, host: &dyn Host, project: &Path) -> Option<bool> {
-        // Only this folder's flag is looked at; nothing else in the file is used or shown.
-        let text = host.read_to_string(&host.home_dir()?.join(".claude.json")).ok()?;
-        Some(trusted_in(&text, &project.to_string_lossy()))
     }
 
     fn context_window(&self, model: &str) -> Option<u64> {
@@ -391,14 +279,6 @@ impl Backend for ClaudeBackend {
             ages: &recent,
             own,
         })
-    }
-
-    fn reply_preview(&self, lines: &[String], columns: usize) -> Option<String> {
-        screen::reply_in_progress(lines, columns)
-    }
-
-    fn message_unsent(&self, lines: &[String], text: &str) -> bool {
-        screen::message_unsent(lines, text)
     }
 
     fn apply_fix(&self, host: &dyn Host, project: &Path, kind: &str, fix: &str) -> std::io::Result<String> {

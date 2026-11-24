@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
@@ -76,10 +75,6 @@ pub enum Event {
     BackgroundTask { id: String, running: bool },
     /// A message from another agent: a background subagent's report, or a teammate's.
     AgentMessage { from: String, text: String },
-    /// A preview of the reply being written, read off the agent's screen before its record has
-    /// it: shown until the finished text arrives ([`Event::Text`]), and dropped if a tool call
-    /// or the end of the turn comes instead.
-    TextPreview(String),
     /// What a running tool has printed so far (its latest part), while it runs.
     ToolOutput { id: String, text: String },
     /// A tool call failed in a known way (see [`Issue`]).
@@ -160,56 +155,6 @@ pub fn pick_variant<'a>(models: &'a [ModelOption], base: &str, effort: Option<&s
     })
 }
 
-/// The permission modes as `(mode, what the status line says)`, in the order the mode key
-/// cycles them, and that key.
-pub type ModeCycle = (Vec<(String, String)>, Vec<u8>);
-
-/// How to start an agent's interface on a session: continue it (`--resume`) only when it has
-/// a conversation to continue; a session that has none yet starts afresh under its id, and a
-/// fork of one with nothing to copy starts afresh too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Launch {
-    /// A new conversation under this id.
-    New,
-    /// Continue the conversation.
-    Resume,
-    /// Continue a copy of it.
-    Fork,
-}
-
-impl Launch {
-    pub fn decide(has_id: bool, has_messages: bool, fork: bool) -> Self {
-        match (has_id && has_messages, fork) {
-            (false, _) => Launch::New,
-            (true, true) => Launch::Fork,
-            (true, false) => Launch::Resume,
-        }
-    }
-}
-
-/// What the agent's own interface reports through the window's hooks, in neutral terms (see
-/// [`Backend::hook_settings`] and [`Backend::parse_hook`]).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Hook {
-    /// The interface is up on this session (its id and file).
-    Started { session_id: Option<String>, transcript: Option<PathBuf> },
-    /// The person's message went in (typed in the window or in the terminal). Empty for a
-    /// prompt the interface made itself (a subagent's report, a task notice): the session file
-    /// has those.
-    Prompt(String),
-    /// A tool is about to run.
-    ToolStarting { id: Option<String>, tool: String, input: Value },
-    /// The agent asks before running a tool. The hook waits for [`Backend::hook_reply`]; the
-    /// interface asks in the terminal at the same time, and whichever answers first counts.
-    Permission { tool: String, summary: String, description: Option<String>, input: Value },
-    /// A tool finished, failed or was refused.
-    ToolFinished { id: Option<String>, tool: String, input: Value },
-    /// The turn is over: the agent waits for the person.
-    TurnEnded,
-    /// The interface wants the person's attention.
-    Attention(String),
-}
-
 /// What an agent's reader threads report.
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -234,8 +179,6 @@ pub struct StartOptions {
     pub resume: Option<String>,
     /// Continue it in a copy (the original keeps running elsewhere).
     pub fork: bool,
-    /// Extra settings for the agent's own interface (a file with the window's hooks).
-    pub settings: Option<PathBuf>,
     /// The effort level, for an agent that takes one apart from the model
     /// ([`Backend::efforts`]).
     pub effort: Option<String>,
@@ -307,27 +250,6 @@ pub struct Capabilities {
     pub accept_edits_mode: Option<String>,
     /// Models it can be asked to use (empty: its default only).
     pub models: Vec<String>,
-    /// Its own terminal interface drives the session for the session's whole life
-    /// ([`Backend::terminal_program`]): the Terminal view shows it, and Chat is drawn from the
-    /// session's file ([`Backend::follow_session`]) and types into it. Without it, the agent
-    /// runs behind the window in its structured mode ([`Agent`]) and there is only Chat.
-    pub terminal_view: bool,
-}
-
-/// A session file being followed; dropping it stops the follower.
-pub struct Follow(pub Arc<AtomicBool>);
-
-impl Follow {
-    pub fn new() -> (Self, Arc<AtomicBool>) {
-        let stop = Arc::new(AtomicBool::new(false));
-        (Self(stop.clone()), stop)
-    }
-}
-
-impl Drop for Follow {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
 }
 
 /// An earlier session of a folder.
@@ -445,24 +367,9 @@ pub trait Backend: Send + Sync {
     fn load_session(&self, _host: &dyn Host, _project: &Path, _id: &str) -> std::io::Result<Conversation> {
         Err(std::io::Error::other("this agent cannot resume sessions"))
     }
-    /// Whether session `id` of `project` has a conversation the agent can continue (its file
-    /// exists and holds a message). Until then a restart must start it afresh under the same
-    /// id, not continue it.
-    fn session_has_messages(&self, _host: &dyn Host, _project: &Path, _id: &str) -> bool {
-        true
-    }
     /// When session `id` was last written, for "12m ago" in the list: its file's time.
     fn session_modified(&self, _host: &dyn Host, _project: &Path, _id: &str) -> Option<std::time::SystemTime> {
         None
-    }
-    /// How long session `id`'s file is now, to ask [`Backend::session_moved_on`] later.
-    fn session_len(&self, _host: &dyn Host, _project: &Path, _id: &str) -> Option<u64> {
-        None
-    }
-    /// Whether session `id` has a message past byte `since` of its file: a process that has
-    /// been idle since then no longer knows the whole conversation. When it cannot tell: yes.
-    fn session_moved_on(&self, _host: &dyn Host, _project: &Path, _id: &str, _since: u64) -> bool {
-        true
     }
     /// Where to cut session `id` to undo its last turn, for an agent that can continue a
     /// conversation without it ([`StartOptions::rewind`]). `Ok(None)`: the turn is the first,
@@ -473,35 +380,6 @@ pub trait Backend: Send + Sync {
     /// The items of an [`crate::conversation::Item::Earlier`] part of session `id`.
     fn load_segment(&self, _host: &dyn Host, _project: &Path, _id: &str, _from: u64, _to: u64) -> std::io::Result<Vec<crate::conversation::Item>> {
         Err(std::io::Error::other("this agent cannot read earlier parts"))
-    }
-    /// The agent's own terminal interface for session `id` (`new`: a session not started yet,
-    /// to be created under that id; `options.fork`: continue `id` in a copy). Run in a
-    /// pseudo-terminal while the window follows the file.
-    fn terminal_program(&self, _options: &StartOptions, _id: &str, _new: bool) -> Option<crate::host::ProgramSpec> {
-        None
-    }
-    /// Follow session `id` of `project` from now on, off the UI thread: what is added to it
-    /// arrives through `sink` as events, until the returned handle is dropped.
-    fn follow_session(&self, _host: Arc<dyn Host>, _project: &Path, _id: &str, _sink: Sink) -> Option<Follow> {
-        None
-    }
-    /// What to type into the terminal interface to send `text` as the person's message, in
-    /// pieces written a moment apart. `bracketed`: the interface asked for bracketed paste.
-    fn terminal_message(&self, text: &str, bracketed: bool) -> Vec<Vec<u8>> {
-        // A command (`/model opus`) is typed, so the interface takes it as a command; a paste
-        // of it would be plain text.
-        let command = text.starts_with('/') && !text.contains('\n');
-        let body = if bracketed && !command { format!("\x1b[200~{text}\x1b[201~") } else { text.replace('\n', " ") };
-        vec![body.into_bytes(), b"\r".to_vec()]
-    }
-    /// What to type to attach an image file to the message being written (before its text),
-    /// or `None` when the interface cannot take images that way.
-    fn terminal_attach(&self, _path: &Path, _bracketed: bool) -> Option<Vec<u8>> {
-        None
-    }
-    /// The key that makes the interface paste an image from the clipboard itself.
-    fn terminal_paste_image(&self) -> Option<Vec<u8>> {
-        None
     }
     /// The agent's own `/` commands worth offering in the message box (name, what it does).
     fn builtin_commands(&self) -> &'static [(&'static str, &'static str)] {
@@ -526,34 +404,6 @@ pub trait Backend: Send + Sync {
     fn permission_modes(&self) -> Vec<(&'static str, &'static str)> {
         vec![("default", "Ask before acting"), ("auto", "Auto"), ("acceptEdits", "Accept edits"), ("plan", "Plan")]
     }
-    /// The permission modes, in the order the interface's mode key cycles through them, as
-    /// `(mode name, what its status line says)`; and that key.
-    fn mode_cycle(&self) -> Option<ModeCycle> {
-        None
-    }
-    /// The permission mode a hook call reports the interface is in.
-    fn hook_mode(&self, _payload: &Value) -> Option<String> {
-        None
-    }
-    /// Whether the terminal interface takes a message typed while it works (it adds it to the
-    /// running turn, or queues it itself), as [`Agent::takes_mid_turn`] says for the agent.
-    fn terminal_takes_mid_turn(&self) -> bool {
-        false
-    }
-    /// What to type to stop the current turn.
-    fn terminal_interrupt(&self) -> Vec<u8> {
-        b"\x1b".to_vec()
-    }
-    /// The contents of a settings file that makes the terminal interface run `command(event)`
-    /// on each of its hook events, or `None` when it has no hooks.
-    fn hook_settings(&self, _command: &dyn Fn(&str) -> String) -> Option<String> {
-        None
-    }
-    /// One hook call (`event` as named in [`Backend::hook_settings`], and what the interface
-    /// passed it), in neutral terms.
-    fn parse_hook(&self, _event: &str, _payload: &Value, _cwd: &str) -> Option<Hook> {
-        None
-    }
     /// Whether `host`'s agent is billed per use (an API key) rather than by a subscription
     /// plan, as far as can be told without reading any credential. `None`: cannot tell.
     fn billed_per_use(&self, _host: &dyn Host, _project: &Path) -> Option<bool> {
@@ -570,19 +420,6 @@ pub trait Backend: Send + Sync {
     /// The message that asks it to compact now, when it has one.
     fn compact_command(&self) -> Option<&'static str> {
         None
-    }
-    /// Whether the agent has been told it may work in `project` (its own record), when known.
-    fn folder_trusted(&self, _host: &dyn Host, _project: &Path) -> Option<bool> {
-        None
-    }
-    /// What a waiting permission hook answers.
-    fn hook_reply(&self, _allow: bool) -> String {
-        String::new()
-    }
-    /// What a waiting permission hook answers to allow the tool with `input` instead of the
-    /// one it asked with (a question's answers, see [`crate::questions`]).
-    fn hook_reply_with(&self, _input: &Value) -> String {
-        self.hook_reply(true)
     }
     /// Every agent process of this kind on this machine except this window's own (children of
     /// `own_pid`). Read-only: nothing is signalled. Empty for a remote host.
@@ -604,17 +441,6 @@ pub trait Backend: Send + Sync {
     /// its notes) so they belong to the new name. Nothing to move by default.
     fn folder_renamed(&self, _host: &dyn Host, _old: &Path, _new: &Path) -> std::io::Result<()> {
         Ok(())
-    }
-    /// The reply being written, read off the agent's own interface (its terminal's lines,
-    /// scrollback first, and its width), for a preview in the chat. `None` when there is none,
-    /// or the screen does not look as expected.
-    fn reply_preview(&self, _lines: &[String], _columns: usize) -> Option<String> {
-        None
-    }
-    /// Whether a message typed into the agent's own interface still sits in its input box,
-    /// unsent (its Enter was lost), from the terminal's lines.
-    fn message_unsent(&self, _lines: &[String], _text: &str) -> bool {
-        false
     }
     /// Apply fix `fix` of the known issue `kind` (see [`Issue`]) for `project`; what was done,
     /// in a sentence.
@@ -691,25 +517,6 @@ mod variant_tests {
         assert_eq!(pick(Some("xhigh"), false, false), Some("m-high"));
         assert_eq!(pick(Some("max"), true, false), Some("m-thinking-max"));
         assert_eq!(pick_variant(&models, "other", None, false, false), None);
-    }
-}
-
-#[cfg(test)]
-mod launch_tests {
-    use super::Launch;
-
-    /// Every relaunch (model, mode, view, take over, after an exit) before the first message:
-    /// the session has an id but no conversation, so it starts afresh under that id.
-    #[test]
-    fn a_restart_before_the_first_message_starts_afresh() {
-        assert_eq!(Launch::decide(true, false, false), Launch::New);
-        // A fork asked of a session with nothing in it yet starts afresh too.
-        assert_eq!(Launch::decide(true, false, true), Launch::New);
-        // No id yet: new.
-        assert_eq!(Launch::decide(false, false, false), Launch::New);
-        // With a conversation: continue it, or a copy.
-        assert_eq!(Launch::decide(true, true, false), Launch::Resume);
-        assert_eq!(Launch::decide(true, true, true), Launch::Fork);
     }
 }
 

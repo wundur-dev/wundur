@@ -141,7 +141,6 @@ impl RowSummary {
 #[derive(Clone, Copy, PartialEq)]
 enum Dot {
     Permission,
-    Asking,
     Working,
     Agents,
 }
@@ -153,8 +152,6 @@ impl Row {
         let needs_input = chat.needs_input();
         let dot = if needs_input {
             Some(Dot::Permission)
-        } else if s.asking.is_some() {
-            Some(Dot::Asking)
         } else if chat.busy || s.waiting_for.is_some() {
             Some(Dot::Working)
         } else if chat.running_agents().any(|a| a.background) {
@@ -1397,11 +1394,7 @@ impl Shell {
         let ws = self.tabs[ix].ws.clone();
         crate::perf::switch_begin("session");
         ws.update(cx, |w, cx| {
-            w.session.update(cx, |s, cx| {
-                s.unseen = false;
-                // Reopened from the last run with its Terminal showing: start it now.
-                s.wake(cx);
-            });
+            w.session.update(cx, |s, _| s.unseen = false);
             crate::perf::switch_step("woken");
             w.focus_main(window, cx);
         });
@@ -2247,11 +2240,7 @@ impl Shell {
         for ix in 0..self.tabs.len() {
             let session = self.tabs[ix].ws.read(cx).session.clone();
             let s = session.read(cx);
-            let live = if let Some(p) = s.chat.pending_permissions().next() {
-                Some(Need::Permission { tool: p.tool_name.clone(), summary: p.summary.clone() })
-            } else {
-                s.asking.map(|_| Need::Asking)
-            };
+            let live = s.chat.pending_permissions().next().map(|p| Need::Permission { tool: p.tool_name.clone(), summary: p.summary.clone() });
             let looking = self.looking_at(ix, window);
             let action = self.attention.update(session.entity_id().as_u64(), live, looking, now);
             self.act(action, cx);
@@ -2271,7 +2260,7 @@ impl Shell {
                 let Some(ix) = s.tabs.iter().position(|t| t.ws.read(cx).session == session) else { return };
                 let chat = &session.read(cx).chat;
                 // Working again, or waiting on a question (told about on its own).
-                if chat.busy || chat.needs_input() || session.read(cx).asking.is_some() {
+                if chat.busy || chat.needs_input() {
                     return;
                 }
                 let need = Need::Finished(chat.last_activity(100));
@@ -2319,7 +2308,6 @@ impl Shell {
         let row = &self.tabs[ix].row;
         match row.dot {
             Some(Dot::Permission) => Some((theme.warning, "Needs permission")),
-            Some(Dot::Asking) => Some((theme.warning, "Asking something in the terminal")),
             Some(Dot::Working) => Some((theme.blue, "Working")),
             Some(Dot::Agents) => Some((theme.magenta, "Agents still working in the background")),
             None if row.unseen && ix != self.active => Some((theme.foreground, "Something new")),
@@ -2360,7 +2348,7 @@ impl Shell {
             key.strip_prefix(root).ok().filter(|r| !r.as_os_str().is_empty()).map(|r| r.display().to_string())
         });
         let (status, about): (Option<(&'static str, Hsla)>, Option<String>) = match (row.dot, &summary) {
-            (Some(Dot::Permission | Dot::Asking), _) => (Some(("Needs you", yellow)), row.activity.clone()),
+            (Some(Dot::Permission), _) => (Some(("Needs you", yellow)), row.activity.clone()),
             (Some(Dot::Working), _) => (Some(("Working", green)), row.activity.clone()),
             (Some(Dot::Agents), _) => (Some(("Agents working", green)), row.activity.clone()),
             // The shown one is in front of the person: its word would tell them nothing.
@@ -2579,7 +2567,7 @@ impl Shell {
         for (i, (ix, project)) in matches.iter().enumerate() {
             let number = self.tabs[*ix].number;
             let status = self.tabs[*ix].row.dot.map(|d| match d {
-                Dot::Permission | Dot::Asking => "Needs you",
+                Dot::Permission => "Needs you",
                 Dot::Working => "Working",
                 Dot::Agents => "Agents working",
             });
@@ -3104,7 +3092,7 @@ impl Shell {
     fn project_header(&self, pi: usize, project: &wundur_core::settings::Project, members: &[usize], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted, hover, yellow, green) = (crate::theme::list_text(cx), theme.muted_foreground, theme.secondary_hover, theme.yellow, theme.green);
-        let waiting = members.iter().filter(|ix| matches!(self.tabs[**ix].row.dot, Some(Dot::Permission | Dot::Asking))).count();
+        let waiting = members.iter().filter(|ix| matches!(self.tabs[**ix].row.dot, Some(Dot::Permission))).count();
         let working = members.iter().filter(|ix| matches!(self.tabs[**ix].row.dot, Some(Dot::Working | Dot::Agents))).count();
         let key = project_key(&project.root);
         let title = panels::session_title(&key, project.name.clone(), cx);

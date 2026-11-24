@@ -1,11 +1,10 @@
-//! The window's end of the agents' hooks: a local socket that `wundur-hook` (run by an
-//! agent's terminal interface on its hook events) connects to, one line per call. Calls are
-//! routed to the session whose token they carry; a permission request keeps its connection
-//! open until the session answers it (or drops it, when the person answered in the terminal).
+//! The window's end of its tool server: a local socket that `wundur-mcp` (the tool server
+//! each agent is started with) connects to, one line per tool call. Calls are routed to the
+//! session whose token they carry, and each keeps its connection open until it is answered.
 //!
-//! Each session gets a token and a settings file (in a folder of this window's own under the
-//! system's temporary folder) that names `wundur-hook` with this socket and that token; the
-//! agent is started with it. Nothing in the person's own agent settings is touched.
+//! Each session gets a token and a tool servers file (in a folder of this window's own under
+//! the system's temporary folder) that names `wundur-mcp` with this socket and that token;
+//! the agent is started with it. Nothing in the person's own agent settings is touched.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,7 +19,7 @@ use serde_json::Value;
 use crate::agent_session::AgentSession;
 use crate::local_socket;
 
-/// One hook call.
+/// One call.
 pub struct Call {
     pub token: String,
     pub event: String,
@@ -29,8 +28,7 @@ pub struct Call {
     pub reply: Option<Reply>,
 }
 
-/// Where a waiting hook's answer goes; dropping it without answering lets the agent ask in
-/// its own interface.
+/// Where a waiting call's answer goes.
 pub struct Reply(interprocess::local_socket::Stream);
 
 impl Reply {
@@ -39,7 +37,7 @@ impl Reply {
     }
 }
 
-/// The window's hook socket and the sessions it serves.
+/// The window's socket and the sessions it serves.
 #[derive(Clone, Default)]
 pub struct Hooks(pub Rc<RefCell<State>>);
 
@@ -47,11 +45,9 @@ pub struct Hooks(pub Rc<RefCell<State>>);
 pub struct State {
     /// The socket, when it could be opened.
     pub socket: Option<PathBuf>,
-    /// The helper program next to this one.
-    pub helper: Option<PathBuf>,
     /// The tool server (MCP) next to this one: the messaging tools (see `messaging`).
     pub mcp: Option<PathBuf>,
-    /// The folder for the sessions' settings files.
+    /// The folder for the sessions' tool servers files.
     pub dir: PathBuf,
     sessions: HashMap<String, WeakEntity<AgentSession>>,
     next: u64,
@@ -59,8 +55,8 @@ pub struct State {
 
 impl Global for Hooks {}
 
-/// Open the socket and start serving it. Without a socket (or the helper), sessions run
-/// without hooks: permission prompts are answered in the terminal view only.
+/// Open the socket and start serving it. Without a socket (or the tool server), sessions run
+/// without Wundur's own tools.
 pub fn init(cx: &mut App) {
     // Named for this instance's config folder too, so the tidy-up below only ever looks at its
     // own instances' folders: a test copy (another config folder) never removes the person's
@@ -68,16 +64,12 @@ pub fn init(cx: &mut App) {
     let dir = std::env::temp_dir().join(format!("wundur-{}-{}", crate::instance::config_tag(), std::process::id()));
     // Folders of windows that ended without tidying up (killed), off the UI thread.
     std::thread::spawn(remove_stale);
-    let helper = std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name(if cfg!(windows) { "wundur-hook.exe" } else { "wundur-hook" }))
-        .filter(|p| p.is_file());
     let mcp = std::env::current_exe()
         .ok()
         .map(|exe| exe.with_file_name(if cfg!(windows) { "wundur-mcp.exe" } else { "wundur-mcp" }))
         .filter(|p| p.is_file());
-    let mut state = State { dir: dir.clone(), helper, mcp, ..Default::default() };
-    if state.helper.is_some() && std::fs::create_dir_all(&dir).is_ok() {
+    let mut state = State { dir: dir.clone(), mcp, ..Default::default() };
+    if state.mcp.is_some() && std::fs::create_dir_all(&dir).is_ok() {
         let (tx, rx) = async_channel::unbounded::<Call>();
         let socket = local_socket::address(&dir.join("hooks.sock"), &format!("wundur-{}-hooks", std::process::id()));
         if listen(&socket, tx) {
@@ -91,7 +83,7 @@ pub fn init(cx: &mut App) {
         }
     }
     if state.socket.is_none() {
-        eprintln!("wundur: no hook socket; permission prompts are answered in the terminal view");
+        eprintln!("wundur: no tool server socket; sessions run without Wundur's own tools");
     }
     cx.set_global(Hooks(Rc::new(RefCell::new(state))));
 }
@@ -145,8 +137,8 @@ fn listen(socket: &Path, tx: async_channel::Sender<Call>) -> bool {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { return };
                 let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
                 let event = s("event");
-                // A permission request and a tool call wait for their answer.
-                let waits = event == "PermissionRequest" || event == "mcp";
+                // A tool call waits for its answer.
+                let waits = event == "mcp";
                 let call = Call {
                     token: s("token"),
                     payload: v.get("payload").cloned().unwrap_or(Value::Null),
@@ -167,119 +159,48 @@ fn route(call: Call, cx: &mut App) {
     let Some(session) = target.and_then(|w| w.upgrade()) else { return };
     if call.event == "mcp" {
         crate::messaging::tool_call(session, call, cx);
-    } else {
-        session.update(cx, |s, cx| s.on_hook(call, cx));
     }
 }
 
-/// A session's hooks: its token and the settings file to start its agent with. `None` when
-/// the window has no hook socket or the backend no hooks.
+/// A session's place on the socket: its tool servers file. `None` when the window has no
+/// socket or no tool server.
 pub struct Registration {
-    /// The hooks' settings file, for an agent with hooks.
-    pub settings: Option<PathBuf>,
-    /// The tool servers file to start its agent with (see [`Registration::write_mcp`]), and
-    /// the window's own server's entry in it (the messaging tools), when the window has it.
-    pub mcp: Option<PathBuf>,
-    wundur_mcp: Option<serde_json::Value>,
-    token: String,
-    /// The window's socket.
-    socket: PathBuf,
+    /// The tool servers file to start its agent with (see [`Registration::write_mcp`]).
+    pub mcp: PathBuf,
+    /// The window's own server's entry in it.
+    wundur_mcp: serde_json::Value,
 }
-
-/// `wundur-hook` for an agent on another machine (see the file).
-const REMOTE_HELPER: &str = include_str!("bin/wundur-hook.py");
 
 impl Registration {
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-
     /// Write the tool servers file for a start of its agent: the window's own server and
     /// `servers` (those set up in Settings for its folder). Its path, when written.
     pub fn write_mcp(&self, servers: &[wundur_core::mcp::Server]) -> Option<PathBuf> {
-        let path = self.mcp.clone()?;
         let mut own = serde_json::Map::new();
-        if let Some(entry) = &self.wundur_mcp {
-            own.insert("wundur".into(), entry.clone());
-        }
+        own.insert("wundur".into(), self.wundur_mcp.clone());
         let config = wundur_core::mcp::claude_config(servers, &own);
-        std::fs::write(&path, config.to_string()).ok().map(|_| path)
+        std::fs::write(&self.mcp, config.to_string()).ok().map(|_| self.mcp.clone())
     }
-
-    /// For an agent on another machine, which has no `wundur-hook`: the settings file to start
-    /// it with and the files to write there first (in `dir`: the Python helper, and settings
-    /// naming `socket`, a socket there that its connection forwards to the window's). Also
-    /// the window's socket, the far end of that forward.
-    pub fn remote(&self, backend: &dyn wundur_core::agent::Backend, dir: &Path, socket: &Path) -> Option<RemoteHooks> {
-        // Each launch its own copy of both: they go when it ends, and other sessions may
-        // still be running.
-        let name = socket.file_stem().map_or_else(|| self.token.clone(), |s| s.to_string_lossy().into_owned());
-        let (helper, settings) = (dir.join(format!("{name}.py")), dir.join(format!("{name}.json")));
-        let quote = |p: &Path| wundur_core::host::shell_quote(&p.to_string_lossy());
-        let command = |event: &str| format!("python3 {} {} {} {event}", quote(&helper), quote(socket), self.token);
-        let text = backend.hook_settings(&command)?;
-        Some(RemoteHooks {
-            settings: settings.clone(),
-            files: vec![(helper, REMOTE_HELPER.to_string()), (settings, text)],
-            here: self.socket.clone(),
-        })
-    }
-}
-
-/// What [`Registration::remote`] gives.
-pub struct RemoteHooks {
-    pub settings: PathBuf,
-    pub files: Vec<(PathBuf, String)>,
-    pub here: PathBuf,
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        if let Some(settings) = &self.settings {
-            let _ = std::fs::remove_file(settings);
-        }
-        if let Some(mcp) = &self.mcp {
-            let _ = std::fs::remove_file(mcp);
-        }
+        let _ = std::fs::remove_file(&self.mcp);
     }
 }
 
-pub fn register(
-    session: WeakEntity<AgentSession>,
-    backend: &dyn wundur_core::agent::Backend,
-    cx: &mut App,
-) -> Option<Registration> {
+pub fn register(session: WeakEntity<AgentSession>, cx: &mut App) -> Option<Registration> {
     let hooks = cx.try_global::<Hooks>()?.clone();
     let mut state = hooks.0.borrow_mut();
     let socket = state.socket.clone()?;
+    let program = state.mcp.clone()?;
     state.next += 1;
     let token = format!("s{}-{}", std::process::id(), state.next);
-    // Hooks, for an agent that has them (and with the helper there): a settings file naming it.
-    let settings = state.helper.clone().and_then(|helper| {
-        let command = |event: &str| {
-            format!(
-                "{} {} {} {event}",
-                wundur_core::host::shell_quote(&helper.to_string_lossy()),
-                wundur_core::host::shell_quote(&socket.to_string_lossy()),
-                token
-            )
-        };
-        let text = backend.hook_settings(&command)?;
-        let path = state.dir.join(format!("{token}.json"));
-        std::fs::write(&path, text).ok().map(|_| path)
-    });
-    // The window's tool server, named with the same socket and token; the file with it is
-    // written as the agent starts (see `write_mcp`).
-    let wundur_mcp = state.mcp.clone().map(|program| {
-        serde_json::json!({ "type": "stdio", "command": program.to_string_lossy(), "args": [socket.to_string_lossy(), token] })
-    });
-    let mcp = wundur_mcp.as_ref().map(|_| state.dir.join(format!("{token}-mcp.json")));
-    // Neither hooks nor the tool server: nothing to register.
-    if settings.is_none() && mcp.is_none() {
-        return None;
-    }
-    state.sessions.insert(token.clone(), session);
-    Some(Registration { settings, mcp, wundur_mcp, token, socket })
+    // The window's tool server, named with the socket and the session's token; the file with
+    // it is written as the agent starts (see `write_mcp`).
+    let wundur_mcp = serde_json::json!({ "type": "stdio", "command": program.to_string_lossy(), "args": [socket.to_string_lossy(), token] });
+    let mcp = state.dir.join(format!("{token}-mcp.json"));
+    state.sessions.insert(token, session);
+    Some(Registration { mcp, wundur_mcp })
 }
 
 #[cfg(test)]
@@ -287,10 +208,10 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    /// What `wundur-hook` does, by hand: a permission call keeps its connection, and the
-    /// answer comes back on it; other calls do not wait.
+    /// What `wundur-mcp` does, by hand: a tool call keeps its connection, and the answer
+    /// comes back on it; anything else does not wait.
     #[::core::prelude::v1::test]
-    fn calls_arrive_and_permission_answers_go_back() {
+    fn calls_arrive_and_answers_go_back() {
         let dir = std::env::temp_dir().join(format!("wb-hooks-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = local_socket::address(&dir.join("t.sock"), &format!("wb-hooks-test-{}", std::process::id()));
@@ -304,7 +225,7 @@ mod tests {
         assert!(call.reply.is_none());
 
         let mut c = local_socket::connect(&socket).unwrap();
-        c.write_all(b"{\"token\":\"s1-1\",\"event\":\"PermissionRequest\",\"payload\":{\"tool_name\":\"Bash\"}}\n").unwrap();
+        c.write_all(b"{\"token\":\"s1-1\",\"event\":\"mcp\",\"payload\":{\"tool_name\":\"Bash\"}}\n").unwrap();
         let call = rx.recv_blocking().unwrap();
         assert_eq!(call.payload["tool_name"], "Bash");
         call.reply.expect("waits").send("{\"ok\":true}");

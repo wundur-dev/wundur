@@ -12,7 +12,7 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use wundur_core::settings::{AGENT_FONT_SIZE, Prefs, Settings, TERMINAL_FONT_SIZE, TERMINAL_FONT_SIZES};
+use wundur_core::settings::{Prefs, Settings, TERMINAL_FONT_SIZE, TERMINAL_FONT_SIZES};
 
 use crate::AppSettings;
 
@@ -145,10 +145,6 @@ fn pref_described(title: &'static str, description: String, field: fn(&mut Prefs
         .default_value(true),
     )
     .description(description)
-}
-
-fn pref_off_by_default(title: &'static str, description: &'static str, field: fn(&mut Prefs) -> &mut bool) -> SettingItem {
-    switch_pref(title, description, field, false)
 }
 
 fn switch_pref(title: &'static str, description: &'static str, field: fn(&mut Prefs) -> &mut bool, default: bool) -> SettingItem {
@@ -373,11 +369,6 @@ fn chat() -> SettingPage {
                 |p| &mut p.paste_pills,
             ),
         ]),
-        SettingGroup::new().title("Experimental").items([pref_off_by_default(
-            "Hybrid Chat and Terminal",
-            "Claude Code's own interface runs for the whole session and Chat is drawn from it, so switching is instant, even mid-turn. Off: Chat runs Claude Code headless, and switching restarts it in the other view between turns. Applies to sessions as they start.",
-            |p| &mut p.hybrid_views,
-        )]),
     ])
 }
 
@@ -395,16 +386,6 @@ fn terminals() -> SettingPage {
                 .default_value(TERMINAL_FONT_SIZE as f64),
             )
             .description("In points, for shell terminals. Cmd+= and Cmd+- change one terminal's size for as long as it is open."),
-            SettingItem::new(
-                "Agents' interface font size",
-                SettingField::number_input(
-                    NumberFieldOptions { min: min as f64, max: max as f64, step: 0.5 },
-                    |cx: &App| get(cx, |s| s.prefs.agent_font_size()) as f64,
-                    move |v: f64, cx: &mut App| change(cx, |s| s.prefs.agent_font_size = (v as f32).clamp(min, max)),
-                )
-                .default_value(AGENT_FONT_SIZE as f64),
-            )
-            .description("In points, for an agent's own interface (a session's Terminal view), where you read and type."),
             pref(
                 "Keep terminal history",
                 "A terminal shows what it showed before Wundur Studio quit. Kept 30 days.",

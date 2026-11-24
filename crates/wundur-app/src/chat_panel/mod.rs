@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, InlineToken, TextDecoration, TextDecorationCollection, TextareaMode, InlineTokenContext, Input, InputContent, InputEvent, InputState, Textarea, TextareaState};
 
-use crate::agent_session::{Asking, Fill, Spend, View};
+use crate::agent_session::{Fill, Spend};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::text::TextView;
@@ -283,8 +283,8 @@ impl ChatPanel {
                                 let alive = this.update(cx, |p, cx| {
                                     let session = p.session.read(cx);
                                     let still = clocks_running(&session.chat);
-                                    // Drawn only where the clocks show: on screen, in Chat.
-                                    let shown = p.on_screen.now() && session.view == View::Chat;
+                                    // Drawn only where the clocks show: on screen.
+                                    let shown = p.on_screen.now();
                                     if shown {
                                         ticks = ticks.wrapping_add(1);
                                         // The working line turns on every tick, drawn apart from
@@ -652,10 +652,7 @@ impl ChatPanel {
             }
             member = true;
         }
-        let parts = match self.preview_text(ix, &item, cx) {
-            Some(text) => vec![self.render_preview(text, cx)],
-            None => self.render_items(std::slice::from_ref(&item), &format!("main{ix}"), cx),
-        };
+        let parts = self.render_items(std::slice::from_ref(&item), &format!("main{ix}"), cx);
         let body = div()
             .w_full()
             .flex()
@@ -1032,60 +1029,6 @@ impl ChatPanel {
     }
 }
 
-impl ChatPanel {
-    /// In the terminal view, the files the agent changed this session, as links to their diffs.
-    fn render_edits(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let chat = &self.session.read(cx).chat;
-        let mut seen: Vec<(PathBuf, usize, usize)> = Vec::new();
-        for item in chat.items.iter().rev() {
-            if let Item::Tool(t) = item
-                && let Some(d) = &t.diff
-                && t.done()
-                && !t.is_error
-                && !seen.iter().any(|(p, ..)| *p == d.path)
-            {
-                seen.push((d.path.clone(), d.added(), d.removed()));
-            }
-            if seen.len() >= 6 {
-                break;
-            }
-        }
-        if seen.is_empty() {
-            return None;
-        }
-        let theme = cx.theme();
-        let (muted, link, green, red, border) = (theme.muted_foreground, theme.blue, theme.green, theme.red, theme.border);
-        let root = PathBuf::from(&chat.cwd);
-        let mut row = div()
-            .flex_none()
-            .h(px(22.))
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_3()
-            .border_t_1()
-            .border_color(border)
-            .text_size(px(11.))
-            .text_color(muted)
-            .child("Edited:");
-        for (i, (path, added, removed)) in seen.into_iter().enumerate() {
-            let name = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
-            row = row.child(
-                div()
-                    .id(("edited", i))
-                    .flex()
-                    .gap_1()
-                    .cursor_pointer()
-                    .child(div().text_color(link).child(name))
-                    .child(div().text_color(green).child(format!("+{added}")))
-                    .child(div().text_color(red).child(format!("-{removed}")))
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ChatPanelEvent::OpenDiff(path.clone())))),
-            );
-        }
-        Some(row.into_any_element())
-    }
-}
-
 impl Focusable for ChatPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -1129,10 +1072,6 @@ impl Render for ChatPanel {
         let empty = self.list_len == 0;
         let loading = self.session.read(cx).loading_chat;
         let _ = (fg, red, user_bg);
-        let terminal = {
-            let s = self.session.read(cx);
-            (s.view == View::Terminal).then(|| s.terminal_view()).flatten()
-        };
         crate::perf::record("chat build (elements)", started.elapsed());
         crate::perf::switch_shown(window);
         let font = crate::fonts::chat(cx);
@@ -1152,19 +1091,7 @@ impl Render for ChatPanel {
             .on_action(cx.listener(|p, _: &gpui_kit::component::input::Search, window, cx| p.open_find(window, cx)))
             .child(self.render_header(cx))
             .children(self.render_find(cx))
-            // The agent's terminal as a view of its own, cached: drawing the chat (its header,
-            // a clock) does not paint the whole grid again; the terminal does when it changes.
-            .when_some(terminal.clone(), |d, term| {
-                d.child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .relative()
-                        .child(AnyView::from(term).cached(StyleRefinement::default().size_full())),
-                )
-                .children(self.render_edits(cx))
-            })
-            .when(terminal.is_none(), |d| d.child(
+            .child(
                 div()
                     .flex_1()
                     .min_h_0()
@@ -1184,12 +1111,11 @@ impl Render for ChatPanel {
                     .children(self.render_latest(cx)),
             )
             .children(self.render_working_line(cx))
-            .children(self.render_asking(cx))
             .child({
                 let slash = self.render_slash(cx);
                 self.sync_model_select(window, cx);
                 self.render_composer(slash, window, cx)
-            }))
+            })
             .children(self.render_fix(cx))
             // Marks the chat as on screen while a frame shows it (see `on_screen`).
             .child({

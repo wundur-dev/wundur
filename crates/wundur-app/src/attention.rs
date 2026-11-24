@@ -14,8 +14,6 @@ const QUIET: Duration = Duration::from_secs(8);
 pub enum Need {
     /// A permission prompt is open: the tool and what it would do.
     Permission { tool: String, summary: String },
-    /// A question in its terminal interface (a trust prompt, a menu).
-    Asking,
     /// Its turn finished; the first line of its last reply, when there is one.
     Finished(Option<String>),
 }
@@ -23,7 +21,6 @@ pub enum Need {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Permission,
-    Asking,
     Finished,
 }
 
@@ -31,12 +28,11 @@ impl Need {
     fn kind(&self) -> Kind {
         match self {
             Need::Permission { .. } => Kind::Permission,
-            Need::Asking => Kind::Asking,
             Need::Finished(_) => Kind::Finished,
         }
     }
 
-    /// A permission prompt or a question (rather than a finished turn).
+    /// A permission prompt (rather than a finished turn).
     pub fn is_question(&self) -> bool {
         self.kind() != Kind::Finished
     }
@@ -170,9 +166,9 @@ mod tests {
         let now = Instant::now();
         assert!(matches!(t.update(1, Some(permission()), false, now), Action::Announce(_)));
         t.update(1, None, false, now);
-        assert_eq!(t.update(1, Some(Need::Asking), false, now + Duration::from_secs(1)), Action::Nothing);
+        assert_eq!(t.update(1, Some(permission()), false, now + Duration::from_secs(1)), Action::Nothing);
         // Another session is its own event.
-        assert!(matches!(t.update(2, Some(Need::Asking), false, now), Action::Announce(_)));
+        assert!(matches!(t.update(2, Some(permission()), false, now), Action::Announce(_)));
     }
 
     #[test]
@@ -201,7 +197,7 @@ mod tests {
     #[test]
     fn closing_a_session_forgets_it() {
         let mut t = Tracker::default();
-        t.update(1, Some(Need::Asking), false, Instant::now());
+        t.update(1, Some(permission()), false, Instant::now());
         assert_eq!(t.count(true, true), 1);
         t.forget(1);
         assert_eq!(t.count(true, true), 0);

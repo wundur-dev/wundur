@@ -30,15 +30,6 @@ use crate::term_blocks::{self, BlockView, DisplayRow, Fold, Part, Placed};
 /// The fixed-width font every system has: Menlo on macOS, Consolas on Windows.
 pub const FONT_FAMILY: &str = if cfg!(windows) { "Consolas" } else if cfg!(target_os = "linux") { "DejaVu Sans Mono" } else { "Menlo" };
 
-/// The placeholder over a starting program goes once its output has paused this long, or this
-/// long after its first output at most, looked for this often, and fades out over this.
-const SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(250);
-const SETTLE_AT_MOST: std::time::Duration = std::time::Duration::from_secs(3);
-/// A program silent this long after it started: the placeholder's spinner stops (an animation
-/// draws the window on every frame), its words stay.
-const SPIN_AT_MOST: std::time::Duration = std::time::Duration::from_secs(20);
-const SETTLE_CHECK: std::time::Duration = std::time::Duration::from_millis(80);
-const PLACEHOLDER_FADE: std::time::Duration = std::time::Duration::from_millis(180);
 /// The font size, from Settings.
 pub fn font_size(cx: &App) -> f32 {
     crate::prefs(cx).terminal_font_size()
@@ -101,23 +92,7 @@ pub struct TerminalView {
     /// Output arrived since the user last looked (the sidebar shows a dot).
     pub unseen: bool,
     /// The program has drawn something (the screen is no longer blank).
-    pub drawn: bool,
-    /// Shown over the screen while the program starts: the shape of the conversation's last
-    /// lines, a spinner and what is starting. It stays until the program has drawn and then
-    /// gone quiet for a moment (an interface draws its banner, then the conversation, in
-    /// steps), then fades out.
-    pub placeholder: Option<Placeholder>,
-    /// The program's first screen is complete: the placeholder fades (from `revealed`).
-    settled: bool,
-    revealed: Option<std::time::Instant>,
-    /// When output last came, and when the first did.
-    last_output: Option<std::time::Instant>,
-    first_output: Option<std::time::Instant>,
-    settling: Option<Task<()>>,
-    /// For an agent's interface: what Cmd+V with an image does (see [`ImageSupport`]).
-    pub images: Option<ImageSupport>,
-    /// The image whose `[Image #N]` marker is under the pointer, and where.
-    hover_image: Option<(std::path::PathBuf, Point<Pixels>)>,
+    drawn: bool,
     error: Option<String>,
     /// A kept shell not started yet: it starts when its tab is first laid out (or a command
     /// is run in it), so the tabs of a saved layout that are never shown cost no shell.
@@ -135,8 +110,6 @@ pub struct TerminalView {
     /// This terminal's zoom: points over (or under) the size in Settings, for as long as it is
     /// open; and when it last changed (the program's size waits until zooming stops).
     zoom: f32,
-    /// An agent's own interface (its size is the agents', not the shells').
-    pub agent: bool,
     zoomed_at: Rc<Cell<Option<std::time::Instant>>>,
     zoom_settle: Option<Task<()>>,
     /// 1, 2, ... in opening order: the key of its saved name.
@@ -144,7 +117,6 @@ pub struct TerminalView {
     /// Drawn in a frame on screen now: output redraws the window only then (or when the tab's
     /// title changes).
     on_screen: crate::on_screen::OnScreen,
-    started: std::time::Instant,
     /// The foreground program and when it was asked: the tab's title asks on every frame, the
     /// system once a second.
     program: std::cell::RefCell<(Option<std::time::Instant>, Option<String>)>,
@@ -429,45 +401,6 @@ fn layout(pty: &Pty, blocks: &[BlockView], folds: &std::collections::HashMap<u64
     Some(placed)
 }
 
-/// Keeps a pasted image (its bytes and file extension); the file it is kept in.
-pub type PastedFn = dyn Fn(Vec<u8>, &'static str, &mut App) -> Option<std::path::PathBuf>;
-/// What to type to attach an image file (bracketed paste or not).
-pub type AttachFn = dyn Fn(&std::path::Path, bool) -> Option<Vec<u8>>;
-
-/// How an image on the clipboard reaches the interface.
-#[derive(Clone)]
-pub enum PasteImage {
-    /// A key that makes the interface read the clipboard itself.
-    Key(Vec<u8>),
-    /// The kept copy's path, typed in (the interface attaches the file at that path).
-    Path(Rc<AttachFn>),
-}
-/// The image behind `[Image #N]`.
-pub type ImageFn = dyn Fn(usize, &App) -> Option<std::path::PathBuf>;
-
-/// Images in an agent's interface: Cmd+V with an image on the clipboard has `pasted` keep a
-/// copy, then hands it over as `paste` says; image files on the clipboard (copied in Finder)
-/// are kept the same way and the copy's path typed with `attach`; `image` gives the image
-/// behind an `[Image #N]` marker on screen, for a preview while the pointer is over it.
-#[derive(Clone)]
-pub struct ImageSupport {
-    pub paste: PasteImage,
-    pub attach: Option<Rc<AttachFn>>,
-    pub pasted: Rc<PastedFn>,
-    pub image: Rc<ImageFn>,
-}
-
-/// The extension of an image file an agent's interface takes (`None` for any other file).
-fn image_ext(path: &std::path::Path) -> Option<&'static str> {
-    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-        "png" => Some("png"),
-        "jpg" | "jpeg" => Some("jpg"),
-        "gif" => Some("gif"),
-        "webp" => Some("webp"),
-        _ => None,
-    }
-}
-
 /// Paths as the macOS Terminal pastes them: whole, a backslash before each space and other
 /// character a shell would read, separated by spaces.
 pub fn shell_paths(paths: &[std::path::PathBuf]) -> String {
@@ -486,37 +419,9 @@ pub fn shell_paths(paths: &[std::path::PathBuf]) -> String {
         .join(" ")
 }
 
-/// The `N` of an `[Image #N]` marker in `line` covering column `col`.
-pub fn image_marker_at(line: &str, col: usize) -> Option<usize> {
-    let chars: Vec<char> = line.chars().collect();
-    let text: String = chars.iter().collect();
-    let mut from = 0;
-    while let Some(i) = text[from..].find("[Image #") {
-        let start = from + i;
-        let end = start + text[start..].find(']')?;
-        let (s, e) = (text[..start].chars().count(), text[..end].chars().count());
-        if (s..=e).contains(&col) {
-            return text[start + 8..end].parse().ok();
-        }
-        from = end;
-    }
-    None
-}
-
-/// What a terminal shows while its program starts.
-pub struct Placeholder {
-    /// The last lines of the conversation so far, oldest first.
-    pub lines: Vec<(bool, String)>,
-    /// "Starting Claude Code..."
-    pub label: String,
-}
-
 pub enum TerminalEvent {
     Closed,
     Activated,
-    /// The program wrote something (or exited): sent for every batch, drawn or not, for whoever
-    /// follows what it shows (an agent's interface read for its reply).
-    Output,
     /// A link clicked: the text of its row and the column (in characters), for whoever knows
     /// the project's files to open the file or page named there. A click on a web address,
     /// or Cmd+click on anything (`browser`: a web address then goes to the browser).
@@ -528,10 +433,6 @@ pub enum TerminalEvent {
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl TerminalView {
-    pub fn new(spec: wundur_core::host::CommandSpec, cx: &mut Context<Self>) -> Self {
-        Self::start(spec, None, cx)
-    }
-
     /// A shell terminal kept across restarts as `id`: what it showed last time comes first.
     /// Its shell starts when the tab is first laid out, or a command is run in it.
     pub fn kept(spec: wundur_core::host::CommandSpec, id: String, cx: &mut Context<Self>) -> Self {
@@ -549,7 +450,7 @@ impl TerminalView {
     }
 
     fn start(spec: wundur_core::host::CommandSpec, history: Option<String>, cx: &mut Context<Self>) -> Self {
-        // A kept shell waits until it is shown; an agent's interface starts at once.
+        // A kept shell waits until it is shown.
         let lazy = history.is_some();
         // Settings: not kept, so neither shown again nor saved.
         let history = history.filter(|_| crate::prefs(cx).keep_terminal_history);
@@ -581,14 +482,6 @@ impl TerminalView {
             exited: false,
             unseen: false,
             drawn: false,
-            placeholder: None,
-            settled: false,
-            revealed: None,
-            last_output: None,
-            first_output: None,
-            settling: None,
-            images: None,
-            hover_image: None,
             pending_link: None,
             hover_link: None,
             error: None,
@@ -598,12 +491,10 @@ impl TerminalView {
             selecting: false,
             wheel_rest: 0.,
             zoom: 0.,
-            agent: false,
             zoomed_at: Rc::default(),
             zoom_settle: None,
             number: 0,
             on_screen: Default::default(),
-            started: std::time::Instant::now(),
             program: Default::default(),
             folder: std::path::PathBuf::new(),
             branch: None,
@@ -665,7 +556,6 @@ impl TerminalView {
             cell_w: 8,
             cell_h: 16,
         });
-        self.started = std::time::Instant::now();
         match Pty::spawn(&spec, initial, preface.as_deref(), saved_marks) {
             Ok((pty, rx)) => {
                 self.pty = Some(Rc::new(pty));
@@ -705,7 +595,6 @@ impl TerminalView {
                         view.drawn = true;
                         crate::perf::switch_step("terminal drew its first screen");
                     }
-                    view.output_came(cx);
                     view.keep_following();
                 }
                 PtyEvent::Title(t) => view.title = Some(t),
@@ -716,7 +605,6 @@ impl TerminalView {
                 }
             }
         }
-        cx.emit(TerminalEvent::Output);
         let titled = before != (view.unseen, view.exited, view.title.clone()) || view.program_changed();
         if view.on_screen.now() || titled {
             cx.notify();
@@ -725,40 +613,6 @@ impl TerminalView {
 
     /// Keep what it shows, two seconds after its output stops (a running program writing
     /// steadily is saved at most every two seconds).
-    /// Output came: once the screen has something and the output pauses (or after a while,
-    /// for a program that never pauses), the placeholder fades.
-    fn output_came(&mut self, cx: &mut Context<Self>) {
-        let now = std::time::Instant::now();
-        self.last_output = Some(now);
-        self.first_output.get_or_insert(now);
-        if self.settled || self.placeholder.is_none() || !self.drawn || self.settling.is_some() {
-            return;
-        }
-        self.settling = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor().timer(SETTLE_CHECK).await;
-                let done = this.update(cx, |view, cx| {
-                    let quiet = view.last_output.is_none_or(|t| t.elapsed() >= SETTLE_QUIET);
-                    let long = view.first_output.is_some_and(|t| t.elapsed() >= SETTLE_AT_MOST);
-                    if !(quiet || long || view.exited) {
-                        return false;
-                    }
-                    view.settled = true;
-                    view.revealed = Some(std::time::Instant::now());
-                    view.settling = None;
-                    cx.notify();
-                    true
-                });
-                if done.unwrap_or(true) {
-                    break;
-                }
-            }
-            // Once more when the fade is over, to take the placeholder away.
-            cx.background_executor().timer(PLACEHOLDER_FADE).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        }));
-    }
-
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         if self.history.is_none() || self.save.is_some() || !crate::prefs(cx).keep_terminal_history {
             return;
@@ -862,11 +716,6 @@ impl TerminalView {
             .unwrap_or(TermMode::empty())
     }
 
-    /// The program asked for bracketed paste.
-    pub fn bracketed_paste(&self) -> bool {
-        self.mode().contains(TermMode::BRACKETED_PASTE)
-    }
-
     fn write_str(&self, s: &str) {
         if let Some(pty) = &self.pty {
             pty.write(s.as_bytes().to_vec());
@@ -946,24 +795,6 @@ impl TerminalView {
     }
 
     /// The visible screen as text, one line per row (tests read it over the control channel).
-    /// The last `max` lines of scrollback and the screen, top to bottom (trailing spaces
-    /// trimmed), with the width in columns.
-    pub fn recent_lines(&self, max: usize) -> Option<(Vec<String>, usize)> {
-        let pty = self.pty.as_ref()?;
-        let term = pty.term.lock();
-        let grid = term.grid();
-        let screen = grid.screen_lines() as i32;
-        let history = (grid.history_size() as i32).min(max.saturating_sub(screen as usize) as i32);
-        let lines = (-history..screen)
-            .map(|l| {
-                let row = &grid[Line(l)];
-                let text: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
-                text.trim_end().to_string()
-            })
-            .collect();
-        Some((lines, grid.columns()))
-    }
-
     pub fn screen_text(&self) -> String {
         let Some(pty) = &self.pty else { return String::new() };
         let term = pty.term.lock();
@@ -990,65 +821,17 @@ impl TerminalView {
         }
     }
 
-    /// Files pasted or dropped: images an agent's interface takes are kept and attached (the
-    /// copy's path typed, which it turns into `[Image #N]`); the rest are typed as whole paths,
-    /// as the macOS Terminal does.
-    fn paste_files(&self, files: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
-        let Some(pty) = self.pty.clone() else { return };
-        let bracketed = self.mode().contains(TermMode::BRACKETED_PASTE);
-        let mut rest = Vec::new();
-        for path in files {
-            let attached = match (&self.images, image_ext(&path)) {
-                (Some(images), Some(ext)) => images.attach.as_ref().and_then(|attach| {
-                    let kept = std::fs::read(&path).ok().and_then(|bytes| (images.pasted)(bytes, ext, cx))?;
-                    attach(&kept, bracketed)
-                }),
-                _ => None,
-            };
-            match attached {
-                Some(keys) => pty.write(keys),
-                None => rest.push(path),
-            }
+    /// Files pasted or dropped: typed as whole paths, as the macOS Terminal does.
+    fn paste_files(&self, files: Vec<std::path::PathBuf>) {
+        if self.pty.is_none() || files.is_empty() {
+            return;
         }
-        if !rest.is_empty() {
-            let text = shell_paths(&rest);
-            self.write_str(&if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text });
-        }
-    }
-
-    /// Tests: Cmd+V.
-    pub fn test_paste(&mut self, cx: &mut Context<Self>) {
-        self.paste(cx);
+        let text = shell_paths(&files);
+        self.write_str(&if self.mode().contains(TermMode::BRACKETED_PASTE) { format!("\x1b[200~{text}\x1b[201~") } else { text });
     }
 
     fn paste(&self, cx: &mut Context<Self>) {
         let item = cx.read_from_clipboard();
-        if let (Some(images), Some(item)) = (self.images.clone(), item.as_ref()) {
-            let image = item.entries().iter().find_map(|e| match e {
-                ClipboardEntry::Image(i) => Some(i.clone()),
-                _ => None,
-            });
-            if let Some(image) = image {
-                // A copy is kept (to show, and for an interface that takes a path); the
-                // interface makes its own `[Image #N]`.
-                let ext = match image.format {
-                    ImageFormat::Jpeg => "jpg",
-                    ImageFormat::Gif => "gif",
-                    ImageFormat::Webp => "webp",
-                    _ => "png",
-                };
-                let kept = (images.pasted)(image.bytes.clone(), ext, cx);
-                let bracketed = self.mode().contains(TermMode::BRACKETED_PASTE);
-                let keys = match &images.paste {
-                    PasteImage::Key(key) => Some(key.clone()),
-                    PasteImage::Path(attach) => kept.and_then(|path| attach(&path, bracketed)),
-                };
-                if let (Some(pty), Some(keys)) = (&self.pty, keys) {
-                    pty.write(keys);
-                }
-                return;
-            }
-        }
         // Files copied in Finder: the clipboard has their paths (its text is only their names).
         let files: Vec<std::path::PathBuf> = item
             .iter()
@@ -1060,7 +843,7 @@ impl TerminalView {
             .flatten()
             .collect();
         if !files.is_empty() {
-            self.paste_files(files, cx);
+            self.paste_files(files);
             return;
         }
         let Some(text) = item.and_then(|c| c.text()) else {
@@ -1564,18 +1347,6 @@ impl TerminalView {
                 self.pending_link = None;
             }
         }
-        if let Some(images) = self.images.clone()
-            && self.pty.is_some()
-        {
-            // An `[Image #N]` under the pointer: show that image.
-            let (point, _) = self.grid_point(e.position);
-            let line = self.row_text(point.line);
-            let found = image_marker_at(&line, point.column.0).and_then(|n| (images.image)(n, cx)).map(|p| (p, e.position));
-            if found.as_ref().map(|f| &f.0) != self.hover_image.as_ref().map(|h| &h.0) {
-                self.hover_image = found;
-                cx.notify();
-            }
-        }
         if !self.selecting || e.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -1823,9 +1594,6 @@ impl Render for TerminalView {
         // A pending shell starts at the size of this, its first layout.
         let launch = self.pending.is_some().then(|| cx.entity().downgrade());
         let on_screen = self.on_screen.clone();
-        // The placeholder covers the screen until it fades: nothing of the grid shows.
-        let covered = self.placeholder.is_some() && !self.settled && !self.exited && self.revealed.is_none();
-        let spinning = self.started.elapsed() < SPIN_AT_MOST;
         let bounds_cell = self.bounds.clone();
         let cell_cell = self.cell.clone();
         let cell_paint = self.cell.clone();
@@ -1888,7 +1656,7 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             // Files dropped in: as if pasted.
-            .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| v.paste_files(paths.paths().to_vec(), cx)))
+            .on_drop(cx.listener(|v, paths: &ExternalPaths, _, _| v.paste_files(paths.paths().to_vec())))
             .on_mouse_move(cx.listener(Self::mouse_move))
             // The pointer left: no command's buttons, no underline.
             .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
@@ -1910,72 +1678,6 @@ impl Render for TerminalView {
         }
         let text_size = self.text_size(cx);
         let zoomed_at = self.zoomed_at.clone();
-        // Fading out once settled, then gone.
-        let fading = self.revealed.is_some_and(|t| t.elapsed() < PLACEHOLDER_FADE);
-        let placeholder = self
-            .placeholder
-            .as_ref()
-            .filter(|_| (!self.settled && !self.exited) || fading)
-            .map(|p| {
-                // The conversation's last lines as bars of their length (a skeleton: its shape,
-                // not its text, which the program is about to draw its own way).
-                let cell = self.cell.get().width;
-                let bar = hsla(palette::dim()).opacity(0.22);
-                // From the top, where the interface draws: its banner (a logo and two lines),
-                // then the conversation.
-                let line = |w: f32| div().h(px(text_size * 0.75)).w(cell * w).rounded(px(3.)).bg(bar);
-                let mut col = div()
-                    .absolute()
-                    .inset_0()
-                    .px_2()
-                    .pt_3()
-                    .bg(hsla(palette::background()))
-                    .flex()
-                    .flex_col()
-                    .gap(px(text_size * 0.7))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(cell * 2.)
-                            .pb(px(text_size))
-                            .child(div().w(cell * 8.).h(px(text_size * 3.)).rounded(px(4.)).bg(bar))
-                            .child(div().flex().flex_col().gap(px(text_size * 0.6)).child(line(18.)).child(line(30.))),
-                    );
-                for (user, line) in &p.lines {
-                    let chars = line.chars().count().clamp(4, 120) as f32;
-                    col = col.child(
-                        div()
-                            .h(px(text_size * 0.75))
-                            .when(*user, |d| d.ml(cell * 2.))
-                            .w(cell * chars)
-                            .max_w(relative(0.92))
-                            .rounded(px(3.))
-                            .bg(if *user { bar.opacity(0.32) } else { bar }),
-                    );
-                }
-                col.child(
-                    div()
-                        .pt_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_size(px(text_size))
-                        .text_color(hsla(palette::dim()))
-                        .child(if spinning {
-                            gpui_kit::component::spinner::Spinner::new().color(hsla(palette::dim())).into_any_element()
-                        } else {
-                            div().size(px(6.)).rounded_full().bg(hsla(palette::dim())).into_any_element()
-                        })
-                        .child(p.label.clone()),
-                )
-            })
-            .map(|col| match self.revealed {
-                // Animated only while fading: it starts when the fade does.
-                Some(_) => col.with_animation("placeholder-fade", Animation::new(PLACEHOLDER_FADE), |d, t| d.opacity(1. - t)).into_any_element(),
-                None => col.into_any_element(),
-            });
         let gutter = if self.integrated && !self.raw { px(GUTTER) } else { px(4.) };
         base.flex().flex_col().children(toolbar).child(div().flex_1().min_h_0().w_full().pl(gutter).pr_1().relative().child(
             canvas(
@@ -2011,9 +1713,6 @@ impl Render for TerminalView {
                 move |bounds, (), window, cx| {
                     let Some(pty) = &pty_paint else { return };
                     on_screen.mark(window);
-                    if covered {
-                        return;
-                    }
                     let start = std::time::Instant::now();
                     let blocks = if raw { Rc::default() } else { cached_blocks(&blocks_cache, pty, generation) };
                     let actions = action_ids(&blocks, actions_row);
@@ -2034,7 +1733,6 @@ impl Render for TerminalView {
             )
             .size_full(),
         )
-        .children(placeholder)
         .children(buttons)
         .children(actions)
         .children(switch)
@@ -2052,22 +1750,7 @@ impl Render for TerminalView {
                         })),
                 ),
             )
-        })
-        .children(self.hover_image.clone().map(|(path, at)| {
-            let b = self.bounds.get();
-            let (x, y) = (at.x - b.origin.x + px(12.), at.y - b.origin.y + px(16.));
-            div()
-                .absolute()
-                .left(x)
-                .top(y)
-                .p_1()
-                .rounded_md()
-                .bg(hsla(palette::background()))
-                .border_1()
-                .border_color(hsla(palette::dim()))
-                .shadow_lg()
-                .child(img(path).max_w(px(320.)).max_h(px(240.)).object_fit(ObjectFit::Contain))
-        })))
+        }))
         .children(footer)
     }
 }
@@ -2370,9 +2053,9 @@ impl TerminalView {
         (self.base_size(cx) + self.zoom).clamp(min, max)
     }
 
-    /// Settings' size for it: an agent's interface has its own, larger than a shell's.
+    /// Settings' size for it.
     fn base_size(&self, cx: &App) -> f32 {
-        if self.agent { crate::prefs(cx).agent_font_size() } else { font_size(cx) }
+        font_size(cx)
     }
 
     /// Zoom by `steps` (in or out), or back to Settings' size with `None`.
@@ -2809,14 +2492,6 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn finds_the_image_marker_under_the_pointer() {
-        let line = "❯ [Image #1] [Image #12] what is this";
-        assert_eq!(image_marker_at(line, 4), Some(1));
-        assert_eq!(image_marker_at(line, 15), Some(12));
-        assert_eq!(image_marker_at(line, 30), None);
-    }
-
-    #[::core::prelude::v1::test]
     fn the_wheel_scrolls_the_normal_screen() {
         // A shell at its prompt: the default modes include alternate scroll, but there is no
         // alternate screen, so nothing reaches the shell (no history cycling).
@@ -2828,8 +2503,6 @@ mod tests {
     fn files_paste_as_the_macos_terminal_pastes_them() {
         let paths = [std::path::PathBuf::from("/Volumes/Extreme SSD/shot (1).png"), std::path::PathBuf::from("/tmp/a.txt")];
         assert_eq!(super::shell_paths(&paths), "/Volumes/Extreme\\ SSD/shot\\ \\(1\\).png /tmp/a.txt");
-        assert_eq!(super::image_ext(std::path::Path::new("x.JPEG")), Some("jpg"));
-        assert_eq!(super::image_ext(std::path::Path::new("x.pdf")), None);
     }
 
     #[::core::prelude::v1::test]

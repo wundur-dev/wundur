@@ -151,13 +151,6 @@ pub struct Prefs {
     pub terminal_footer: bool,
     /// The terminals' font size, in points.
     pub terminal_font_size: f32,
-    /// The agents' own interfaces' font size (their Terminal view), in points: larger than
-    /// the shells', being where the person reads and types.
-    pub agent_font_size: f32,
-    /// Experimental: an agent with its own terminal interface runs it for the session's whole
-    /// life, Chat drawing from its session file, so switching views is instant. Off: Chat runs
-    /// the agent headless and Terminal its interface, one at a time, switching between turns.
-    pub hybrid_views: bool,
     /// Agents write only inside their session's folder (and their own state, caches and
     /// temporary folders); they read anywhere. See [`crate::sandbox`].
     pub sandbox_writes: bool,
@@ -165,8 +158,6 @@ pub struct Prefs {
 
 /// The terminals' font size when none is set, and the range allowed.
 pub const TERMINAL_FONT_SIZE: f32 = 11.0;
-/// The agents' interfaces' font size when none is set.
-pub const AGENT_FONT_SIZE: f32 = 12.5;
 pub const TERMINAL_FONT_SIZES: std::ops::RangeInclusive<f32> = 9.0..=24.0;
 
 impl Default for Prefs {
@@ -187,8 +178,6 @@ impl Default for Prefs {
             command_actions: true,
             terminal_footer: true,
             terminal_font_size: TERMINAL_FONT_SIZE,
-            agent_font_size: AGENT_FONT_SIZE,
-            hybrid_views: false,
             sandbox_writes: true,
         }
     }
@@ -196,15 +185,6 @@ impl Default for Prefs {
 
 impl Prefs {
     /// The terminal font size, kept in range (a hand-edited file may hold anything).
-    /// The agents' interfaces' font size, kept in range.
-    pub fn agent_font_size(&self) -> f32 {
-        if self.agent_font_size.is_finite() && self.agent_font_size > 0. {
-            self.agent_font_size.clamp(*TERMINAL_FONT_SIZES.start(), *TERMINAL_FONT_SIZES.end())
-        } else {
-            AGENT_FONT_SIZE
-        }
-    }
-
     pub fn terminal_font_size(&self) -> f32 {
         if self.terminal_font_size.is_finite() {
             self.terminal_font_size.clamp(*TERMINAL_FONT_SIZES.start(), *TERMINAL_FONT_SIZES.end())
@@ -268,11 +248,6 @@ pub struct Settings {
     /// (see [`Project`]), in the order shown.
     pub projects: Vec<Project>,
     pub layout: Layout,
-    /// How new sessions show: `"chat"` (the default) or `"terminal"` (the agent's own
-    /// interface, for backends that have one).
-    pub default_view: String,
-    /// The view each session was last shown in, by session id.
-    pub session_views: std::collections::BTreeMap<String, String>,
     /// The permission mode new sessions start in (the agent's own mode name: `"default"` asks
     /// before acting, `"auto"`, `"acceptEdits"`, `"plan"`); empty is `"auto"`.
     pub default_permission_mode: String,
@@ -395,23 +370,6 @@ impl Settings {
         self.recent.retain(|p| p != folder);
         self.recent.insert(0, folder.to_path_buf());
         self.recent.truncate(MAX_RECENT);
-    }
-
-    /// The view a session opens in: its remembered one, else the default.
-    pub fn view_for(&self, session: Option<&str>) -> &str {
-        session
-            .and_then(|id| self.session_views.get(id))
-            .map(String::as_str)
-            .unwrap_or(if self.default_view.is_empty() { "chat" } else { &self.default_view })
-    }
-
-    /// Remember a session's view (the list is kept to the last few hundred sessions).
-    pub fn set_view(&mut self, session: &str, view: &str) {
-        self.session_views.insert(session.to_string(), view.to_string());
-        while self.session_views.len() > 500 {
-            let first = self.session_views.keys().next().cloned().unwrap_or_default();
-            self.session_views.remove(&first);
-        }
     }
 
     /// The permission mode a session runs in: the one it was set to, else the default.

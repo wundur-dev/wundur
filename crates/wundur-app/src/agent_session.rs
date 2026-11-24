@@ -1,37 +1,25 @@
 //! One chat session: an agent (from its backend) and the conversation it feeds. No drawing here.
 //!
-//! For a backend with its own terminal interface (Claude Code), each view runs the agent its own
-//! way, one at a time: Chat runs it headless (its structured stream, behind the window) and
-//! Terminal runs its interface in a pseudo-terminal. Switching ends one and resumes the
-//! conversation in the other, so it waits for the agent to be idle (see `switch_blocked`).
-//!
-//! With the experimental hybrid setting the session runs the interface ONCE, for its whole
-//! life: Terminal shows it, and Chat draws the same conversation from the session's file
-//! (followed as it grows) and types its messages into that same process, so switching only
-//! changes what is shown. Whenever the interface runs it reports through hooks (see
-//! `hooks.rs`): when it is up, when a message went in, each tool, each permission request
-//! (answered from Chat, or in the terminal, whichever comes first) and the end of each turn.
-//!
-//! A backend without such an interface runs its structured agent behind the window, and there
-//! is only Chat.
+//! The agent runs headless, behind the window, over its structured stream (see
+//! [`wundur_core::agent::Agent`]): the chat is built from the events it sends, and messages,
+//! permission answers and interrupts go back the same way. An agent's own terminal interface
+//! is never run here; a terminal tab is there for a shell.
 
 mod undo;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use wundur_core::summary;
-use wundur_core::agent::{Agent, Backend, Event, Follow, Hook, Launch, Message, ModelOption, StartOptions};
+use wundur_core::agent::{Agent, Backend, Event, Message, ModelOption, StartOptions};
 use wundur_core::conversation::Conversation;
 use wundur_core::host::Host;
 use wundur_core::outbox::{Outbox, SendNow, Waiting};
 
-use crate::hooks::{self, Registration, Reply};
-use crate::terminal_view::{ImageSupport, PasteImage, Placeholder, TerminalEvent, TerminalView};
-use std::rc::Rc;
+use crate::hooks::{self, Registration};
 
 /// Parts of a session read for a search: each part's items, by where the part starts.
 pub type EarlierParts = HashMap<u64, Vec<wundur_core::conversation::Item>>;
@@ -106,26 +94,12 @@ impl Spend {
 /// The least time between two batches of the agent's messages (see `listen`).
 const BATCH_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Seconds to wait for the interface to say it is up before pointing to the terminal.
-const ASK_AFTER_SECS: u64 = 6;
-
-/// The agent's interface waits on a question Chat does not draw itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Asking {
-    /// "Do you trust the files in this folder?": answered from Chat with Trust or Don't trust.
-    Trust,
-    /// Something else (a login, an approval, a list to choose from): answered in the terminal.
-    Other,
-}
-
 /// Something the rest of the window should react to.
 #[derive(Clone, Debug)]
 pub enum SessionEvent {
     /// The agent wrote or edited this file.
     FileChanged(PathBuf),
     TurnEnded,
-    /// Cmd+click in the agent's terminal interface: the row's text and the column clicked.
-    TerminalLink { line: String, column: usize, browser: bool },
     /// A tool made a page to look at (a pack's model viewer): open it in the web panel.
     ShowPage(PathBuf),
     /// Show a 3D model in the model viewer, optionally playing an animation (part of its name).
@@ -135,58 +109,23 @@ pub enum SessionEvent {
     Undone(Option<String>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum View {
-    Chat,
-    Terminal,
-}
-
-impl View {
-    pub fn name(self) -> &'static str {
-        match self {
-            View::Chat => "chat",
-            View::Terminal => "terminal",
-        }
-    }
-}
-
-/// The agent's own interface in its pseudo-terminal.
-struct TerminalRun {
-    view: Entity<TerminalView>,
-    _exit: Subscription,
-    _links: Subscription,
-}
-
-/// The session file being followed into the chat.
-struct Following {
-    _follow: Option<Follow>,
-    _reader: Task<()>,
-}
-
 /// The issue a write refused by the sandbox raises (Wundur's own, not the agent's).
 pub(crate) const SANDBOX_ISSUE: &str = "wundur-sandbox";
 
 pub struct AgentSession {
     host: Arc<dyn Host>,
     /// Opened again at start: its conversation shows, but its agent starts only when it is
-    /// needed (a message, or its Terminal shown), so reopening many sessions costs nothing.
+    /// needed (a message), so reopening many sessions costs nothing.
     pub dormant: bool,
-    /// When the reply preview was last read off the terminal (at most ten times a second).
     /// Reads the journals of the workflows running (see `follow_workflows`).
     workflow_poll: Option<Task<()>>,
-    preview_read: Option<std::time::Instant>,
-    /// The preview last shown (this turn's): the same words again change nothing.
-    previewed: Option<String>,
-    /// Messages the interface reported submitted (its prompt hook), to tell a sent message
-    /// from one whose Enter was lost.
-    prompts_seen: u64,
     pub cwd: PathBuf,
     pub chat: Conversation,
     pub backend: Arc<dyn Backend>,
     /// Every model the agent lists for this person (see [`Backend::list_models`]); `None` until
     /// asked ([`AgentSession::want_models`]).
     pub listed_models: Option<Vec<ModelOption>>,
-    /// The structured agent (backends without a terminal interface).
+    /// The agent, headless (its structured stream).
     agent: Box<dyn Agent>,
     /// `None` is the backend's default mode (it asks); otherwise its own mode name.
     pub permission_mode: Option<String>,
@@ -215,36 +154,11 @@ pub struct AgentSession {
     /// Waiting for an agent process elsewhere (this pid) to exit before resuming here.
     pub waiting_for: Option<u32>,
     _reader: Option<Task<()>>,
-    pub view: View,
-    terminal: Option<TerminalRun>,
-    following: Option<Following>,
     hooks: Option<Registration>,
-    /// The interface said it is up; messages typed before wait in `queued`.
-    ready: bool,
-    queued: Vec<(String, Vec<PathBuf>)>,
-    /// Messages shown here already whose copy in the session file is still to come.
-    echo: VecDeque<String>,
-    /// Permission hooks waiting for an answer, by request id.
-    waiting: HashMap<String, Reply>,
-    /// Recent tool calls (id, tool, input), to give a permission request its tool call's id.
-    starting: VecDeque<(String, String, serde_json::Value)>,
-    asked: u64,
     /// With `WUNDUR_PERF=1`: when the last message was sent, until its reply shows.
     sent_at: Option<std::time::Instant>,
     /// Billed per use (an API key) rather than by a plan; `None` until known.
     pub per_use: Option<bool>,
-    /// The interface waits on a question before it is up (see [`Asking`]).
-    pub asking: Option<Asking>,
-    /// The agent's own record of whether this folder is trusted, when known.
-    trusted: Option<bool>,
-    /// The permission mode the interface reports it is in (from its hooks).
-    pub live_mode: Option<String>,
-    /// The file's copy of a message shown when it was sent carries its images too: skip them.
-    skip_images: usize,
-    /// Images pasted into this run of the interface, in order: its `[Image #N]` is the Nth.
-    pasted_images: Vec<PathBuf>,
-    /// Restart the interface when the turn ends (a new model).
-    restart_after_turn: bool,
     /// A watch for the agent's sign-in runs (see `watch_sign_in`).
     sign_in_watching: bool,
     /// A watch for the agent being installed runs (see `watch_install`).
@@ -256,45 +170,16 @@ pub struct AgentSession {
     pub scheduled_retry: Option<u64>,
     /// Counts uses of the session: an idle timer set before the last one does nothing.
     idle_gen: u64,
-    /// Why the interface is starting again, while it does (for the composer).
-    pub restarting: Option<String>,
     /// The current turn (where it starts in the chat) and the git working tree when it started,
     /// once read: what commands changed is found against it when the turn ends.
     git_turn: Option<(usize, Option<wundur_core::command_changes::Baseline>)>,
-    /// The interface drives the session in both views (the experimental hybrid setting, read
-    /// when the session begins).
-    hybrid: bool,
-    /// The interface is ending before Chat's agent works; that agent starts once it has.
-    closing: bool,
-    /// Messages sent while the interface ends, sent once it has.
-    held: Vec<(String, Vec<PathBuf>)>,
     /// Messages sent while the agent works, each sent when the turn before it ends.
     outbox: Outbox,
     /// The person stopped the turn: what waits stays until they send it, or send another.
     outbox_paused: bool,
-    /// Without the hybrid, the view not shown keeps its agent, idle, in case the conversation
-    /// has not moved on when it shows again (then switching back restarts nothing): the
-    /// interface, Terminal hidden...
-    parked: Option<Parked>,
-    /// ...or Chat's headless agent, Terminal shown, and how long the session file was then.
-    agent_parked_at: Option<u64>,
-    /// Counts switches, so a parked agent's time limit is its own park's.
-    switches: u64,
     /// Turns whose summary was asked for (by key), so a turn's end seen twice asks once.
     summarized: HashSet<String>,
 }
-
-/// The interface, kept idle while Chat shows (see `parked`).
-struct Parked {
-    run: TerminalRun,
-    pty: Option<Rc<crate::pty::Pty>>,
-    /// The session file's length when it was parked (`None`: not known, so it cannot be kept).
-    len: Option<u64>,
-    ready: bool,
-}
-
-/// How long the view not shown keeps its idle agent.
-const PARK_FOR: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl EventEmitter<SessionEvent> for AgentSession {}
 
@@ -323,9 +208,6 @@ impl AgentSession {
             host,
             dormant: false,
             workflow_poll: None,
-            preview_read: None,
-            previewed: None,
-            prompts_seen: 0,
             listed_models: None,
             chat: Conversation::new(cwd.to_string_lossy().to_string()),
             cwd,
@@ -343,39 +225,17 @@ impl AgentSession {
             quiet: Vec::new(),
             waiting_for: None,
             _reader: None,
-            view: View::Chat,
-            terminal: None,
-            following: None,
             hooks: None,
-            ready: false,
-            queued: Vec::new(),
-            echo: VecDeque::new(),
-            waiting: HashMap::new(),
-            starting: VecDeque::new(),
-            asked: 0,
             sent_at: None,
             per_use: None,
-            asking: None,
-            trusted: None,
-            live_mode: None,
-            skip_images: 0,
-            pasted_images: Vec::new(),
-            restart_after_turn: false,
             sign_in_watching: false,
             install_watching: false,
             loading_chat: false,
             scheduled_retry: None,
             idle_gen: 0,
-            restarting: None,
             git_turn: None,
-            hybrid: false,
-            closing: false,
-            held: Vec::new(),
             outbox: Outbox::default(),
             outbox_paused: false,
-            parked: None,
-            agent_parked_at: None,
-            switches: 0,
             summarized: HashSet::new(),
         }
     }
@@ -429,11 +289,6 @@ impl AgentSession {
         })
     }
 
-    /// Messages waiting for the agent to be up.
-    pub fn queued_count(&self) -> usize {
-        self.queued.len() + self.held.len()
-    }
-
     /// Messages sent while the agent works, in the order they go.
     pub fn waiting(&self) -> impl Iterator<Item = &Waiting> {
         self.outbox.items()
@@ -446,7 +301,7 @@ impl AgentSession {
 
     /// Whether a message sent now goes into the running turn: the agent reads it as it works.
     pub fn takes_mid_turn(&self) -> bool {
-        if self.interactive() { self.backend.terminal_takes_mid_turn() } else { self.agent.takes_mid_turn() }
+        self.agent.takes_mid_turn()
     }
 
     /// Send waiting message `id` now: into the running turn when the agent takes it, else it
@@ -510,118 +365,35 @@ impl AgentSession {
     /// Send what waits while the agent is free: the first message, which starts a turn; the
     /// next waits for that turn to end.
     fn send_waiting(&mut self, cx: &mut Context<Self>) {
-        while !self.chat.busy && !self.closing && !self.outbox_paused && self.waiting_for.is_none() {
+        while !self.chat.busy && !self.outbox_paused && self.waiting_for.is_none() {
             let Some(w) = self.outbox.next(self.chat.busy) else { break };
             self.deliver(&w.text, w.images, cx);
             cx.notify();
         }
     }
 
-    /// Whether the agent's own terminal interface drives this session now: in Terminal, or in
-    /// both views with the hybrid setting (Chat is then a view of its session file). On
-    /// another machine too: its hooks reach the window through a socket its ssh connection
-    /// forwards.
-    pub fn interactive(&self) -> bool {
-        self.backend.capabilities().terminal_view && (self.hybrid || self.view == View::Terminal)
-    }
-
-    /// Why the other view cannot be shown now, if it cannot. Switching restarts the agent in
-    /// the other view, which would cut short what it is doing (not with the hybrid setting,
-    /// where both views show one process).
-    pub fn switch_blocked(&self) -> Option<String> {
-        if self.hybrid || !self.backend.capabilities().terminal_view {
-            return None;
-        }
-        let name = self.backend.name();
-        if self.closing {
-            Some(format!("{name} is closing in the terminal; one moment."))
-        } else if self.chat.pending_permissions().next().is_some() {
-            Some(format!("{name} is waiting for permission. Answer it first."))
-        } else if self.chat.busy || self.chat.running_tools().next().is_some() {
-            Some(format!("{name} is working. Switch when it's done."))
-        } else if self.chat.running_agents().next().is_some() {
-            Some("A subagent is still running in the background. Switch when it's done.".into())
-        } else {
-            None
-        }
-    }
-
-    /// Start the session: its agent's interface (unless it waits for another process), in the
-    /// view it was last shown in, else the default for new sessions.
+    /// Set the session up as it opens; its agent starts with the first message.
     pub fn begin(&mut self, cx: &mut Context<Self>) {
         // How it is billed decides whether cost or context shows (settings files: off the UI
         // thread).
         let (host, backend, cwd) = (self.host.clone(), self.backend.clone(), self.cwd.clone());
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let (per_use, trusted) = cx
-                .background_spawn(async move { (backend.billed_per_use(host.as_ref(), &cwd), backend.folder_trusted(host.as_ref(), &cwd)) })
-                .await;
+            let per_use = cx.background_spawn(async move { backend.billed_per_use(host.as_ref(), &cwd) }).await;
             let _ = this.update(cx, |s, cx| {
                 s.per_use = per_use;
-                s.trusted = trusted;
                 cx.notify();
             });
         })
         .detach();
-        self.hybrid = crate::prefs(cx).hybrid_views;
-        // Always a mode of its own, passed to the agent whichever way it runs (left to the
-        // agent, its interface and its headless mode start in different ones).
+        // Always a mode of its own, passed to the agent as it starts.
         if self.permission_mode.is_none() {
             self.permission_mode = Some(cx.global::<crate::AppSettings>().0.borrow().mode_for(self.chat.session_id.as_deref()));
-        }
-        if !self.backend.capabilities().terminal_view {
-            return;
-        }
-        // Sessions open in Chat: the agent's own terminal interface is no longer offered as a
-        // view (a terminal tab is there for a shell).
-        // Chat without the hybrid: its agent starts with the first message.
-        if !self.interactive() {
-            return;
-        }
-        if self.waiting_for.is_none() && !self.dormant {
-            self.start_terminal(cx);
-        }
-    }
-
-    /// The terminal drew: while the agent works and Chat shows, read the reply it is writing
-    /// off the screen as a preview (the record has it only once it is finished).
-    fn read_preview(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        if !self.chat.busy {
-            self.previewed = None;
-            return;
-        }
-        if self.view != View::Chat {
-            return;
-        }
-        let now = std::time::Instant::now();
-        if self.preview_read.is_some_and(|t| now.duration_since(t) < PREVIEW_EVERY) {
-            return;
-        }
-        self.preview_read = Some(now);
-        let Some((lines, columns)) = view.read(cx).recent_lines(PREVIEW_LINES) else { return };
-        // Claude Code redraws its screen many times a second; the chat only when the words do.
-        if let Some(text) = self.backend.reply_preview(&lines, columns)
-            && self.previewed.as_deref() != Some(text.as_str())
-        {
-            self.previewed = Some(text.clone());
-            self.chat.apply(Event::TextPreview(text));
-            cx.notify();
-        }
-    }
-
-    /// A dormant session was shown: start its agent if its Terminal is what shows.
-    pub fn wake(&mut self, cx: &mut Context<Self>) {
-        if self.dormant && self.view == View::Terminal && self.interactive() && self.terminal.is_none() && self.waiting_for.is_none() {
-            self.start_terminal(cx);
         }
     }
 
     /// The process elsewhere has exited: this session's own can start.
     pub fn takeover_done(&mut self, cx: &mut Context<Self>) {
         self.waiting_for = None;
-        if self.interactive() && self.terminal.is_none() {
-            self.start_terminal(cx);
-        }
         self.send_waiting(cx);
         cx.notify();
     }
@@ -667,66 +439,6 @@ impl AgentSession {
         }
     }
 
-    // ----- questions before the interface is up -----
-
-    /// Before the interface is up: is its screen a question Chat should point to?
-    fn check_asking(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let screen = view.read(cx).screen_text();
-        let asking = if screen.contains("trust this folder") || (self.trusted == Some(false) && screen.contains("Enter to confirm")) {
-            Some(Asking::Trust)
-        } else if screen.contains("Enter to confirm") || screen.contains("Esc to cancel") || screen.contains("Press Enter") {
-            Some(Asking::Other)
-        } else {
-            self.asking.filter(|a| *a == Asking::Other)
-        };
-        if asking != self.asking {
-            self.asking = asking;
-            self.unseen = true;
-            cx.notify();
-        }
-    }
-
-    /// Answer the trust question as a person would: move the selection to the answer with the
-    /// arrow keys, then Enter. Don't trust makes the interface exit.
-    pub fn answer_trust(&mut self, trust: bool, cx: &mut Context<Self>) {
-        let Some(view) = self.terminal_view() else { return };
-        let target = if trust { "Yes, I trust" } else { "No, exit" };
-        self.asking = None;
-        cx.notify();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            for _ in 0..6 {
-                let (pty, chosen, present) = view.update(cx, |v, _| {
-                    let screen = v.screen_text();
-                    let line = screen.lines().find(|l| l.contains(target)).map(str::to_string);
-                    (v.pty.clone(), line.as_deref().is_some_and(|l| l.contains('❯')), line.is_some())
-                });
-                let Some(pty) = pty else { return };
-                if !present {
-                    break;
-                }
-                if chosen {
-                    pty.write(b"\r".to_vec());
-                    return;
-                }
-                pty.write(b"\x1b[B".to_vec());
-                cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
-            }
-            // Not found as expected: the person answers in the terminal.
-            let _ = this.update(cx, |s, cx| {
-                s.asking = Some(Asking::Other);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    // ----- the agent's own interface -----
-
-    fn running(&self, cx: &App) -> bool {
-        self.terminal.as_ref().is_some_and(|t| !t.view.read(cx).exited)
-    }
-
-    /// Start the interface on this conversation (a new one, a resumed one, or a fork of one).
     /// Where the agent may write: its folder (and its own state, caches, temporary folders),
     /// when Settings keeps agents' writes there and this machine can; else `None` (anywhere).
     /// An agent on another machine runs unconfined.
@@ -1080,7 +792,7 @@ impl AgentSession {
         }
         self.writes_anywhere = anywhere;
         let said = if anywhere { "Writes allowed anywhere" } else { "Writes kept to this folder" };
-        self.restart_with(said.into(), "with its writes changed".into(), cx);
+        self.restart_with(said.into(), cx);
     }
 
     /// Let the agent write in `folder` too (or, `allow` false, no longer); it restarts to apply.
@@ -1107,7 +819,7 @@ impl AgentSession {
         }
         let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
         let said = if allow { format!("Writes allowed in {name} for the whole project") } else { format!("Writes no longer allowed in {name} for the project") };
-        self.restart_with(said, "with its writes changed".into(), cx);
+        self.restart_with(said, cx);
     }
 
     pub fn set_writable(&mut self, folder: PathBuf, allow: bool, cx: &mut Context<Self>) {
@@ -1122,7 +834,7 @@ impl AgentSession {
         }
         let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
         let said = if allow { format!("Writes allowed in {name}") } else { format!("Writes no longer allowed in {name}") };
-        self.restart_with(said, "with its writes changed".into(), cx);
+        self.restart_with(said, cx);
     }
 
     /// A write the sandbox refused: the card that says so, with ways to allow it.
@@ -1159,272 +871,6 @@ impl AgentSession {
         }
     }
 
-    fn start_terminal(&mut self, cx: &mut Context<Self>) {
-        self.dormant = false;
-        let started = std::time::Instant::now();
-        if self.hooks.is_none() {
-            self.hooks = hooks::register(cx.entity().downgrade(), self.backend.as_ref(), cx);
-        }
-        let fork_asked = std::mem::take(&mut self.fork_next);
-        if self.rewind_next.take().is_some() {
-            self.agent_still_remembers();
-            self.chat.push_notice(format!(
-                "{}'s terminal keeps the whole conversation, so it still remembers the undone turn; your next message tells it the changes were reverted.",
-                self.backend.name()
-            ));
-        }
-        // Continue only a conversation that exists: a session started here that has had no
-        // message yet has no file, and `--resume` would fail ("No conversation found"). Every
-        // launch and relaunch (model, mode, view, take over, after an exit) comes through here.
-        let has_messages = self
-            .chat
-            .session_id
-            .as_deref()
-            .is_some_and(|id| self.backend.session_has_messages(self.host.as_ref(), &self.cwd, id));
-        let launch = Launch::decide(self.chat.session_id.is_some(), has_messages, fork_asked);
-        let fork = launch == Launch::Fork;
-        let (id, new) = match (launch, self.chat.session_id.clone()) {
-            (Launch::New, Some(id)) => (id, true),
-            (Launch::New, None) => (new_session_id(), true),
-            (_, id) => (id.unwrap_or_else(new_session_id), false),
-        };
-        // On another machine the hooks' helper and settings are written there, by the same
-        // connection, with a socket of this launch's own that it forwards to the window's.
-        let remote = self.host.is_remote().then(|| {
-            static LAUNCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let (hooks, home) = (self.hooks.as_ref()?, self.host.home_dir()?);
-            let socket = PathBuf::from(format!("/tmp/wundur-{}-{n}.sock", hooks.token()));
-            hooks.remote(self.backend.as_ref(), &home.join(".cache/wundur-studio"), &socket).map(|r| (r, socket))
-        }).flatten();
-        let settings = match &remote {
-            Some((r, _)) => Some(r.settings.clone()),
-            None if self.host.is_remote() => None,
-            None => self.hooks.as_ref().and_then(|h| h.settings.clone()),
-        };
-        let options = StartOptions {
-            cwd: self.cwd.clone(),
-            model: self.model.clone(),
-            effort: self.effort.clone(),
-            permission_mode: self.permission_mode.clone(),
-            resume: None,
-            fork,
-            rewind: None,
-            settings,
-            sandbox: self.write_policy(cx),
-            mcp_config: self.mcp_config(cx),
-            env: wundur_core::mcp::secret_env(&self.mcp_servers(cx)),
-            instructions: session_instructions(cx),
-        };
-        self.confined = options.sandbox.is_some();
-        let Some(spec) = self.backend.terminal_program(&options, &id, new) else { return };
-        if crate::perf::enabled() || wundur_core::env_var("LOG_LAUNCH").is_ok() {
-            eprintln!("wundur: launch {} {}", spec.program, spec.args.iter().filter(|a| !a.ends_with(".json")).cloned().collect::<Vec<_>>().join(" "));
-        }
-        let command = match &remote {
-            Some((r, socket)) => self.host.terminal_program_command(&spec, &r.files, Some((socket, &r.here))),
-            None => self.host.terminal_program_command(&spec, &[], None),
-        };
-        let command = wundur_core::sandbox::apply(command, options.sandbox.as_ref());
-        let placeholder = Placeholder {
-            lines: last_lines(&self.chat, 12),
-            label: format!("Starting {}...", self.backend.name()),
-        };
-        let weak = cx.entity().downgrade();
-        // A pasted image is kept here, where the agent on another machine cannot read it.
-        // Its own clipboard key if it has one, else the kept copy's path typed in.
-        let backend = self.backend.clone();
-        let attach = self.backend.terminal_attach(std::path::Path::new("image.png"), false).is_some().then(|| {
-            Rc::new(move |path: &std::path::Path, bracketed| backend.terminal_attach(path, bracketed)) as Rc<crate::terminal_view::AttachFn>
-        });
-        let paste = match self.backend.terminal_paste_image() {
-            Some(key) => Some(PasteImage::Key(key)),
-            None => attach.clone().map(PasteImage::Path),
-        };
-        let images = paste.filter(|_| !self.host.is_remote()).map(|paste| {
-            let (w1, w2) = (weak.clone(), weak.clone());
-            ImageSupport {
-                paste,
-                attach: attach.clone(),
-                pasted: Rc::new(move |bytes, ext, cx| {
-                    w1.update(cx, |s, _| {
-                        let dir = wundur_core::images::session_dir(s.chat.session_id.as_deref());
-                        let path = dir.and_then(|d| wundur_core::images::store(&d, &bytes, ext).ok())?;
-                        s.pasted_images.push(path.clone());
-                        Some(path)
-                    })
-                    .ok()
-                    .flatten()
-                }),
-                image: Rc::new(move |n, cx| w2.upgrade().and_then(|s| s.read(cx).image_n(n))),
-            }
-        });
-        let view = cx.new(|cx| {
-            let mut v = TerminalView::new(command, cx);
-            v.placeholder = Some(placeholder);
-            v.images = images;
-            v.agent = true;
-            v
-        });
-        self.pasted_images.clear();
-        // On each batch of output, shown or not (a hidden terminal draws nothing).
-        let exit = cx.subscribe(&view, |s, view, ev: &TerminalEvent, cx| {
-            if !matches!(ev, TerminalEvent::Output) {
-                return;
-            }
-            // A parked interface (Chat showing) is not the session's to follow.
-            if s.terminal.as_ref().is_none_or(|t| t.view != view) {
-                return;
-            }
-            s.read_preview(&view, cx);
-            if view.read(cx).exited && s.ready {
-                s.ready = false;
-                s.drop_waiting(cx);
-                s.chat.process_ended();
-                s.chat.push_notice(format!(
-                    "{} exited. The next message starts it again on this conversation.",
-                    s.backend.name()
-                ));
-                cx.notify();
-            } else if !s.ready && s.hooks.is_none() && view.read(cx).drawn {
-                // No hooks to say when it is up: the first screen will do.
-                s.set_ready(cx);
-            } else if !s.ready {
-                s.check_asking(&view, cx);
-            }
-        });
-        // Up within a few seconds, or it is waiting on something in the terminal.
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.background_executor().timer(std::time::Duration::from_secs(ASK_AFTER_SECS)).await;
-            let _ = this.update(cx, |s, cx| {
-                if !s.ready && s.asking.is_none() && s.running(cx) {
-                    s.asking = Some(Asking::Other);
-                    s.unseen = true;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        self.ready = false;
-        let links = cx.subscribe(&view, |_, _, ev: &TerminalEvent, cx| {
-            if let TerminalEvent::OpenLink { line, column, browser } = ev {
-                cx.emit(SessionEvent::TerminalLink { line: line.clone(), column: *column, browser: *browser });
-            }
-        });
-        self.terminal = Some(TerminalRun { view, _exit: exit, _links: links });
-        if fork {
-            // The copy's id comes with the interface's start (`Hook::Started`).
-            self.following = None;
-        } else {
-            self.chat.session_id = Some(id.clone());
-            self.follow(&id, cx);
-        }
-        if crate::perf::enabled() {
-            eprintln!("wundur: agent interface started in {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
-        }
-        cx.notify();
-    }
-
-    /// Follow session `id`'s file into the chat from now on.
-    fn follow(&mut self, id: &str, cx: &mut Context<Self>) {
-        let (tx, rx) = async_channel::unbounded::<Message>();
-        let follow = self.backend.follow_session(
-            self.host.clone(),
-            &self.cwd,
-            id,
-            Arc::new(move |m| {
-                let _ = tx.send_blocking(m);
-            }),
-        );
-        self.following = Some(Following { _follow: follow, _reader: Self::listen(rx, cx) });
-    }
-
-    fn set_ready(&mut self, cx: &mut Context<Self>) {
-        if self.ready {
-            return;
-        }
-        self.ready = true;
-        self.restarting = None;
-        for (text, images) in std::mem::take(&mut self.queued) {
-            self.type_with_images(text, images, cx);
-        }
-    }
-
-    /// Attach `images` (each pasted as a path, which the interface turns into `[Image #N]`),
-    /// wait until it has taken them, then type `text`.
-    fn type_with_images(&mut self, text: String, images: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if images.is_empty() {
-            self.type_message(&text, cx);
-            return;
-        }
-        if self.host.is_remote() {
-            // The agent reads the files where it runs: copy them there first.
-            let (host, local) = (self.host.clone(), images.clone());
-            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                let there = cx.background_spawn(async move { copy_images_to(host.as_ref(), &local) }).await;
-                let _ = this.update(cx, |s, cx| s.paste_images(text, there, images, cx));
-            })
-            .detach();
-            return;
-        }
-        self.paste_images(text, images.clone(), images, cx);
-    }
-
-    /// Paste `paths` (the images where the agent runs), then type `text`; `shown` are the same
-    /// images here, for Chat.
-    fn paste_images(&mut self, text: String, paths: Vec<PathBuf>, shown: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let Some(view) = self.terminal_view() else { return };
-        let Some(pty) = view.read(cx).pty.clone() else { return };
-        let bracketed = view.read(cx).bracketed_paste();
-        let pieces: Vec<Vec<u8>> = paths.iter().filter_map(|p| self.backend.terminal_attach(p, bracketed)).collect();
-        self.pasted_images.extend(shown);
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            for piece in pieces {
-                pty.write(piece);
-                // It reads the file ("Pasting..."): wait for that before the next.
-                for _ in 0..40 {
-                    cx.background_executor().timer(std::time::Duration::from_millis(75)).await;
-                    if !view.update(cx, |v, _| v.screen_text().contains("Pasting")) {
-                        break;
-                    }
-                }
-            }
-            let _ = this.update(cx, |s, cx| {
-                if text.is_empty() {
-                    if let Some(pty) = s.terminal_view().and_then(|v| v.read(cx).pty.clone()) {
-                        pty.write(b"\r".to_vec());
-                    }
-                } else {
-                    // A space after the image markers, then the text.
-                    let text = format!(" {text}");
-                    s.type_message(&text, cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// The image behind the interface's `[Image #N]`: the Nth pasted into this run, else the
-    /// Nth in the conversation.
-    pub fn image_n(&self, n: usize) -> Option<PathBuf> {
-        let i = n.checked_sub(1)?;
-        self.pasted_images.get(i).cloned().or_else(|| {
-            self.chat
-                .items
-                .iter()
-                .filter_map(|it| match it {
-                    wundur_core::conversation::Item::Images(p) => Some(p),
-                    _ => None,
-                })
-                .flatten()
-                .nth(i)
-                .cloned()
-        })
-    }
-
-    /// Switch the model. The interface restarts on the same conversation with it (between
-    /// turns), rather than typing its `/model` command: Claude Code's `/model` also saves the
-    /// choice as the person's default for every new session, in their own settings.
     /// Ask the agent for its models, once, off the UI thread (the model menu then lists them).
     pub fn want_models(&mut self, cx: &mut Context<Self>) {
         if self.listed_models.is_some() {
@@ -1444,7 +890,7 @@ impl AgentSession {
 
     pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.model = Some(model.to_string());
-        self.restart_with(format!("Model: {model}"), format!("with {model}"), cx);
+        self.restart_with(format!("Model: {model}"), cx);
     }
 
     /// Switch the effort level (`None`: the agent's default), as the model is switched.
@@ -1454,26 +900,14 @@ impl AgentSession {
         }
         let name = effort.clone().unwrap_or_else(|| "default".into());
         self.effort = effort;
-        self.restart_with(format!("Effort: {name}"), format!("at {name} effort"), cx);
+        self.restart_with(format!("Effort: {name}"), cx);
     }
 
-    /// Start the agent again with what changed: now if it is idle, else when the turn ends, or
-    /// with the next message when it is not running. `said` goes in the chat.
-    fn restart_with(&mut self, said: String, restarting: String, cx: &mut Context<Self>) {
-        if self.interactive() && self.running(cx) {
-            if self.chat.busy {
-                self.restart_after_turn = true;
-                self.chat.push_notice(format!("{said}. Applies when this turn ends."));
-            } else {
-                self.stop(cx);
-                self.restarting = Some(restarting);
-                self.start_terminal(cx);
-                self.chat.push_notice(format!("{said}."));
-            }
-        } else {
-            self.stop(cx);
-            self.chat.push_notice(format!("{said}. Applies from the next message."));
-        }
+    /// What the agent starts with changed: it ends, and starts with it on the next message.
+    /// `said` goes in the chat.
+    fn restart_with(&mut self, said: String, cx: &mut Context<Self>) {
+        self.stop(cx);
+        self.chat.push_notice(format!("{said}. Applies from the next message."));
         cx.notify();
     }
 
@@ -1486,219 +920,19 @@ impl AgentSession {
         }
     }
 
-    /// Switch the permission mode. With the interface running, press its mode key until its
-    /// status line shows the mode (as a person would); otherwise restart with it.
+    /// Switch the permission mode, kept for when the session opens again.
     pub fn set_mode(&mut self, mode: Option<String>, cx: &mut Context<Self>) {
         let mode = Some(mode.unwrap_or_else(|| "default".into()));
         self.remember_mode(mode.as_deref(), cx);
-        let cycle = self.backend.mode_cycle();
-        let (Some((modes, key)), true, Some(view)) = (cycle, self.interactive() && self.ready, self.terminal_view()) else {
-            self.set_permission_mode(mode, cx);
-            return;
-        };
-        let target = mode.clone().unwrap_or_else(|| "default".into());
-        let labels: Vec<String> = modes.iter().map(|(_, l)| l.clone()).filter(|l| !l.is_empty()).collect();
-        let want = modes.iter().find(|(m, _)| *m == target).map(|(_, l)| l.clone()).unwrap_or_default();
-        self.permission_mode = mode;
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            for _ in 0..(modes.len() + 2) {
-                let (pty, done) = view.update(cx, |v, _| {
-                    let screen = v.screen_text();
-                    // The interface's last lines with text (a short conversation leaves the
-                    // screen's last rows blank, and its status line higher up).
-                    let footer: String = screen.lines().rev().filter(|l| !l.trim().is_empty()).take(4).collect::<Vec<_>>().join("\n");
-                    let shown = if want.is_empty() { !labels.iter().any(|l| footer.contains(l.as_str())) } else { footer.contains(want.as_str()) };
-                    (v.pty.clone(), shown)
-                });
-                if done {
-                    let _ = this.update(cx, |s, cx| {
-                        s.live_mode = Some(target.clone());
-                        cx.notify();
-                    });
-                    return;
-                }
-                let Some(pty) = pty else { return };
-                pty.write(key.clone());
-                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-            }
-            let _ = this.update(cx, |s, cx| {
-                s.chat.push_notice("Could not switch the mode from here; use Shift+Tab in the terminal.");
-                cx.notify();
-            });
-        })
-        .detach();
+        self.set_permission_mode(mode, cx);
     }
 
-    /// Type `text` into the interface as the person would: pasted, then Enter.
-    fn type_message(&mut self, text: &str, cx: &mut Context<Self>) {
-        let Some(run) = &self.terminal else { return };
-        let Some(pty) = run.view.read(cx).pty.clone() else { return };
-        let bracketed = run.view.read(cx).bracketed_paste();
-        let mut pieces = self.backend.terminal_message(text, bracketed).into_iter();
-        if let Some(first) = pieces.next() {
-            pty.write(first);
-        }
-        let rest: Vec<Vec<u8>> = pieces.collect();
-        let seen = self.prompts_seen;
-        let (view, text) = (run.view.clone(), text.to_string());
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            for piece in rest {
-                // A separate read for each piece, so the paste ends before Enter arrives.
-                cx.background_executor().timer(std::time::Duration::from_millis(30)).await;
-                pty.write(piece);
-            }
-            // The interface may drop the Enter while it is still busy (starting on a long
-            // conversation, say): no word that the message went, and the message still in its
-            // input box, means press Enter again.
-            for _ in 0..SUBMIT_RETRIES {
-                cx.background_executor().timer(SUBMIT_CHECK).await;
-                let again = this.update(cx, |s, cx| {
-                    s.prompts_seen == seen
-                        && view.read(cx).recent_lines(80).is_some_and(|(lines, _)| s.backend.message_unsent(&lines, &text))
-                });
-                match again {
-                    Ok(true) => {
-                        pty.write(b"\r".to_vec());
-                        // Said, so how often the interface loses an Enter (and when) shows.
-                        let _ = this.update(cx, |s, cx| {
-                            s.chat.push_notice("The message hadn't gone; pressed Enter again.");
-                            cx.notify();
-                        });
-                    }
-                    _ => break,
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// End every waiting permission hook without an answer: the person answers (or answered)
-    /// in the terminal.
-    fn drop_waiting(&mut self, _cx: &mut Context<Self>) {
-        for (id, reply) in self.waiting.drain() {
-            drop(reply);
-            self.chat.answer_permission(&id, true);
-        }
-    }
-
-    /// A hook call from the interface.
-    pub fn on_hook(&mut self, call: hooks::Call, cx: &mut Context<Self>) {
-        // It is past any question it was asking.
-        self.asking = None;
-        if let Some(mode) = self.backend.hook_mode(&call.payload) {
-            // Switched in the terminal (Shift+Tab): the session's mode from now on, in Chat too.
-            if self.permission_mode.as_deref() != Some(mode.as_str()) {
-                self.remember_mode(Some(&mode), cx);
-                self.permission_mode = Some(mode.clone());
-            }
-            self.live_mode = Some(mode);
-        }
-        let Some(hook) = self.backend.parse_hook(&call.event, &call.payload, &self.chat.cwd) else { return };
-        match hook {
-            Hook::Started { session_id, .. } => {
-                if let Some(id) = session_id
-                    && self.chat.session_id.as_deref() != Some(id.as_str())
-                {
-                    // A fork (or a cleared conversation): follow the new file.
-                    self.chat.session_id = Some(id.clone());
-                    self.follow(&id, cx);
-                }
-                self.remember_view(cx);
-                self.set_ready(cx);
-            }
-            Hook::Prompt(text) => {
-                self.end_parked_agent();
-                self.prompts_seen += 1;
-                // The agent took a message: the one sent from here, if it is waiting.
-                self.chat.mark_seen();
-                let t = plain(&text);
-                // Empty: a prompt the interface made itself (a report, a task notice), which
-                // may not start a turn; the work it starts marks the session busy.
-                if !t.is_empty() {
-                    if !self.echo.iter().any(|e| *e == t) {
-                        // Typed in the terminal: show it now; the file's copy is skipped.
-                        self.chat.push_user(&t);
-                        self.push_echo(t);
-                    }
-                    self.chat.busy = true;
-                    self.chat.status = Some("working".into());
-                }
-            }
-            Hook::ToolStarting { id, tool, input } => {
-                self.chat.busy = true;
-                self.chat.status = Some(tool.clone());
-                if let Some(id) = id {
-                    self.starting.push_back((id, tool, input));
-                    if self.starting.len() > 16 {
-                        self.starting.pop_front();
-                    }
-                }
-            }
-            Hook::Permission { tool, summary, description, input } => {
-                let request_id = self
-                    .starting
-                    .iter()
-                    .rev()
-                    .find(|(_, t, i)| *t == tool && *i == input)
-                    .map(|(id, ..)| id.clone())
-                    .unwrap_or_else(|| {
-                        self.asked += 1;
-                        format!("ask-{}", self.asked)
-                    });
-                self.chat.apply(Event::Permission { request_id: request_id.clone(), tool, summary, description, input });
-                if let Some(reply) = call.reply {
-                    self.waiting.insert(request_id, reply);
-                }
-                self.unseen = true;
-            }
-            Hook::ToolFinished { id, .. } => {
-                // Answered in the terminal: the hook's wait ends without an answer.
-                if let Some(id) = id
-                    && self.waiting.remove(&id).is_some()
-                {
-                    self.chat.answer_permission(&id, true);
-                }
-            }
-            Hook::TurnEnded => {
-                self.drop_waiting(cx);
-                let was_busy = self.chat.busy;
-                self.chat.busy = false;
-                self.chat.status = None;
-                self.unseen = true;
-                if was_busy {
-                    self.after_turn(cx);
-                    self.idle_later(cx);
-                    cx.emit(SessionEvent::TurnEnded);
-                    self.summarize_turn(cx);
-                    crate::parent_mode::check_turn(&self.chat, self.chat.turn_start(), cx);
-                }
-                if std::mem::take(&mut self.restart_after_turn) {
-                    self.stop(cx);
-                    self.restarting = self.model.as_ref().map(|m| format!("with {m}"));
-                    self.start_terminal(cx);
-                }
-            }
-            Hook::Attention(_) => self.unseen = true,
-        }
-        self.send_waiting(cx);
-        self.chat.revision += 1;
-        cx.notify();
-    }
-
-    fn push_echo(&mut self, text: String) {
-        self.echo.push_back(plain(&text));
-        if self.echo.len() > 8 {
-            self.echo.pop_front();
-        }
-    }
-
-    // ----- the structured agent (backends without a terminal interface) -----
+    // ----- the agent -----
 
     fn start(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        // Registered for its tool server (the messaging tools), as the terminal view is for
-        // its hooks too.
+        // Registered for its tool server (Wundur's own tools).
         if self.hooks.is_none() && !self.host.is_remote() {
-            self.hooks = hooks::register(cx.entity().downgrade(), self.backend.as_ref(), cx);
+            self.hooks = hooks::register(cx.entity().downgrade(), cx);
         }
         let options = StartOptions {
             cwd: self.cwd.clone(),
@@ -1708,7 +942,6 @@ impl AgentSession {
             resume: self.chat.session_id.clone(),
             fork: std::mem::take(&mut self.fork_next),
             rewind: self.rewind_next.take(),
-            settings: None,
             sandbox: self.write_policy(cx),
             mcp_config: self.mcp_config(cx),
             env: wundur_core::mcp::secret_env(&self.mcp_servers(cx)),
@@ -1818,20 +1051,6 @@ impl AgentSession {
     fn handle(&mut self, message: Message, cx: &mut Context<Self>) {
         match message {
             Message::Event(event) => {
-                if let Event::UserText(text) = &event
-                    && let Some(i) = self.echo.iter().position(|e| *e == plain(text))
-                {
-                    // Shown already, when it was sent; the agent has it now.
-                    self.echo.remove(i);
-                    self.chat.mark_seen();
-                    return;
-                }
-                if let Event::UserImages(_) = &event
-                    && self.skip_images > 0
-                {
-                    self.skip_images -= 1;
-                    return;
-                }
                 if matches!(event, Event::Text { .. } | Event::TextDelta(_) | Event::ToolCall { .. })
                     && let Some(at) = self.sent_at.take()
                 {
@@ -2027,11 +1246,6 @@ impl AgentSession {
 
     /// Send a user turn now, starting the agent when needed.
     fn deliver(&mut self, text: &str, images: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if self.closing {
-            self.held.push((text.to_string(), images));
-            cx.notify();
-            return;
-        }
         let shown = text.trim();
         let sent = wundur_core::paste::without_markers(shown);
         let text = sent.trim();
@@ -2056,53 +1270,6 @@ impl AgentSession {
         }
         if crate::perf::enabled() {
             self.sent_at = Some(std::time::Instant::now());
-        }
-        if self.interactive() {
-            self.end_parked_agent();
-            if !text.is_empty() && !quiet {
-                self.chat.push_user(shown);
-            }
-            // An agent that still remembers an undone turn is told first (on one line: it is
-            // typed into its terminal).
-            let text = self.with_undo_note(text, " ");
-            if !text.is_empty() {
-                self.push_echo(text.clone());
-            }
-            if !images.is_empty() {
-                self.chat.apply(Event::UserImages(images.clone()));
-                self.skip_images += 1;
-            }
-            // An agent with no hooks cannot say its turn began: it has, with this message (its
-            // end comes with the session's record).
-            if self.backend.hook_settings(&|_| String::new()).is_none() && !(text.is_empty() && images.is_empty()) {
-                self.chat.busy = true;
-                self.chat.status = Some("working".into());
-            }
-            if !self.running(cx) {
-                self.start_terminal(cx);
-            }
-            let turn = self.chat.turn_start();
-            self.before_turn(
-                turn,
-                move |s, cx| {
-                    if s.ready {
-                        s.type_with_images(text, images, cx);
-                    } else {
-                        s.queued.push((text, images));
-                    }
-                    cx.notify();
-                },
-                cx,
-            );
-            cx.notify();
-            return;
-        }
-        // The idle interface ends before this agent writes to the conversation.
-        if let Some(p) = self.parked.take() {
-            self.held.push((shown.to_string(), images));
-            self.end_interface(p.run.view.clone(), p.pty, cx);
-            cx.notify();
-            return;
         }
         if !self.agent.running()
             && let Err(e) = self.start(cx)
@@ -2152,10 +1319,7 @@ impl AgentSession {
     }
 
     pub fn answer(&mut self, request_id: &str, allow: bool, cx: &mut Context<Self>) {
-        if let Some(reply) = self.waiting.remove(request_id) {
-            reply.send(&self.backend.hook_reply(allow));
-            self.chat.answer_permission(request_id, allow);
-        } else if let Some(input) = self.chat.answer_permission(request_id, allow) {
+        if let Some(input) = self.chat.answer_permission(request_id, allow) {
             let _ = self.agent.answer_permission(request_id, allow, &input);
         }
         cx.notify();
@@ -2167,11 +1331,7 @@ impl AgentSession {
         let shown = answers.iter().map(|(_, a)| a.join(", ")).collect::<Vec<_>>().join("; ");
         let Some(input) = self.chat.answer_question(request_id, shown) else { return };
         let input = wundur_core::questions::answered(&input, &answers);
-        if let Some(reply) = self.waiting.remove(request_id) {
-            reply.send(&self.backend.hook_reply_with(&input));
-        } else {
-            let _ = self.agent.answer_permission(request_id, true, &input);
-        }
+        let _ = self.agent.answer_permission(request_id, true, &input);
         cx.notify();
     }
 
@@ -2197,114 +1357,22 @@ impl AgentSession {
         if self.chat.busy {
             self.chat.stop_requested = true;
         }
-        if self.interactive() {
-            if let Some(pty) = self.terminal.as_ref().and_then(|t| t.view.read(cx).pty.clone()) {
-                pty.write(self.backend.terminal_interrupt());
-            }
-            // No hooks to say the turn stopped (nor a record of a stopped turn): it has.
-            if self.backend.hook_settings(&|_| String::new()).is_none() && self.chat.busy {
-                self.chat.apply(Event::Interrupted);
-                self.send_waiting(cx);
-            }
-        } else {
-            let _ = self.agent.interrupt();
-        }
+        let _ = self.agent.interrupt();
         cx.notify();
     }
 
-    /// Switch permission mode: the agent restarts on the same conversation, now if it is idle.
+    /// Switch permission mode: the agent ends, and starts in it on the next message.
     pub fn set_permission_mode(&mut self, mode: Option<String>, cx: &mut Context<Self>) {
         if self.permission_mode == mode {
             return;
         }
         self.permission_mode = mode;
-        // What the interface last said no longer holds.
-        self.live_mode = None;
-        let now = self.interactive() && self.running(cx) && !self.chat.busy;
         self.stop(cx);
-        if now {
-            self.restarting = Some("in the new permission mode".into());
-            self.start_terminal(cx);
-        }
         self.chat.push_notice(format!(
-            "Permission mode: {}. {}",
-            mode_label(self.backend.as_ref(), self.permission_mode.as_deref()),
-            if now { "Restarted with it." } else { "Applies from the next message." }
+            "Permission mode: {}. Applies from the next message.",
+            mode_label(self.backend.as_ref(), self.permission_mode.as_deref())
         ));
         cx.notify();
-    }
-
-    // ----- views -----
-
-    pub fn terminal_view(&self) -> Option<Entity<TerminalView>> {
-        self.terminal.as_ref().map(|t| t.view.clone())
-    }
-
-    /// Show Chat or Terminal. With the hybrid setting nothing is started or stopped (both are
-    /// views of one process); without it the agent restarts on the conversation in the other
-    /// view, between turns only.
-    pub fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
-        if view == self.view || (view == View::Terminal && !self.backend.capabilities().terminal_view) || self.switch_blocked().is_some() {
-            return;
-        }
-        crate::perf::switch_begin(if view == View::Terminal { "to Terminal" } else { "to Chat" });
-        if self.hybrid {
-            if view == View::Terminal && self.terminal.is_none() && self.waiting_for.is_none() {
-                self.start_terminal(cx);
-            }
-            self.view = view;
-        } else if view == View::Terminal {
-            // Chat's agent ends: Claude Code opens a conversation in one process at a time, so
-            // the interface could not continue it while Chat's agent held it ("Session ID ...
-            // is already in use").
-            self.agent_parked_at = None;
-            self.end_agent();
-            self.view = view;
-            match self.parked.take() {
-                // Nothing new since the interface was hidden: it shows as it was.
-                Some(p) if p.len.is_some_and(|l| !self.moved_on(l)) && !p.run.view.read(cx).exited => {
-                    self.terminal = Some(p.run);
-                    self.ready = p.ready;
-                    if let Some(id) = self.chat.session_id.clone() {
-                        self.follow(&id, cx);
-                    }
-                }
-                stale => {
-                    if let Some(pty) = stale.and_then(|p| p.pty) {
-                        crate::pty::end_for_certain(&pty);
-                    }
-                    if self.waiting_for.is_none() {
-                        self.start_terminal(cx);
-                    }
-                }
-            }
-            self.park_timer(cx);
-        } else {
-            self.view = view;
-            // The interface ends, for the same reason: Chat's agent continues the conversation.
-            if let Some(run) = self.terminal.take()
-                && let Some(pty) = run.view.read(cx).pty.clone()
-            {
-                crate::pty::end_for_certain(&pty);
-            }
-            self.following = None;
-            self.ready = false;
-            // Chat's own agent, if it waited: kept when nothing changed meanwhile.
-            if let Some(len) = self.agent_parked_at.take()
-                && !(self.agent.running() && !self.moved_on(len))
-            {
-                self.end_agent();
-            }
-            self.park_timer(cx);
-        }
-        self.remember_view(cx);
-        cx.notify();
-    }
-
-    /// Whether the conversation has a turn past `len` of its file (an idle agent from then is
-    /// out of date).
-    fn moved_on(&self, len: u64) -> bool {
-        self.chat.session_id.as_deref().is_none_or(|id| self.backend.session_moved_on(self.host.as_ref(), &self.cwd, id, len))
     }
 
     /// Set the idle timer: unused for the minutes in Settings, the agent's process ends (the
@@ -2335,24 +1403,22 @@ impl AgentSession {
         .detach();
     }
 
-    /// Whether the agent may end for being idle: running, between turns, in Chat, with
-    /// nothing waiting on the person or to be sent, and nothing running in the background
+    /// Whether the agent may end for being idle: running, between turns, with
+    /// nothing waiting to be sent, and nothing running in the background
     /// (ending the process would end its subagents and background commands with it).
     fn can_rest(&self) -> bool {
         self.agent.running()
             && !self.chat.busy
-            && self.view == View::Chat
-            && self.asking.is_none()
             && self.outbox.is_empty()
             && !self.chat.background_work()
     }
 
-    /// Whether Chat's agent process runs.
+    /// Whether the agent's process runs.
     pub fn agent_running(&self) -> bool {
         self.agent.running()
     }
 
-    /// End Chat's headless agent.
+    /// End the agent's process; the conversation stays.
     fn end_agent(&mut self) {
         if self.agent.running() {
             self.agent.stop();
@@ -2361,122 +1427,18 @@ impl AgentSession {
         }
     }
 
-    /// The interface works now: Chat's agent, waiting while Terminal shows, would fall behind.
-    fn end_parked_agent(&mut self) {
-        if !self.hybrid && self.agent_parked_at.take().is_some() {
-            self.end_agent();
-        }
-    }
-
-    /// A parked agent ends when its view has not shown again for a while.
-    fn park_timer(&mut self, cx: &mut Context<Self>) {
-        self.switches += 1;
-        let at = self.switches;
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.background_executor().timer(PARK_FOR).await;
-            let _ = this.update(cx, |s, cx| {
-                if s.switches != at {
-                    return;
-                }
-                if let Some(pty) = s.parked.take().and_then(|p| p.pty) {
-                    crate::pty::end_for_certain(&pty);
-                }
-                if s.view == View::Terminal && s.agent_parked_at.take().is_some() {
-                    s.end_agent();
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// End the interface in `view` before Chat's agent works: a message sent meanwhile waits
-    /// for it to have exited (two processes on one conversation would each write their own
-    /// turns to its file), then goes.
-    fn end_interface(&mut self, view: Entity<TerminalView>, pty: Option<Rc<crate::pty::Pty>>, cx: &mut Context<Self>) {
-        let Some(pty) = pty.filter(|_| !view.read(cx).exited) else {
-            for (text, images) in std::mem::take(&mut self.held) {
-                self.send_with(&text, images, cx);
-            }
-            return;
-        };
-        let group = pty.end();
-        self.closing = true;
-        self.restarting = Some("in Chat".into());
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // Ended when its process group is gone: killed if the hang-up has not done it in
-            // two seconds, given a moment more to go, and then the message goes regardless.
-            if let Some(group) = group {
-                for tick in 0..30 {
-                    if crate::pty::gone(group) {
-                        break;
-                    }
-                    if tick == 20 {
-                        crate::pty::kill(group);
-                    }
-                    cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
-                }
-            }
-            let _ = this.update(cx, |s, cx| {
-                s.closing = false;
-                s.restarting = None;
-                for (text, images) in std::mem::take(&mut s.held) {
-                    s.send_with(&text, images, cx);
-                }
-                s.send_waiting(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn remember_view(&self, cx: &mut Context<Self>) {
-        if let Some(id) = &self.chat.session_id {
-            let settings = cx.global::<crate::AppSettings>().0.clone();
-            settings.borrow_mut().set_view(id, self.view.name());
-            let _ = settings.borrow().save();
-        }
-    }
-
-    /// End the session's agent: its process (the terminal interface is hung up on, not just
-    /// let go: other handles may keep its view alive) and the following of its file.
-    pub fn stop(&mut self, cx: &mut App) {
-        if let Some(run) = self.terminal.take()
-            && let Some(pty) = run.view.read(cx).pty.clone()
-        {
-            crate::pty::end_for_certain(&pty);
-        }
+    /// End the session's agent.
+    pub fn stop(&mut self, _cx: &mut App) {
         self.release();
     }
 
-    /// Let go of the agent and the file following (all a drop can do, with no app at hand).
+    /// Let go of the agent (all a drop can do, with no app at hand).
     fn release(&mut self) {
-        if let Some(pty) = self.parked.take().and_then(|p| p.pty) {
-            crate::pty::end_for_certain(&pty);
-        }
-        self.agent_parked_at = None;
-        self.terminal = None;
-        self.following = None;
-        self.ready = false;
-        for (_, reply) in self.waiting.drain() {
-            drop(reply);
-        }
         self.agent.stop();
         self._reader = None;
         self.chat.process_ended();
     }
 }
-
-/// How long after sending a message its submission is checked, and how many times Enter is
-/// pressed again if it still sits unsent.
-const SUBMIT_CHECK: std::time::Duration = std::time::Duration::from_millis(1200);
-const SUBMIT_RETRIES: usize = 3;
-
-/// How often at most the reply preview is read off the terminal.
-const PREVIEW_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
-/// Lines of scrollback and screen the preview is looked for in (a reply taller than this gets
-/// no preview: its start is out of reach).
-const PREVIEW_LINES: usize = 400;
 
 /// What a permission mode is called, among `backend`'s modes; one it does not have (another
 /// agent's) counts as its first, its default.
@@ -2492,84 +1454,10 @@ pub fn mode_label(backend: &dyn Backend, mode: Option<&str>) -> &'static str {
     }
 }
 
-/// A message as compared with its copy in the session file: without the interface's image
-/// markers (`[Image #1]`), its paste markers, and outer spaces.
-fn plain(text: &str) -> String {
-    let text = wundur_core::paste::without_markers(text);
-    let mut out = String::new();
-    let mut rest = text.as_str();
-    while let Some(i) = rest.find("[Image #") {
-        out.push_str(&rest[..i]);
-        match rest[i..].find(']') {
-            Some(j) => rest = &rest[i + j + 1..],
-            None => {
-                rest = &rest[i..];
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The conversation's last `n` lines of text, oldest first, `true` for the person's.
-fn last_lines(chat: &Conversation, n: usize) -> Vec<(bool, String)> {
-    use wundur_core::conversation::Item;
-    let mut out = Vec::new();
-    for item in chat.items.iter().rev() {
-        let (user, text) = match item {
-            Item::User(t) => (true, t),
-            Item::Assistant { text, .. } => (false, text),
-            _ => continue,
-        };
-        for line in text.lines().rev().filter(|l| !l.trim().is_empty()) {
-            out.push((user, line.to_string()));
-            if out.len() >= n {
-                out.reverse();
-                return out;
-            }
-        }
-    }
-    out.reverse();
-    out
-}
-
-/// A random version 4 UUID, for a new session started in the agent's interface.
-fn new_session_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    let mut bytes = [0u8; 16];
-    for chunk in bytes.chunks_mut(8) {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        chunk.copy_from_slice(&h.finish().to_le_bytes());
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
-}
-
 impl Drop for AgentSession {
     fn drop(&mut self) {
         self.release();
     }
-}
-
-/// Copy `images` (here) into a folder of Wundur's on `host`, giving their paths there; one that
-/// cannot be copied is left out.
-fn copy_images_to(host: &dyn wundur_core::host::Host, images: &[PathBuf]) -> Vec<PathBuf> {
-    let Some(dir) = host.home_dir().map(|h| h.join(".cache/wundur-studio/images")) else { return Vec::new() };
-    if host.create_dir_all(&dir).is_err() {
-        return Vec::new();
-    }
-    images
-        .iter()
-        .filter_map(|p| {
-            let there = dir.join(p.file_name()?);
-            host.write(&there, &std::fs::read(p).ok()?).ok()?;
-            Some(there)
-        })
-        .collect()
 }
 
 #[cfg(test)]

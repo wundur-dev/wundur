@@ -11,11 +11,7 @@ rust-version.workspace = true
 name = "wundur"
 path = "src/main.rs"
 
-# The command the agent's terminal interface runs on its hook events (see src/hooks.rs).
-[[bin]]
-name = "wundur-hook"
-path = "src/bin/wundur-hook.rs"
-
+# The tool server each agent is started with (see src/hooks.rs).
 [[bin]]
 name = "wundur-mcp"
 path = "src/bin/wundur-mcp.rs"
