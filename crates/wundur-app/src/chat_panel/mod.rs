@@ -171,6 +171,9 @@ pub struct ChatPanel {
     /// The one a hosted asset card shows while its model is being made (its own, so the
     /// working line's stays where it is).
     card_spinner: crate::native_spinner::NativeSpinner,
+    /// The small ones in asset cards (a folded card being made, a version on its way), by
+    /// where each is: several can show at once.
+    small_spinners: std::cell::RefCell<HashMap<String, crate::native_spinner::NativeSpinner>>,
     /// The panel itself, for what the workspace draws for it (the working line's box).
     me: WeakEntity<ChatPanel>,
     /// Find in the conversation, while its bar shows; the item of the match gone to (marked);
@@ -370,6 +373,7 @@ impl ChatPanel {
             working_slot: Default::default(),
             native_spinner: Default::default(),
             card_spinner: Default::default(),
+            small_spinners: Default::default(),
             me: cx.entity().downgrade(),
             find: None,
             found: None,

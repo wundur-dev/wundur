@@ -150,6 +150,8 @@ impl ChatPanel {
         if revision != self.asset_revision {
             self.asset_revision = revision;
             self.list.remeasure();
+            // What was being made may be done: its spinner's view goes with it.
+            self.small_spinners.borrow_mut().retain(|_, s| s.showing());
         }
     }
 
@@ -373,7 +375,7 @@ impl ChatPanel {
     }
 
     /// Where the next picture will be, while it's made.
-    pub(super) fn asset_making(&self, size: f32, label: Option<&str>, cx: &App) -> AnyElement {
+    pub(super) fn asset_making(&self, dir: &Path, what: &str, size: f32, label: Option<&str>, cx: &App) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         div()
             .relative()
@@ -381,7 +383,7 @@ impl ChatPanel {
             .size(px(size))
             .rounded(px(12.))
             .overflow_hidden()
-            .child(gpui_kit::component::skeleton::Skeleton::new().size_full().rounded(px(12.)))
+            .child(Self::placeholder_block(cx))
             .child(
                 div()
                     .absolute()
@@ -391,7 +393,7 @@ impl ChatPanel {
                     .items_center()
                     .justify_center()
                     .gap_1()
-                    .child(gpui_kit::component::spinner::Spinner::new().color(muted))
+                    .child(self.small_spinner(&format!("{what}-{}", dir.display()), muted))
                     .children(label.map(|l| div().text_xs().text_color(muted).child(l.to_string()))),
             )
             .into_any_element()
@@ -426,7 +428,7 @@ impl ChatPanel {
                     );
                 }
                 if making {
-                    tiles = tiles.child(self.asset_making(104., None, cx));
+                    tiles = tiles.child(self.asset_making(dir, "concept", 104., None, cx));
                 }
                 let d = dir.to_path_buf();
                 if a.concepts.is_empty() && !making {
@@ -487,7 +489,7 @@ impl ChatPanel {
                     let shown = approved.clone().or_else(|| tries.last().map(|t| t.file.clone()));
                     let making = job(asset_store::Job::View(v));
                     let tile = if making {
-                        self.asset_making(118., None, cx)
+                        self.asset_making(dir, "view", 118., None, cx)
                     } else {
                         match &shown {
                             Some(f) => self.asset_tile(id(&format!("v-{}", v.label())), dir, f, 118., approved.is_some(), cx).into_any_element(),
@@ -563,7 +565,7 @@ impl ChatPanel {
                     );
                 }
                 if making {
-                    row = row.child(self.asset_making(150., Some("A minute or a few"), cx));
+                    row = row.child(self.asset_making(dir, "model", 150., Some("A minute or a few"), cx));
                 }
                 let d = dir.to_path_buf();
                 let first = a.models.is_empty();
