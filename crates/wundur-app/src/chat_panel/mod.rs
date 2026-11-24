@@ -805,16 +805,10 @@ impl ChatPanel {
         let theme = cx.theme();
         let (muted, hover) = (theme.muted_foreground, theme.secondary_hover);
         let session = self.session.read(cx);
+        let permission_prompts = session.backend.capabilities().permission_prompts;
         let chat = &session.chat;
-        let model = chat
-            .model
-            .clone()
-            .or_else(|| session.model.clone())
-            .unwrap_or_else(|| "default model".into());
-        let mut status = vec![model];
-        if let Some(s) = &chat.status {
-            status.push(s.clone());
-        }
+        // The agent's own status word, unless the working line by Send already says it.
+        let status = chat.status.clone().filter(|_| self.working_label(cx).is_none());
         // Cost when billed per use (or the setting says so), else how full the context is.
         let setting = cx.global::<crate::AppSettings>().0.borrow().cost_display.clone();
         let current = session.spend(cx);
@@ -884,13 +878,12 @@ impl ChatPanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(Icon::new(IconName::Bot).small())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(status.join(" · ")),
-            )
+            // The model, its effort and the permission mode: here rather than in the message
+            // box, so the box's row keeps its things in place.
+            .child(self.render_model_control(cx))
+            .children(self.render_effort_control(cx).map(|e| div().flex_none().child(e)))
+            .children(permission_prompts.then(|| div().flex_none().child(self.render_mode_button(cx))))
+            .child(div().flex_1().min_w_0().truncate().children(status))
             .when_some(spend, |d, spend| {
                 d.child(
                     div()

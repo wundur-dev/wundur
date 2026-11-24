@@ -1176,8 +1176,8 @@ impl ChatPanel {
         })
     }
 
-    /// The working line's place, in the message box's bottom row beside Send (empty while
-    /// nothing runs, so the box keeps its height). The session's own chat keeps the place
+    /// The working line's place, in the message box's row beside Send (empty while nothing
+    /// runs). The session's own chat keeps the place
     /// empty and the workspace draws the line over it ([`Self::working_overlay`]): GPUI
     /// rebuilds a view, and everything in it, whenever it changes, so a spinner turning ten
     /// times a second inside the chat laid the whole conversation out ten times a second.
@@ -1590,17 +1590,19 @@ mod run_pill_tests {
 }
 
 /// The working line: spinner, what the agent does and for how long, and the background
-/// agents' box. It fills the place it is given (the message box's bottom row).
+/// agents' box. It fills the place it is given (the message box's row, beside Send),
+/// against its right end.
 fn working_line(label: String, spinner: AnyElement, agents: Option<AnyElement>, muted: Hsla) -> Div {
     div()
         .size_full()
         .flex()
         .items_center()
+        .justify_end()
         .gap_2()
         .text_size(px(13.))
         .text_color(muted)
-        .child(spinner)
-        .child(div().flex_1().min_w_0().truncate().child(label))
+        .child(div().flex_none().child(spinner))
+        .child(div().min_w_0().truncate().child(label))
         .children(agents)
 }
 

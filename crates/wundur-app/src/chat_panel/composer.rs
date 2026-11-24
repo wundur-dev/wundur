@@ -621,7 +621,6 @@ impl ChatPanel {
         let (border, muted, field, accent) = (theme.border, theme.muted_foreground, theme.secondary, theme.ring);
         let session = self.session.read(cx);
         let busy = session.chat.busy;
-        let permission_prompts = session.backend.capabilities().permission_prompts;
         let has_text = !self.input.read(cx).value().trim().is_empty();
         let mono = !cx.global::<crate::AppSettings>().0.borrow().always_proportional
             && wundur_core::markdown_marks::has_fence(&self.input.read(cx).value());
@@ -631,9 +630,6 @@ impl ChatPanel {
         let undo = self.render_undo_button(cx);
         let attach = self.render_attach(cx);
         let dictate = self.render_dictate(cx);
-        let model_control = self.render_model_control(cx);
-        let effort_control = self.render_effort_control(cx);
-        let mode_button = permission_prompts.then(|| self.render_mode_button(cx));
         let send = self.render_send(busy, has_text, cx);
         let working = self.render_working_line(cx);
         let paste_target = cx.entity().downgrade();
@@ -728,25 +724,11 @@ impl ChatPanel {
                             .min_w_0()
                             .child(div().flex_none().child(attach))
                             .children(dictate.map(|d| div().flex_none().child(d)))
-                            .child(model_control)
-                            .children(effort_control.map(|e| div().flex_none().child(e)))
-                            .children(mode_button.map(|m| div().flex_none().child(m)))
-                            .child(div().flex_1())
-                            .children(undo.map(|u| div().flex_none().child(u))),
-                    )
-                    // The box's bottom row, there whether or not the agent works so the box
-                    // never changes height: what it does (and for how long) on the left, Send
-                    // or Stop on the right.
-                    .child(div().h(px(1.)).w_full().bg(border))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .h(px(36.))
-                            .pl_1()
-                            .min_w_0()
-                            .child(div().flex_1().min_w_0().h(px(28.)).children(working))
+                            // What the agent does (and for how long), right by Stop. The
+                            // model, effort and mode are in the chat's header, so what is here
+                            // keeps its place.
+                            .child(div().flex_1().min_w_0().h(px(28.)).mr_1().children(working))
+                            .children(undo.map(|u| div().flex_none().child(u)))
                             .child(div().flex_none().child(send)),
                     ),
             )
@@ -1136,7 +1118,7 @@ impl ChatPanel {
 
     /// The model list box (every model the agent offers, typed to filter), or the field typing a
     /// model's name in its place.
-    fn render_model_control(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_model_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some((input, _)) = &self.model_input {
             return div()
                 .flex_1()
@@ -1155,11 +1137,12 @@ impl ChatPanel {
         let session = self.session.read(cx);
         let model = session.chat.model.clone().or_else(|| session.model.clone()).unwrap_or_else(|| "default model".into());
         match &self.model_select {
-            // Up to 190 wide, narrower when the chat is (the send button keeps its place).
+            // As wide as the model's name and its chevron (up to 220), narrower when the
+            // header is.
             Some(select) => div()
                 .flex_shrink(1.)
                 .min_w(px(70.))
-                .w(px(190.))
+                .w(px((short_model(&model).chars().count() as f32 * 7. + 28.).clamp(70., 220.)))
                 .child(
                     Select::new(&select.state)
                         .xsmall()
@@ -1187,7 +1170,7 @@ impl ChatPanel {
 
     /// Effort (and, where the model has them, thinking and fast): Claude Code's `--effort`, or
     /// the variants of the Cursor model in use. Nothing when there is nothing to choose.
-    fn render_effort_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_effort_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self.session.read(cx);
         let w = self.session.downgrade();
         let levels = session.backend.efforts();
@@ -1338,7 +1321,7 @@ impl ChatPanel {
     }
 
     /// The permission mode menu.
-    fn render_mode_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_mode_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let session = self.session.read(cx);
         let mode = session.permission_mode.clone();
         let caps = session.backend.capabilities();
