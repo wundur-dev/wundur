@@ -25,7 +25,7 @@ use crate::hooks::{self, Registration};
 pub type EarlierParts = HashMap<u64, Vec<wundur_core::conversation::Item>>;
 
 /// What a session has used, as the window shows it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Spend {
     /// Dollars (`estimated`: from token counts and published prices).
     Cost { total: f64, turn: Option<f64>, estimated: bool },
@@ -44,7 +44,7 @@ pub fn shows_cost(per_use: Option<bool>, cx: &App) -> bool {
 }
 
 /// How close a session's context is to where its agent compacts it by itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Fill {
     Room,
     /// From 70% of the way to the compaction point.
@@ -165,6 +165,9 @@ pub struct AgentSession {
     install_watching: bool,
     /// Its conversation is being read (reopened from the last run): the chat shows its shape.
     pub loading_chat: bool,
+    /// Messages sent while the conversation was still being read (see `loading_chat`): sent
+    /// once it is there, so they follow it rather than being replaced by it.
+    held_for_chat: Vec<(String, Vec<PathBuf>)>,
     /// The person's last message is set to go again at this time (Unix), when the usage
     /// limit resets.
     pub scheduled_retry: Option<u64>,
@@ -231,6 +234,7 @@ impl AgentSession {
             sign_in_watching: false,
             install_watching: false,
             loading_chat: false,
+            held_for_chat: Vec::new(),
             scheduled_retry: None,
             idle_gen: 0,
             git_turn: None,
@@ -265,7 +269,16 @@ impl AgentSession {
         self.chat.process_ended();
         self.chat.push_notice("Resumed: the next message continues this conversation.");
         self.chat.revision = revision;
+        self.chat_read(cx);
+    }
+
+    /// The conversation is as read as it will be (there, or it could not be read): what was
+    /// sent meanwhile goes now.
+    pub fn chat_read(&mut self, cx: &mut Context<Self>) {
         self.loading_chat = false;
+        for (text, images) in std::mem::take(&mut self.held_for_chat) {
+            self.send_with(&text, images, cx);
+        }
         cx.notify();
     }
 
@@ -1230,6 +1243,11 @@ impl AgentSession {
     /// agent works it waits its turn (see [`wundur_core::outbox`]), as it does behind others
     /// waiting; it shows in the chat when it goes.
     pub fn send_with(&mut self, text: &str, images: Vec<PathBuf>, cx: &mut Context<Self>) {
+        // Its conversation is still being read (the moment after a start): sent once it is.
+        if self.loading_chat {
+            self.held_for_chat.push((text.to_string(), images));
+            return;
+        }
         // In use: an idle timer set before does nothing.
         self.idle_gen += 1;
         self.outbox_paused = false;

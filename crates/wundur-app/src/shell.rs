@@ -105,7 +105,7 @@ struct Row {
 }
 
 /// What a session's row shows of its last turn's summary.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct RowSummary {
     status: wundur_core::summary::Status,
     /// The agent asked the person something (answered in the chat).
@@ -135,6 +135,69 @@ impl RowSummary {
             None
         }
     }
+}
+
+/// What a session's row said when Wundur last ran, kept in `rows.json` beside the settings:
+/// at the next start every row shows at once from it, and each conversation is read behind
+/// its row (the row is then drawn from the conversation, as ever).
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct KeptRow {
+    /// The conversation it was said of (a number given to another session since: not its row).
+    id: Option<String>,
+    name: String,
+    activity: Option<String>,
+    summary: Option<RowSummary>,
+    per_use: Option<bool>,
+    cost: Option<Spend>,
+    context: Option<Spend>,
+}
+
+impl KeptRow {
+    fn of(row: &Row) -> Self {
+        KeptRow {
+            id: row.short_id.clone(),
+            name: row.name.clone(),
+            activity: row.activity.clone(),
+            summary: row.summary.clone(),
+            per_use: row.per_use,
+            cost: row.cost.clone(),
+            context: row.context.clone(),
+        }
+    }
+
+    /// Onto a row drawn from a session whose conversation isn't read yet.
+    fn onto(&self, row: &mut Row) {
+        if self.id != row.short_id {
+            return;
+        }
+        row.name = self.name.clone();
+        row.activity = self.activity.clone();
+        row.summary = self.summary.clone();
+        row.per_use = self.per_use;
+        row.cost = self.cost.clone();
+        row.context = self.context.clone();
+    }
+}
+
+type KeptRows = std::collections::BTreeMap<usize, KeptRow>;
+
+fn kept_rows_file() -> Option<PathBuf> {
+    Some(wundur_core::settings::config_dir()?.join("rows.json"))
+}
+
+fn read_kept_rows() -> KeptRows {
+    kept_rows_file().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Written whole beside the file and moved over it, so a crash mid-write leaves the old one.
+fn write_kept_rows(rows: &KeptRows) -> std::io::Result<()> {
+    let Some(file) = kept_rows_file() else { return Ok(()) };
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let part = file.with_extension("json.part");
+    std::fs::write(&part, serde_json::to_vec(rows).map_err(std::io::Error::other)?)?;
+    std::fs::rename(part, file)
 }
 
 /// A session's state on its dot.
@@ -270,6 +333,11 @@ pub struct Shell {
     tools_strip: Rc<crate::sheet_tabs::StripState>,
     /// Sessions from the last run are being opened again: the saved list is not touched.
     restoring: bool,
+    /// Each row as it was when Wundur last ran (see [`KeptRow`]), by the session's number.
+    kept_rows: KeptRows,
+    /// A row changed since they were last written; and a write is on its way.
+    rows_changed: bool,
+    rows_write_pending: bool,
     /// The open sessions as last saved (written again only when they change).
     saved: Option<(Vec<SavedSession>, Option<usize>)>,
     focus: FocusHandle,
@@ -331,6 +399,9 @@ impl Shell {
             list_resizing: false,
             tools_strip: Rc::new(crate::sheet_tabs::StripState::default()),
             restoring: false,
+            kept_rows: KeptRows::new(),
+            rows_changed: false,
+            rows_write_pending: false,
             saved: None,
             focus: cx.focus_handle(),
             subs: HashMap::new(),
@@ -396,6 +467,7 @@ impl Shell {
     /// when it is needed. A folder or conversation that is gone is left out. Then `start`.
     fn restore(&mut self, saved: Vec<SavedSession>, shown: Option<usize>, start: Start, window: &mut Window, cx: &mut Context<Self>) {
         self.restoring = true;
+        self.kept_rows = read_kept_rows();
         let backends = crate::backends::all(cx);
         let fallback = crate::backends::backend(None, cx);
         // The shown session first, so the window has it at once; the others after it, one at a
@@ -429,66 +501,72 @@ impl Shell {
             first = Some((s, self.tabs[ix].ws.read(cx).session.clone()));
         }
         cx.spawn_in(window, async move |this, cx| {
-            if let Some((s, session)) = first {
-                let backend = Some(session.read_with(cx, |s, _| s.backend.clone()));
-                let read = cx
-                    .background_spawn(async move {
-                        let (backend, id) = (backend?, s.id.clone()?);
-                        backend.load_session(&LocalHost, &s.folder, &id).ok()
-                    })
-                    .await;
-                session.update(cx, |s, cx| match read {
-                    Some(chat) => s.take_chat(chat, cx),
-                    None => {
-                        s.loading_chat = false;
-                        cx.notify();
-                    }
-                });
-            }
+            // The others' rows, all of them before any conversation is read: each row shows what
+            // it said when Wundur last ran (see `KeptRow`). A folder that is gone is left out.
+            let order: Vec<(usize, SavedSession)> = cx.background_spawn(async move { order.into_iter().filter(|(_, s)| s.folder.is_dir()).collect() }).await;
+            let mut unread: Vec<Entity<AgentSession>> = first.into_iter().filter(|(s, _)| s.id.is_some()).map(|(_, session)| session).collect();
             for (place, s) in order {
-                let (backends, fallback) = (backends.clone(), fallback.clone());
-                let loaded = cx
-                    .background_spawn(async move {
-                        if !s.folder.is_dir() {
-                            return None;
-                        }
-                        let backend = backends.iter().find(|b| b.id() == s.backend).cloned().unwrap_or_else(|| fallback.clone());
-                        let chat = match &s.id {
-                            Some(id) => Some(backend.load_session(&LocalHost, &s.folder, id).ok()?),
-                            None => None,
-                        };
-                        Some((s, backend, chat))
-                    })
-                    .await;
-                let Some((s, backend, chat)) = loaded else { continue };
                 let at = placed.iter().filter(|p| **p < place).count();
                 placed.push(place);
-                let gone = this
-                    .update_in(cx, |shell, window, cx| {
-                        let host: Arc<dyn Host> = Arc::new(LocalHost);
-                        let mut session = match chat {
-                            Some(chat) => AgentSession::resumed(host.clone(), backend, s.folder.clone(), chat, false),
-                            None => AgentSession::new(host.clone(), backend, s.folder.clone()),
-                        };
-                        session.dormant = true;
-                        session.writes_anywhere = s.writes_anywhere;
-                        session.writable = s.writable.clone();
-                        let next = shell.next;
-                        shell.next = s.number.max(1);
-                        let ix = shell.insert_session(host, s.folder, session, None, None, at, window, cx);
-                        shell.next = next.max(s.number + 1);
-                        if Some(s.number) == shown_number {
-                            shell.activate(ix, window, cx);
-                        }
-                        cx.notify();
-                    })
-                    .is_err();
-                if gone {
+                let backend = backends.iter().find(|b| b.id() == s.backend).cloned().unwrap_or_else(|| fallback.clone());
+                let has_chat = s.id.is_some();
+                let Ok(session) = this.update_in(cx, |shell, window, cx| {
+                    let host: Arc<dyn Host> = Arc::new(LocalHost);
+                    let mut session = AgentSession::new(host.clone(), backend, s.folder.clone());
+                    session.dormant = true;
+                    session.loading_chat = has_chat;
+                    session.chat.session_id = s.id.clone();
+                    session.writes_anywhere = s.writes_anywhere;
+                    session.writable = s.writable.clone();
+                    let next = shell.next;
+                    shell.next = s.number.max(1);
+                    let ix = shell.insert_session(host, s.folder, session, None, None, at, window, cx);
+                    shell.next = next.max(s.number + 1);
+                    if Some(s.number) == shown_number {
+                        shell.activate(ix, window, cx);
+                    }
+                    cx.notify();
+                    shell.tabs[ix].ws.read(cx).session.clone()
+                }) else {
                     return;
+                };
+                if has_chat {
+                    unread.push(session);
+                }
+                // The window draws between one row and the next.
+                cx.background_executor().timer(std::time::Duration::ZERO).await;
+            }
+            // Then the conversations, one at a time off the window's thread: the shown session's
+            // first (whichever that is by now), the rest in the list's order.
+            while !unread.is_empty() {
+                let Ok(shown) = this.update(cx, |shell, cx| shell.tabs.get(shell.active).map(|t| t.ws.read(cx).session.entity_id())) else { return };
+                let next = unread.iter().position(|s| Some(s.entity_id()) == shown).unwrap_or(0);
+                let session = unread.remove(next);
+                let (backend, folder, id) = session.read_with(cx, |s, _| (s.backend.clone(), s.cwd.clone(), s.chat.session_id.clone()));
+                let read = cx.background_spawn(async move { backend.load_session(&LocalHost, &folder, &id?).ok() }).await;
+                match read {
+                    Some(chat) => session.update(cx, |s, cx| s.take_chat(chat, cx)),
+                    // Its conversation is gone: left out, unless it is the one being looked at.
+                    None => {
+                        let gone = this
+                            .update_in(cx, |shell, window, cx| {
+                                session.update(cx, |s, cx| s.chat_read(cx));
+                                if let Some(ix) = shell.tabs.iter().position(|t| t.ws.read(cx).session == session)
+                                    && ix != shell.active
+                                {
+                                    shell.close(ix, window, cx);
+                                }
+                            })
+                            .is_err();
+                        if gone {
+                            return;
+                        }
+                    }
                 }
             }
             let _ = this.update_in(cx, |shell, window, cx| {
                 shell.restoring = false;
+                shell.rows_changed = true;
                 if shell.tabs.is_empty() || shell.active >= shell.tabs.len() {
                     shell.active = 0;
                 }
@@ -1369,7 +1447,7 @@ impl Shell {
         let number = self.next;
         self.next += 1;
         self.subs.insert(ws.entity_id(), subs);
-        let row = Row::of(ws.read(cx), cx);
+        let row = self.row_of(number, ws.read(cx), cx);
         let at = at.min(self.tabs.len());
         let changed = transcript_time(ws.read(cx), &row, cx);
         let chat = ws.read(cx).claude.clone();
@@ -1461,12 +1539,70 @@ impl Shell {
 
     /// Bring the row of `ws`'s session up to date; true when it changed (the list is then
     /// drawn again).
+    /// A session's row: from its conversation, or, while that is still being read after a
+    /// start, as it was when Wundur last ran.
+    fn row_of(&self, number: usize, w: &Workspace, cx: &App) -> Row {
+        let mut row = Row::of(w, cx);
+        if w.session.read(cx).loading_chat
+            && let Some(kept) = self.kept_rows.get(&number)
+        {
+            kept.onto(&mut row);
+        }
+        row
+    }
+
+    /// Write the rows for the next start, a little after the last change (off the window's
+    /// thread). A session whose conversation isn't read yet keeps the row it had.
+    fn keep_rows_later(&mut self, cx: &mut Context<Self>) {
+        // Not while the sessions are still coming back: those not in the list yet would lose
+        // the row kept for them.
+        if self.restoring {
+            return;
+        }
+        self.rows_changed = false;
+        if self.rows_write_pending {
+            return;
+        }
+        self.rows_write_pending = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            let Ok(rows) = this.update(cx, |shell, cx| {
+                shell.rows_write_pending = false;
+                let rows: KeptRows = shell
+                    .tabs
+                    .iter()
+                    .filter(|t| !t.ws.read(cx).host().is_remote())
+                    .filter_map(|t| {
+                        let loading = t.ws.read(cx).session.read(cx).loading_chat;
+                        let kept = if loading { shell.kept_rows.get(&t.number).cloned()? } else { KeptRow::of(&t.row) };
+                        Some((t.number, kept))
+                    })
+                    .collect();
+                (rows != shell.kept_rows).then(|| {
+                    shell.kept_rows = rows.clone();
+                    rows
+                })
+            }) else {
+                return;
+            };
+            if let Some(rows) = rows {
+                let wrote = cx.background_spawn(async move { write_kept_rows(&rows) }).await;
+                if let Err(e) = wrote {
+                    eprintln!("wundur: keeping the session rows: {e}");
+                }
+            }
+        })
+        .detach();
+    }
+
     fn refresh_row(&mut self, ws: &Entity<Workspace>, cx: &App) -> bool {
+        let Some(number) = self.tabs.iter().find(|t| &t.ws == ws).map(|t| t.number) else { return false };
+        let row = self.row_of(number, ws.read(cx), cx);
         let Some(tab) = self.tabs.iter_mut().find(|t| &t.ws == ws) else { return false };
-        let row = Row::of(ws.read(cx), cx);
         if tab.row == row {
             return false;
         }
+        self.rows_changed = true;
         // (Seeing a summary is not the session doing something.)
         let headline = |r: &Row| r.summary.as_ref().map(|s| (s.status, s.headline.clone()));
         if tab.row.dot != row.dot || tab.row.activity != row.activity || headline(&tab.row) != headline(&row) {
@@ -4221,6 +4357,10 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A row changed (they are drawn again for it, here): kept for the next start.
+        if self.rows_changed {
+            self.keep_rows_later(cx);
+        }
         // The splitter's drag is over once the window has none (it ends wherever the button
         // came up, whatever was under it): keep the width and drop the highlight.
         if self.list_resizing && !cx.has_active_drag() {
