@@ -29,6 +29,7 @@ use wundur_core::conversation::{one_line, to_markdown};
 
 mod agents;
 mod asset_card;
+pub(crate) use make_card::play as play_sound;
 mod hosted_card;
 mod make_card;
 pub use make_card::MakeKind;

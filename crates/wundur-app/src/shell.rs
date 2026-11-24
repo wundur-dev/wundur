@@ -244,6 +244,8 @@ pub struct Shell {
     browser: Option<Entity<Browser>>,
     /// Settings, shown in place of the session while open.
     settings: Option<(Entity<crate::settings_window::SettingsPage>, Subscription)>,
+    /// The Assets view, over the session as Settings is: what was made for its project.
+    library: Option<(Entity<crate::assets_page::AssetsPage>, Subscription)>,
     folded: bool,
     /// The inbox's list is open over the content (the toolbar's Inbox).
     inbox_open: bool,
@@ -317,6 +319,7 @@ impl Shell {
             next: 1,
             browser: None,
             settings: None,
+            library: None,
             folded,
             inbox_open: false,
             tasks_open: false,
@@ -755,6 +758,7 @@ impl Shell {
         if name != "general" {
             self.settings = None;
         }
+        self.library = None;
         let page = match &self.settings {
             Some((page, _)) => page.clone(),
             None => {
@@ -777,6 +781,50 @@ impl Shell {
         };
         window.focus(&page.focus_handle(cx), cx);
         cx.notify();
+    }
+
+    /// Show the Assets view for the shown session's project, in place of the session (focused,
+    /// so Escape closes it). Nothing without a session.
+    pub fn show_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ws) = self.active_workspace() else { return };
+        let (host, folder) = (ws.read(cx).host(), ws.read(cx).root().to_path_buf());
+        self.settings = None;
+        self.inbox_open = false;
+        self.tasks_open = false;
+        let page = match &self.library {
+            Some((page, _)) if page.read(cx).folder() == folder => {
+                page.update(cx, |p, cx| p.refresh(cx));
+                page.clone()
+            }
+            _ => {
+                let page = cx.new(|cx| crate::assets_page::AssetsPage::new(host, folder, window, cx));
+                let sub = cx.subscribe_in(&page, window, |s, _, ev: &crate::assets_page::AssetsEvent, window, cx| {
+                    use crate::assets_page::AssetsEvent;
+                    let ws = s.active_workspace();
+                    s.close_assets(window, cx);
+                    let Some(ws) = ws else { return };
+                    match ev {
+                        AssetsEvent::Close => {}
+                        AssetsEvent::OpenAsset(dir) => ws.update(cx, |w, cx| w.open_asset(Some(dir.clone()), window, cx)),
+                        AssetsEvent::OpenModel(path) => ws.update(cx, |w, cx| w.open_model(path.clone(), window, cx)),
+                    }
+                });
+                self.library = Some((page.clone(), sub));
+                page
+            }
+        };
+        window.focus(&page.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// Back from the Assets view to the session it covered.
+    pub fn close_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.library.take().is_some() {
+            if let Some(w) = self.active_workspace() {
+                w.update(cx, |w, cx| w.focus_main(window, cx));
+            }
+            cx.notify();
+        }
     }
 
     /// Back from Settings to the session (or New session) it covered.
@@ -807,6 +855,7 @@ impl Shell {
     /// Show the directory browser at `dir` (in place of the shown session, if any).
     pub fn open_browser(&mut self, host: Arc<dyn Host>, dir: PathBuf, note: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = None;
+        self.library = None;
         // Unchecked: the browser drops the ones that are gone off the UI thread (a recent folder
         // on a sleeping or unplugged disk must not hold up the window).
         let recent = if host.is_remote() { Vec::new() } else { cx.global::<AppSettings>().0.borrow().recent.clone() };
@@ -1339,8 +1388,9 @@ impl Shell {
         if ix >= self.tabs.len() {
             return;
         }
-        // Picking a session leaves Settings.
+        // Picking a session leaves Settings and the Assets view.
         self.settings = None;
+        self.library = None;
         self.active = ix;
         self.browser = None;
         self._browser_sub = None;
@@ -1509,6 +1559,9 @@ impl Shell {
         self.tasks_open = false;
         if self.settings.is_some() {
             self.close_settings(window, cx);
+        }
+        if self.library.is_some() {
+            self.close_assets(window, cx);
         }
         if self.browser.is_some() {
             self.close_browser(window, cx);
@@ -2115,6 +2168,31 @@ impl Shell {
                     _ => {}
                 }
                 crate::settings_account::describe(cx)
+            }
+            "assets" => {
+                // Tests: `assets` (open, or what it shows), `assets off`, `assets images|3d|audio|all`.
+                use wundur_core::library::Kind;
+                match arg {
+                    "off" => self.close_assets(window, cx),
+                    _ if self.library.is_none() => self.show_assets(window, cx),
+                    _ => {}
+                }
+                let kind = match arg {
+                    "images" => Some(Some(Kind::Image)),
+                    "3d" => Some(Some(Kind::Model)),
+                    "audio" => Some(Some(Kind::Audio)),
+                    "all" => Some(None),
+                    _ => None,
+                };
+                match &self.library {
+                    Some((page, _)) => {
+                        if let Some(kind) = kind {
+                            page.update(cx, |p, cx| p.set_filter(kind, cx));
+                        }
+                        page.read(cx).state()
+                    }
+                    None => "assets are not open".into(),
+                }
             }
             "settings" => {
                 // Tests: `settings`, `settings off`, `settings <page>` (`mcp here`: on this
@@ -3247,6 +3325,8 @@ impl Shell {
         // isn't one of them.
         let view = if self.settings.is_some() {
             "settings"
+        } else if self.library.is_some() {
+            "assets"
         } else if self.inbox_open {
             "inbox"
         } else if self.tasks_open {
@@ -3366,6 +3446,18 @@ impl Shell {
                         .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Wundur Studio {version} is ready: restart to update")).build(w, cx))
                         .on_click(|_, window, cx| crate::updater::offer(window.window_handle(), cx)),
                 )
+            })
+            // What was made for the shown session's project: only with a session.
+            .when(!self.tabs.is_empty() && self.browser.is_none(), |d| {
+                d.child(item("tb-assets", Icon::new(gpui_kit::assets::IconName::Image), "Assets: the images, sounds and 3D models made for this project", view == "assets").on_click(cx.listener(
+                    |s, _, window, cx| {
+                        if s.library.is_some() {
+                            s.close_assets(window, cx)
+                        } else {
+                            s.show_assets(window, cx)
+                        }
+                    },
+                )))
             })
             .child(
                 item("tb-settings", lit(Icon::new(IconName::Settings), "settings", view == "settings"), "Settings (Cmd+,)", view == "settings").on_click(cx.listener(|s, _, window, cx| {
@@ -4165,15 +4257,18 @@ impl Render for Shell {
             })
         };
         let showing_settings = self.settings.is_some();
+        let showing_assets = self.library.is_some();
         let title = if showing_settings {
             "Settings".to_string()
+        } else if showing_assets {
+            "Assets".to_string()
         } else if self.browser.is_some() || self.tabs.is_empty() {
             "New session".to_string()
         } else {
             self.name(self.active, cx)
         };
         // The session's own buttons, only while it shows.
-        let has_session = !self.tabs.is_empty() && self.browser.is_none() && !showing_settings;
+        let has_session = !self.tabs.is_empty() && self.browser.is_none() && !showing_settings && !showing_assets;
         // Share: a play link of the session's folder, on this machine.
         let can_share = has_session && self.active_workspace().is_some_and(|w| !w.read(cx).host().is_remote());
         // The tool panels by name, each opening the sidebar on it: what the icon strip beside
@@ -4254,6 +4349,14 @@ impl Render for Shell {
                             ),
                     )
                 })
+                .when(showing_assets, |d| {
+                    d.child(
+                        div().flex_none().occlude().child(
+                            button("t-close-assets", Icon::new(IconName::Close), "Close assets (Esc)")
+                                .on_click(cx.listener(|s, _, window, cx| s.close_assets(window, cx))),
+                        ),
+                    )
+                })
                 // Settings covers the window (the toolbar's gear with it): its way back.
                 .when(showing_settings, |d| {
                     d.child(
@@ -4265,10 +4368,11 @@ impl Render for Shell {
                 })
                 .child(div().flex_none().pr_1().occlude().child(menu_button)),
         );
-        let main = match (&self.settings, &self.browser) {
-            (Some((page, _)), _) => page.clone().into_any_element(),
-            (None, Some(b)) => b.clone().into_any_element(),
-            (None, None) => match self.active_workspace() {
+        let main = match (&self.settings, &self.library, &self.browser) {
+            (Some((page, _)), _, _) => page.clone().into_any_element(),
+            (None, Some((page, _)), _) => page.clone().into_any_element(),
+            (None, None, Some(b)) => b.clone().into_any_element(),
+            (None, None, None) => match self.active_workspace() {
                 Some(w) => w.into_any_element(),
                 None => div().into_any_element(),
             },
@@ -4277,7 +4381,7 @@ impl Render for Shell {
         // has the room.
         // Settings and New session, while open, have the window beside the toolbar: each has
         // its own list down its left (its pages, the folders), so the session list doesn't show.
-        let full = self.settings.is_some() || self.browser.is_some();
+        let full = self.settings.is_some() || self.library.is_some() || self.browser.is_some();
         let list = (!self.tabs.is_empty() && !self.folded && !full).then(|| self.render_list(cx));
         let toolbar = self.render_toolbar(cx);
         let inbox = self.inbox_open.then(|| self.render_inbox(cx));
@@ -4324,6 +4428,9 @@ impl Render for Shell {
             .on_key_down(cx.listener(|s, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && s.settings.is_some() {
                     s.close_settings(window, cx);
+                    cx.stop_propagation();
+                } else if ev.keystroke.key == "escape" && s.library.is_some() {
+                    s.close_assets(window, cx);
                     cx.stop_propagation();
                 }
             }))
