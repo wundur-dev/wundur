@@ -38,6 +38,7 @@ impl ChatPanel {
         let session = self.session.read(cx);
         let plan = session.undo_plan()?.clone();
         let name = session.backend.name();
+        let editing = session.undo_is_edit();
         let root = session.cwd.clone();
         let theme = cx.theme();
         let (border, muted, fg, field, warning, green) = (theme.border, theme.muted_foreground, theme.foreground, theme.secondary, theme.warning, theme.green);
@@ -60,7 +61,7 @@ impl ChatPanel {
             .border_b_0()
             .border_color(border)
             .bg(field.opacity(0.6))
-            .child(div().px_3().py(px(2.)).text_sm().text_color(fg).child("Undo the last turn?"))
+            .child(div().px_3().py(px(2.)).text_sm().text_color(fg).child(if editing { "Edit your last message? Its turn is undone first." } else { "Undo the last turn?" }))
             .child(line(files, muted));
         for c in plan.files.iter().take(NAMED) {
             let (what, color) = match c.kind {
@@ -127,7 +128,7 @@ impl ChatPanel {
         let (w1, w2, w3, w4) = (weak.clone(), weak.clone(), weak.clone(), weak);
         let mut buttons = div().px_3().py_1().flex().gap_2();
         if conflicts == 0 {
-            buttons = buttons.child(Button::new("undo-confirm").xsmall().primary().label("Undo").on_click(move |_, _, cx| {
+            buttons = buttons.child(Button::new("undo-confirm").xsmall().primary().label(if editing { "Undo and edit" } else { "Undo" }).on_click(move |_, _, cx| {
                 let _ = w1.update(cx, |s, cx| s.undo_turn(false, false, cx));
             }));
         } else {

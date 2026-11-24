@@ -377,6 +377,11 @@ pub trait Backend: Send + Sync {
     fn rewind_point(&self, _host: &dyn Host, _project: &Path, _id: &str) -> Result<Option<Rewind>, String> {
         Err("this agent can't forget a turn".into())
     }
+    /// Whether it can continue a conversation without its last turn at all (see
+    /// [`Backend::rewind_point`], which says where to cut): what editing a sent message needs.
+    fn can_forget_turns(&self) -> bool {
+        false
+    }
     /// The items of an [`crate::conversation::Item::Earlier`] part of session `id`.
     fn load_segment(&self, _host: &dyn Host, _project: &Path, _id: &str, _from: u64, _to: u64) -> std::io::Result<Vec<crate::conversation::Item>> {
         Err(std::io::Error::other("this agent cannot read earlier parts"))

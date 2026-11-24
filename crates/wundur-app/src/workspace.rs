@@ -1580,6 +1580,8 @@ impl Workspace {
                 return self.session.update(cx, |s, cx| {
                     match arg {
                         "plan" => s.plan_undo(cx),
+                        // As the Edit button on the last message.
+                        "edit" => s.edit_last(cx),
                         "confirm" => s.undo_turn(false, false, cx),
                         "keep" => s.undo_turn(true, false, cx),
                         "others" => s.undo_turn(true, true, cx),

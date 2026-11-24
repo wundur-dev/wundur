@@ -941,6 +941,22 @@ impl ChatPanel {
                         None => (user_bg, None),
                     };
                     let group = SharedString::from(format!("user-{key}-{ix}"));
+                    // The last message can be taken back to change (see `edit_last`).
+                    let edit = key.strip_prefix("main").and_then(|n| n.parse::<usize>().ok()).filter(|_| self.agent.is_none()).and_then(|n| {
+                        let s = self.session.read(cx);
+                        (s.chat.turn_start() == n && s.can_edit_last()).then(|| {
+                            let weak = self.session.downgrade();
+                            Button::new(SharedString::from(format!("edit-{key}-{ix}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(gpui_kit::assets::IconName::Pencil)
+                                .text_color(muted)
+                                .tooltip("Edit: take this message and its reply back, to change and send again")
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |s, cx| s.edit_last(cx));
+                                })
+                        })
+                    });
                     div()
                         .group(group.clone())
                         .w_full()
@@ -948,6 +964,7 @@ impl ChatPanel {
                         .justify_end()
                         .items_end()
                         .gap_1()
+                        .children(edit.map(|b| div().invisible().group_hover(group.clone(), |d| d.visible()).child(b)))
                         .child(hover_actions(group, format!("{key}-{ix}"), copy, muted))
                         .child(
                             div()

@@ -52,6 +52,9 @@ pub struct RestorePoints {
     /// The agent still remembers a turn whose files were put back: its next message starts
     /// with [`UNDO_NOTE`] (once).
     tell_agent: bool,
+    /// The plan being worked out or shown is for editing the last message (see `edit_last`):
+    /// a turn that changed no files is taken back without asking, and the panel says Edit.
+    editing: bool,
 }
 
 /// A finished turn's restore points.
@@ -297,8 +300,79 @@ impl AgentSession {
             let _ = this.update(cx, |s, cx| {
                 s.restore.working = false;
                 match plan {
-                    Ok(plan) => s.restore.plan = Some(plan),
-                    Err(e) => s.chat.push_error(format!("Could not work out what to undo: {e}")),
+                    Ok(plan) => {
+                        // Editing a message whose turn changed nothing on disk: nothing to
+                        // confirm, it comes straight back to the box.
+                        let plain = s.restore.editing && plan.forgets && plan.files.is_empty() && plan.others.is_empty();
+                        s.restore.plan = Some(plan);
+                        if plain {
+                            s.undo_turn(false, false, cx);
+                        }
+                    }
+                    Err(e) => {
+                        s.restore.editing = false;
+                        s.chat.push_error(format!("Could not work out what to undo: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Whether the last message can be edited: taken back with its reply, to change and send
+    /// again. The agent must be able to continue without the turn; the turn must be one that
+    /// can be undone, or one that only talked (nothing on disk to put back, so no restore
+    /// point is needed: the case after a restart, and for a message stopped at once).
+    pub fn can_edit_last(&self) -> bool {
+        use wundur_core::conversation::Item;
+        if self.chat.busy || self.restore.working || self.restore.plan.is_some() || !self.backend.can_forget_turns() || self.chat.session_id.is_none() {
+            return false;
+        }
+        let Some(at) = self.chat.items.iter().rposition(|i| matches!(i, Item::User(_))) else { return false };
+        self.can_undo() || !self.chat.items[at..].iter().any(|i| matches!(i, Item::Tool(_) | Item::TurnChanges(_)))
+    }
+
+    /// Whether the plan shown is for editing the last message (the panel's words follow).
+    pub fn undo_is_edit(&self) -> bool {
+        self.restore.editing
+    }
+
+    /// Edit the last message: its turn is taken out of the conversation (its files put back,
+    /// asked first when it changed any) and the message comes back to the box.
+    pub fn edit_last(&mut self, cx: &mut Context<Self>) {
+        if !self.can_edit_last() {
+            return;
+        }
+        if self.can_undo() {
+            self.restore.editing = true;
+            self.plan_undo(cx);
+            return;
+        }
+        // A turn that only talked: the conversation is cut before it, and that is all.
+        let Some(id) = self.chat.session_id.clone() else { return };
+        self.restore.working = true;
+        let (host, backend, cwd) = (self.host.clone(), self.backend.clone(), self.cwd.clone());
+        cx.notify();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let point = cx.background_executor().spawn(async move { backend.rewind_point(host.as_ref(), &cwd, &id) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.restore.working = false;
+                match point {
+                    Ok(point) if !s.chat.busy => {
+                        s.stop(cx);
+                        match point {
+                            Some(p) => {
+                                s.rewind_next = Some(p);
+                                s.fork_next = true;
+                            }
+                            None => s.chat.session_id = None,
+                        }
+                        let text = s.chat.drop_last_turn();
+                        cx.emit(SessionEvent::Undone(text));
+                    }
+                    Ok(_) => {}
+                    Err(why) => s.chat.push_error(format!("Could not take the message back to edit: {why}")),
                 }
                 cx.notify();
             });
@@ -307,6 +381,7 @@ impl AgentSession {
     }
 
     pub fn cancel_undo(&mut self, cx: &mut Context<Self>) {
+        self.restore.editing = false;
         self.restore.plan = None;
         cx.notify();
     }
@@ -325,6 +400,7 @@ impl AgentSession {
         self.restore.working = true;
         let (host, backend, cwd, id) = (self.host.clone(), self.backend.clone(), self.cwd.clone(), self.chat.session_id.clone());
         let forgets = plan.forgets;
+        let editing = std::mem::take(&mut self.restore.editing);
         cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let restored_files = files.clone();
@@ -372,7 +448,11 @@ impl AgentSession {
                             None => s.chat.session_id = None,
                         }
                         let text = s.chat.drop_last_turn();
-                        s.chat.push_notice(format!("Undid the last turn ({n}). {} won't remember it.", s.backend.name()));
+                        // An edit that put nothing back needs no line in the chat: the message
+                        // is in the box again, which says it.
+                        if !(editing && files.is_empty()) {
+                            s.chat.push_notice(format!("Undid the last turn ({n}). {} won't remember it.", s.backend.name()));
+                        }
                         cx.emit(SessionEvent::Undone(text));
                     }
                     Some(Err(why)) => {
