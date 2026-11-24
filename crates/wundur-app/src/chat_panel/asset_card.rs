@@ -351,7 +351,7 @@ impl ChatPanel {
             .border_color(if chosen { theme.ring } else { transparent_black() })
             .cursor_pointer()
             .hover(|d| d.shadow_md())
-            .child(img(path).size_full().object_fit(ObjectFit::Cover))
+            .child(crate::thumbs::picture(&path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover))
             .when(chosen, |d| {
                 d.child(
                     div()

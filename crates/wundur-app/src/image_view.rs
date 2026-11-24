@@ -20,6 +20,10 @@ pub fn show(path: PathBuf, cx: &mut App) {
 }
 
 pub fn close(cx: &mut App) {
+    // Its full-size pixels go with it (the small one in the chat stays).
+    if let Some(path) = cx.try_global::<Shown>().and_then(|s| s.0.clone()) {
+        crate::thumbs::release(&path, crate::thumbs::FULL, cx);
+    }
     cx.set_global(Shown(None, false));
     cx.refresh_windows();
 }
@@ -93,7 +97,7 @@ pub fn render(cx: &App) -> Option<AnyElement> {
             .p(px(56.))
             .cursor_pointer()
             .on_click(|_, _, cx| close(cx))
-            .child(img(path).size_full().object_fit(ObjectFit::Contain))
+            .child(crate::thumbs::picture(&path, crate::thumbs::FULL).size_full().object_fit(ObjectFit::Contain))
             .child(
                 div()
                     .absolute()

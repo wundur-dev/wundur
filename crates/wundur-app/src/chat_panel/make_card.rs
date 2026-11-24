@@ -187,7 +187,7 @@ impl ChatPanel {
                                 .overflow_hidden()
                                 .border_1()
                                 .border_color(border)
-                                .child(img(f.clone()).size_full().object_fit(ObjectFit::Contain)),
+                                .child(crate::thumbs::picture(f, crate::thumbs::LARGE).size_full().object_fit(ObjectFit::Contain)),
                         );
                     }
                     let open = file.clone();

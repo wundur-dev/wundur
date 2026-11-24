@@ -80,6 +80,7 @@ mod settings_window;
 mod shell;
 mod skills_panel;
 mod spelling;
+mod thumbs;
 mod terminal_view;
 mod term_blocks;
 mod theme;

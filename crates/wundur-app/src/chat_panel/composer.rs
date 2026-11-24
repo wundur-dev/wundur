@@ -867,7 +867,7 @@ impl ChatPanel {
                             .overflow_hidden()
                             .border_1()
                             .border_color(border)
-                            .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover)),
+                            .child(crate::thumbs::picture(path, crate::thumbs::SMALL).size_full().object_fit(ObjectFit::Cover)),
                     )
                     .when(images > 1, |d| d.child(div().text_xs().text_color(muted).child(format!("+{}", images - 1))))
             });
@@ -941,7 +941,7 @@ impl ChatPanel {
                     .border_1()
                     .border_color(border)
                     .cursor_pointer()
-                    .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .child(crate::thumbs::picture(&path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover))
                     .on_click(move |_, _, cx| crate::image_view::show(p1.clone(), cx))
                     .child(
                         div()
