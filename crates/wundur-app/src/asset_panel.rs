@@ -57,7 +57,7 @@ impl AssetPanel {
                             .border_color(if ok { ring } else { border })
                             .bg(field)
                             .cursor_pointer()
-                            .child(img(path).size_full().object_fit(ObjectFit::Contain))
+                            .child(crate::thumbs::picture(&path, crate::thumbs::LARGE).size_full().object_fit(ObjectFit::Contain))
                             .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
                     )
                     .when(ok, |d| d.child(div().text_xs().text_color(green).child("✓ Approved")))
@@ -89,7 +89,7 @@ impl AssetPanel {
                     .gap_1()
                     .w(px(180.))
                     .child(match &m.preview {
-                        Some(p) => div().size(px(180.)).rounded_md().overflow_hidden().border_1().border_color(border).child(img(self.dir.join(p)).size_full().object_fit(ObjectFit::Contain)),
+                        Some(p) => div().size(px(180.)).rounded_md().overflow_hidden().border_1().border_color(border).child(crate::thumbs::picture(&self.dir.join(p), crate::thumbs::TILE).size_full().object_fit(ObjectFit::Contain)),
                         None => div().size(px(180.)).rounded_md().border_1().border_color(border),
                     })
                     .when(ok, |d| d.child(div().text_xs().text_color(green).child("✓ Approved")))

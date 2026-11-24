@@ -579,7 +579,7 @@ impl ChatPanel {
                             .overflow_hidden()
                             .bg(ground)
                             .cursor_pointer()
-                            .child(img(path).size_full().object_fit(ObjectFit::Cover))
+                            .child(crate::thumbs::picture(&path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover))
                             .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
                     );
                 }
@@ -938,7 +938,7 @@ impl ChatPanel {
             let (on, field, value) = (o == current, f.id.clone(), o.clone());
             let thumb = div().size(px(48.)).flex_none().rounded(px(8.)).overflow_hidden().bg(ground).flex().items_center().justify_center();
             let thumb = match picture {
-                Some(path) => thumb.child(img(path).size_full().object_fit(ObjectFit::Cover)),
+                Some(path) => thumb.child(crate::thumbs::picture(&path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover)),
                 None => thumb.child(Icon::new(kind_icon(&form.kind)).text_color(muted)),
             };
             let mark = div().size(px(20.)).flex_none().rounded_full().flex().items_center().justify_center();
@@ -1001,7 +1001,7 @@ impl ChatPanel {
                     .border_1()
                     .border_color(border)
                     .bg(ground)
-                    .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .child(crate::thumbs::picture(path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover))
                     .child(
                         div().absolute().top(px(1.)).right(px(1.)).rounded_full().bg(bg.opacity(0.9)).child(
                             Button::new(SharedString::from(format!("hosted-ref-remove-{n}")))
@@ -1225,7 +1225,7 @@ impl ChatPanel {
         let picture = set.and_then(|s| e.record.views.get(&s.id)).and_then(|f| f.first()).or_else(|| e.record.references.first()).map(|f| dir.join(f));
         let thumb = div().size(px(40.)).flex_none().rounded(px(8.)).overflow_hidden().bg(ground).flex().items_center().justify_center();
         let thumb = match picture {
-            Some(path) => thumb.child(img(path).size_full().object_fit(ObjectFit::Cover)),
+            Some(path) => thumb.child(crate::thumbs::picture(&path, crate::thumbs::SMALL).size_full().object_fit(ObjectFit::Cover)),
             None => thumb.child(Icon::new(kind_icon(&e.record.kind)).text_color(muted)),
         };
         let busy = e.busy();
@@ -1347,7 +1347,7 @@ impl ChatPanel {
                         .bg(ground)
                         .overflow_hidden()
                         .cursor_pointer()
-                        .child(img(path).size_full().object_fit(ObjectFit::Contain))
+                        .child(crate::thumbs::picture(&path, crate::thumbs::LARGE).size_full().object_fit(ObjectFit::Contain))
                         .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx));
                     (view.label.clone(), tile.into_any_element())
                 })
@@ -1386,7 +1386,7 @@ impl ChatPanel {
                                 .items_center()
                                 .justify_center()
                                 .child(match (&thumb, s.status.as_str()) {
-                                    (Some(p), _) => img(p.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                                    (Some(p), _) => crate::thumbs::picture(p, crate::thumbs::SMALL).size_full().object_fit(ObjectFit::Cover).into_any_element(),
                                     (None, "failed") => div().text_xs().text_color(danger).child("failed").into_any_element(),
                                     _ => self.small_spinner(&format!("set-{}-{}", dir.display(), s.id), muted),
                                 }),
@@ -1587,7 +1587,7 @@ impl ChatPanel {
                             .overflow_hidden()
                             .bg(ground)
                             .cursor_pointer()
-                            .child(img(full.clone()).size_full().object_fit(ObjectFit::Contain))
+                            .child(crate::thumbs::picture(&full, crate::thumbs::SMALL).size_full().object_fit(ObjectFit::Contain))
                             .on_click(move |_, _, cx| crate::image_view::show(full.clone(), cx)),
                     )
                     .child(div().text_xs().text_color(muted).child(view.label.clone())),

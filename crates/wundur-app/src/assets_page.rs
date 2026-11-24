@@ -129,7 +129,7 @@ impl AssetsPage {
         let theme = cx.theme();
         let (muted, border, ground, accent) = (theme.muted_foreground, theme.border, theme.secondary, theme.ring);
         let thumb = match (&entry.thumb, entry.kind) {
-            (Some(t), _) => img(t.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            (Some(t), _) => crate::thumbs::picture(t, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Contain).into_any_element(),
             (None, Kind::Audio) => Icon::new(gpui_kit::assets::IconName::AudioLines).size(px(34.)).text_color(muted).into_any_element(),
             (None, Kind::Model) => Icon::new(gpui_kit::assets::IconName::Box).size(px(34.)).text_color(muted).into_any_element(),
             (None, Kind::Image) => Icon::new(gpui_kit::assets::IconName::Image).size(px(34.)).text_color(muted).into_any_element(),

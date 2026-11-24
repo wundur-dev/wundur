@@ -476,7 +476,7 @@ impl ChatPanel {
                         .border_1()
                         .border_color(border)
                         .cursor_pointer()
-                        .child(img(path.clone()).size_full().object_fit(ObjectFit::Contain))
+                        .child(crate::thumbs::picture(path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Contain))
                         .on_click(move |_, _, cx| crate::image_view::show(p.clone(), cx)),
                 );
             }

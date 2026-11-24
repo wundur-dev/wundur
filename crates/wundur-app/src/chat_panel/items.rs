@@ -1000,7 +1000,7 @@ impl ChatPanel {
                                 .border_color(cx.theme().border)
                                 .cursor_pointer()
                                 .relative()
-                                .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
+                                .child(crate::thumbs::picture(path, crate::thumbs::TILE).size_full().object_fit(ObjectFit::Cover))
                                 // Its number: the message says `[Image 1]` where it means it.
                                 .child(
                                     div()
