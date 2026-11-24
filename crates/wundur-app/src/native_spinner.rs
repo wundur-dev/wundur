@@ -52,6 +52,12 @@ impl NativeSpinner {
     /// Call while painting the place it goes: it shows there (window coordinates), in `color`,
     /// until a frame is drawn without it.
     pub fn paint(&self, bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+        // A native view isn't clipped by what it is drawn in: scrolled part of the way out of
+        // its list, it would show over what is beside the list. Out of sight, it isn't shown.
+        let seen = window.content_mask().bounds;
+        if !(seen.contains(&bounds.origin) && seen.contains(&bounds.bottom_right())) {
+            return;
+        }
         let guard = Guard::new(&self.0);
         window.on_mouse_event(move |_: &MouseMoveEvent, _, _, _| {
             let _ = &guard;
@@ -62,6 +68,13 @@ impl NativeSpinner {
         } else {
             self.0.show(bounds, color, window);
         }
+    }
+}
+
+impl NativeSpinner {
+    /// Whether the last frame drawn showed it.
+    pub fn showing(&self) -> bool {
+        self.0.present.get() > 0
     }
 }
 

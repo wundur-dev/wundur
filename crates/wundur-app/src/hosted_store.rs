@@ -9,12 +9,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use serde_json::Value;
 use wundur_core::account::{self, Auth, Error};
 use wundur_core::asset_flow::{self as flow, Asset, Catalog, Record};
+
+use crate::kept::Kept;
 
 /// How often the service is asked while something is being made.
 const POLL: Duration = Duration::from_millis(2500);
@@ -75,7 +78,7 @@ impl Entry {
 #[derive(Default)]
 struct Store {
     entries: HashMap<PathBuf, Entry>,
-    catalog: Option<Catalog>,
+    catalog: Option<Arc<Catalog>>,
     /// The person's plan (`free`, `monthly`…), for which engines they may use.
     plan: Option<String>,
     /// When the plan's allowance resets (paid plans: what's said instead of Upgrade).
@@ -84,6 +87,10 @@ struct Store {
     images_left: Option<i64>,
     /// Style pictures being fetched now, by path (so each is asked for once).
     fetching: std::collections::HashSet<String>,
+    /// Each style picture's file as last looked for (a tile asks on every frame it draws).
+    styles: Kept<String, Option<PathBuf>>,
+    /// Folders whose record wasn't there when last looked (a card asks on every frame).
+    missing: Kept<PathBuf, ()>,
     loading: bool,
     /// The catalog is for an earlier plan or access (it differs by caller): fetch it again,
     /// showing the one held meanwhile.
@@ -98,9 +105,23 @@ pub fn revision(cx: &App) -> u64 {
     cx.try_global::<Store>().map_or(0, |s| s.revision)
 }
 
-/// Whether `dir` is a hosted asset's folder.
+thread_local! {
+    /// Whether each folder is a hosted asset's, as last looked (see [`is_hosted`]).
+    static HOSTED: std::cell::RefCell<Kept<PathBuf, bool>> = Default::default();
+}
+
+/// Whether `dir` is a hosted asset's folder. Asked for every asset in a chat on every frame
+/// it draws, so the disk's answer is kept for a moment.
 pub fn is_hosted(dir: &Path) -> bool {
-    dir.join(flow::RECORD).is_file()
+    let now = Instant::now();
+    HOSTED.with_borrow_mut(|kept| match kept.get(dir, now) {
+        Some(hosted) => *hosted,
+        None => {
+            let hosted = dir.join(flow::RECORD).is_file();
+            kept.put(dir.to_path_buf(), hosted, now);
+            hosted
+        }
+    })
 }
 
 /// Whether New asset uses the hosted flow: always, unless `WUNDUR_OWN_KEY_ASSETS=1` brings back
@@ -115,7 +136,7 @@ pub fn signed_in() -> bool {
 }
 
 /// The catalog and the person's plan, fetched the first time (and again after a failure).
-pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
+pub fn catalog(cx: &mut App) -> (Option<Arc<Catalog>>, Option<String>) {
     let store = cx.default_global::<Store>();
     if (store.catalog.is_none() || store.stale) && !store.loading {
         store.loading = true;
@@ -127,7 +148,7 @@ pub fn catalog(cx: &mut App) -> (Option<Catalog>, Option<String>) {
                 store.loading = false;
                 match got {
                     (Ok(c), me) => {
-                        store.catalog = Some(c);
+                        store.catalog = Some(Arc::new(c));
                         let (plan, rest) = me.ok().unzip();
                         let (period_end, images_left) = rest.unzip();
                         store.plan = plan;
@@ -187,10 +208,15 @@ const STYLE_IMAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// old. `None` until the first fetch lands (the tile shows its name meanwhile).
 pub fn style_image(path: &str, cx: &mut App) -> Option<PathBuf> {
     let name: String = path.trim_start_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    let now = Instant::now();
+    if let Some(have) = cx.default_global::<Store>().styles.get(path, now) {
+        return have.clone();
+    }
     let file = dirs::cache_dir()?.join("wundur-studio").join("styles").join(name);
     let fresh = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < STYLE_IMAGE_AGE);
     let have = file.is_file().then(|| file.clone());
     let store = cx.default_global::<Store>();
+    store.styles.put(path.to_string(), have.clone(), now);
     if fresh || store.fetching.contains(path) {
         return have;
     }
@@ -202,6 +228,7 @@ pub fn style_image(path: &str, cx: &mut App) -> Option<PathBuf> {
         cx.update(|cx| {
             let store = cx.default_global::<Store>();
             store.fetching.remove(&path);
+            store.styles.forget(path.as_str());
             if got.is_ok() {
                 // A new picture under the same file name: drop the drawn one.
                 store.revision += 1;
@@ -242,7 +269,15 @@ pub fn entry(dir: &Path, cx: &mut App) -> Option<Entry> {
         if store.entries.contains_key(dir) {
             false
         } else {
-            let record = flow::load(dir)?;
+            // Not there a moment ago: not read again on every frame its card draws.
+            let now = Instant::now();
+            if store.missing.get(dir, now).is_some() {
+                return None;
+            }
+            let Some(record) = flow::load(dir) else {
+                store.missing.put(dir.to_path_buf(), (), now);
+                return None;
+            };
             store.entries.insert(dir.to_path_buf(), Entry { record, project: crate::asset_store::project_of(dir), ..Default::default() });
             true
         }
@@ -409,7 +444,9 @@ pub fn create(
     }
     let record = Record { kind: kind.into(), name: name.into(), description: description.into(), fields: fields.clone(), origin, references: kept.clone(), ..Default::default() };
     flow::save(&dir, &record).map_err(|e| format!("Couldn't save the asset: {e}"))?;
+    HOSTED.with_borrow_mut(|kept| kept.forget(dir.as_path()));
     let store = cx.default_global::<Store>();
+    store.missing.forget(dir.as_path());
     store.entries.insert(dir.clone(), Entry { record, project: project.to_path_buf(), working: Some("Starting"), polling: true, ..Default::default() });
     store.revision += 1;
     let (kind, typed, description, folder) = (kind.to_string(), typed.to_string(), description.to_string(), dir.clone());
@@ -510,7 +547,7 @@ pub fn model(dir: &Path, reroll_of: Option<String>, cx: &mut App) {
     let Some(e) = entry(dir, cx) else { return };
     let Some(asset) = e.asset.clone() else { return };
     let (catalog, _) = catalog(cx);
-    let (engine, detail, finish) = model_choice(&e, catalog.as_ref());
+    let (engine, detail, finish) = model_choice(&e, catalog.as_deref());
     if asset.approved_set().is_none() {
         return;
     }

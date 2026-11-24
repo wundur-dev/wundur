@@ -57,6 +57,7 @@ mod parent_mode;
 mod perf;
 mod procstats;
 mod instance;
+mod kept;
 mod local_socket;
 mod messaging;
 mod pty;

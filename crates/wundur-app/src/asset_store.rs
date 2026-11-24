@@ -43,6 +43,8 @@ impl Job {
 #[derive(Default)]
 struct Store {
     entries: HashMap<PathBuf, Entry>,
+    /// Folders whose record wasn't there when last looked (a card asks on every frame).
+    missing: crate::kept::Kept<PathBuf, ()>,
     revision: u64,
 }
 
@@ -62,7 +64,15 @@ pub fn project_of(dir: &Path) -> PathBuf {
 pub fn entry(dir: &Path, cx: &mut App) -> Option<Entry> {
     let store = cx.default_global::<Store>();
     if !store.entries.contains_key(dir) {
-        let asset = assets::load(dir)?;
+        // Not there a moment ago: not read again on every frame its card draws.
+        let now = std::time::Instant::now();
+        if store.missing.get(dir, now).is_some() {
+            return None;
+        }
+        let Some(asset) = assets::load(dir) else {
+            store.missing.put(dir.to_path_buf(), (), now);
+            return None;
+        };
         let picked = asset.concept.clone().or_else(|| asset.concepts.last().map(|a| a.file.clone()));
         store.entries.insert(dir.to_path_buf(), Entry { asset, project: project_of(dir), picked, ..Default::default() });
     }
@@ -116,6 +126,7 @@ pub fn create(project: &Path, name: &str, kind: &str, brief: &str, origin: Optio
     let asset = Asset { name: name.into(), kind: kind.into(), brief: brief.into(), origin, ..Default::default() };
     assets::save(&dir, &asset).map_err(|e| format!("Couldn't save the asset: {e}"))?;
     let store = cx.default_global::<Store>();
+    store.missing.forget(dir.as_path());
     store.entries.insert(dir.clone(), Entry { asset, project: project.to_path_buf(), ..Default::default() });
     store.revision += 1;
     cx.refresh_windows();

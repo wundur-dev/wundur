@@ -478,6 +478,24 @@ impl ChatPanel {
         }
     }
 
+    /// A small spinner inside a card, `key` saying which (several can show at once). The
+    /// system's where there is one: one drawn by GPUI asks for a frame on every step, and each
+    /// of those draws the whole chat again, for as long as the thing is being made.
+    pub(super) fn small_spinner(&self, key: &str, color: Hsla) -> AnyElement {
+        if crate::native_spinner::NativeSpinner::available() {
+            let native = self.small_spinners.borrow_mut().entry(key.to_string()).or_default().clone();
+            div().size(px(16.)).flex_none().child(canvas(|_, _, _| {}, move |b, _, window, _| native.paint(b, color, window)).size_full()).into_any_element()
+        } else {
+            Icon::new(IconName::LoaderCircle).text_color(color).into_any_element()
+        }
+    }
+
+    /// Where a picture will be while it's made: a still block (a pulsing one asks for a frame
+    /// on every step, as a drawn spinner does; the spinner beside it shows the work).
+    pub(super) fn placeholder_block(cx: &App) -> Div {
+        div().size_full().rounded(px(12.)).bg(cx.theme().skeleton)
+    }
+
     /// While a set of views is being made: the spinner and what's happening (its version at
     /// the right), then a placeholder for each view across the card, labelled.
     fn hosted_generating(&self, what: &str, version: Option<usize>, labels: &[String], cx: &mut Context<Self>) -> AnyElement {
@@ -498,7 +516,7 @@ impl ChatPanel {
                     .child(div().text_sm().text_color(muted).child("You'll be able to review and refine them here.")),
             )
             .children(version.map(|v| div().text_sm().text_color(muted).child(format!("v{v}"))));
-        let tiles = labels.iter().map(|l| (l.clone(), gpui_kit::component::skeleton::Skeleton::new().size_full().rounded(px(12.)).into_any_element())).collect();
+        let tiles = labels.iter().map(|l| (l.clone(), Self::placeholder_block(cx).into_any_element())).collect();
         div().flex().flex_col().gap_4().child(status).child(self.hosted_tiles(tiles, cx)).into_any_element()
     }
 
@@ -1190,7 +1208,7 @@ impl ChatPanel {
         };
         match shown {
             4 => self.hosted_rig(dir, &e, &kind_label, &id, &mut frame, cx),
-            3 => self.hosted_model(dir, &e, catalog.as_ref(), kind.as_ref(), plan.as_deref(), &id, &mut frame, cx),
+            3 => self.hosted_model(dir, &e, catalog.as_deref(), kind.as_ref(), plan.as_deref(), &id, &mut frame, cx),
             _ => self.hosted_views(dir, &e, kind.as_ref(), &kind_label, reached, &id, &mut frame, cx),
         }
         self.hosted_frame(frame, cx)
@@ -1221,7 +1239,7 @@ impl ChatPanel {
                 (None, Some(a)) if a.sets.iter().any(Set::is_generating) => "Generating views…".into(),
                 _ => "Building the model…".into(),
             };
-            (gpui_kit::component::spinner::Spinner::new().color(muted).into_any_element(), text)
+            (self.small_spinner(&format!("row-{}", dir.display()), muted), text)
         } else if e.record.imported.is_some() {
             (Icon::new(Lucide::CircleCheck).small().text_color(green).into_any_element(), "Imported".into())
         } else {
@@ -1370,7 +1388,7 @@ impl ChatPanel {
                                 .child(match (&thumb, s.status.as_str()) {
                                     (Some(p), _) => img(p.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
                                     (None, "failed") => div().text_xs().text_color(danger).child("failed").into_any_element(),
-                                    _ => gpui_kit::component::spinner::Spinner::new().color(muted).into_any_element(),
+                                    _ => self.small_spinner(&format!("set-{}-{}", dir.display(), s.id), muted),
                                 }),
                         )
                         .child(div().text_xs().text_color(if on { ring } else { muted }).child(caption)),
@@ -1776,7 +1794,7 @@ impl ChatPanel {
         };
         frame.primary = Some(match &attempt {
             // A rebuild on its way: the earlier attempt isn't the one to import now.
-            _ if building => Button::new(id("building")).primary().label("Building…").loading(true).disabled(true).into_any_element(),
+            _ if building => Button::new(id("building")).primary().label("Building…").disabled(true).into_any_element(),
             Some(m) if m.succeeded() => {
                 frame.status = format!("Model v{} ready · Import: {}", attempts.len(), credits(m.credits.or_else(|| catalog.and_then(|c| c.engine(&m.engine)).map(|en| en.credits)).unwrap_or(1)));
                 frame.secondary = Some(rebuild("Rebuild").outline().into_any_element());
