@@ -352,10 +352,7 @@ impl Record {
 
     pub fn save(&self) -> Result<()> {
         let path = record_file().ok_or_else(|| anyhow!("no settings folder"))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        crate::save::whole(&path, serde_json::to_string_pretty(self)?)?;
         Ok(())
     }
 

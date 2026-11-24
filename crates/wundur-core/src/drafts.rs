@@ -21,10 +21,7 @@ fn with<T>(f: impl FnOnce(&mut BTreeMap<String, String>) -> T) -> T {
 
 fn write(map: &BTreeMap<String, String>) {
     if let Some(p) = file() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(p, serde_json::to_string_pretty(map).unwrap_or_default());
+        let _ = crate::save::whole(&p, serde_json::to_string_pretty(map).unwrap_or_default());
     }
 }
 

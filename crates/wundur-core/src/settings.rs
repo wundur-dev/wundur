@@ -335,12 +335,26 @@ impl Settings {
     }
 
     /// Load from `path`; missing or unreadable gives the defaults. `None` keeps it in memory.
+    ///
+    /// A file that is there but can't be read as settings is kept beside itself as
+    /// `settings.json.unreadable` before the defaults take its place: the next save would
+    /// otherwise write the defaults over the only copy of what the person had.
     pub fn load(path: Option<PathBuf>) -> Self {
-        let mut s: Settings = path
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let mut s: Settings = match text.as_deref().map(serde_json::from_str::<Settings>) {
+            Some(Ok(s)) => s,
+            Some(Err(e)) => {
+                if let (Some(p), Some(text)) = (&path, &text) {
+                    let mut name = p.file_name().unwrap_or_default().to_os_string();
+                    name.push(".unreadable");
+                    let aside = p.with_file_name(name);
+                    eprintln!("wundur: {} could not be read ({e}); kept as {} and starting from the defaults", p.display(), aside.display());
+                    let _ = crate::save::whole(&aside, text);
+                }
+                Settings::default()
+            }
+            None => Settings::default(),
+        };
         s.path = path;
         s
     }
@@ -349,13 +363,7 @@ impl Settings {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(
-            path,
-            serde_json::to_string_pretty(self).map_err(std::io::Error::other)?,
-        )
+        crate::save::whole(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 
     /// Put `folder` first in the recent list.
@@ -501,6 +509,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
     use super::*;
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("wundur-settings-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Cut off mid-write, as an in-place write could leave it.
+        std::fs::write(&path, r#"{"appearance":"dark","recent":["/a","#).unwrap();
+        let s = Settings::load(Some(path.clone()));
+        assert_eq!(s.appearance, Settings::default().appearance, "the defaults, as before");
+        assert_eq!(std::fs::read_to_string(dir.join("settings.json.unreadable")).unwrap(), r#"{"appearance":"dark","recent":["/a","#, "what was there is not lost");
+        // Saving the defaults doesn't touch the copy.
+        s.save().unwrap();
+        assert!(dir.join("settings.json.unreadable").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_project_from_before_writable_folders_reads_with_none() {

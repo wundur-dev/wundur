@@ -618,10 +618,7 @@ impl Workspace {
                 && let Ok(json) = serde_json::to_string_pretty(&state)
             {
                 cx.background_spawn(async move {
-                    if let Some(dir) = path.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    let _ = std::fs::write(&path, json);
+                    let _ = wundur_core::save::whole(&path, json);
                 })
                 .await;
             }

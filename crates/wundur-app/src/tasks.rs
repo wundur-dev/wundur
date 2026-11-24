@@ -70,7 +70,7 @@ fn store(cx: &mut App) -> &mut Tasks {
 fn save(cx: &mut App) {
     let text = serde_json::to_string_pretty(store(cx)).unwrap_or_default();
     if let Some(f) = file() {
-        let _ = std::fs::write(f, text);
+        let _ = wundur_core::save::whole(&f, text);
     }
     crate::tasks_web::publish(cx);
     cx.refresh_windows();
