@@ -162,6 +162,8 @@ pub struct ChatPanel {
     on_screen: crate::on_screen::OnScreen,
     /// When the agent became busy with the current turn (for the time on the thinking line).
     busy_since: Option<std::time::Instant>,
+    /// The playful word the working line says while this turn thinks, picked as it starts.
+    thinking_word: &'static str,
     /// The step the working line's spinner is at, moved on by the ticker: kept apart from the
     /// panel so a step redraws the line, not the chat (see `render_working_line`).
     pulse: Entity<Pulse>,
@@ -263,7 +265,10 @@ impl ChatPanel {
         });
         let s2 = cx.observe(&session, |panel, session, cx| {
             match (session.read(cx).chat.busy, panel.busy_since) {
-                (true, None) => panel.busy_since = Some(std::time::Instant::now()),
+                (true, None) => {
+                    panel.busy_since = Some(std::time::Instant::now());
+                    panel.thinking_word = items::pick_thinking_word();
+                }
                 (false, Some(_)) => panel.busy_since = None,
                 _ => {}
             }
@@ -370,6 +375,7 @@ impl ChatPanel {
             index: Arc::new(FileIndex::default()),
             last_revision: 0,
             busy_since: None,
+            thinking_word: items::pick_thinking_word(),
             pulse: cx.new(|_| Pulse(0)),
             working_slot: Default::default(),
             native_spinner: Default::default(),
@@ -1110,7 +1116,6 @@ impl Render for ChatPanel {
                     .relative()
                     .children(self.render_latest(cx)),
             )
-            .children(self.render_working_line(cx))
             .child({
                 let slash = self.render_slash(cx);
                 self.sync_model_select(window, cx);

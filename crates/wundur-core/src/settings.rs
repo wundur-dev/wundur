@@ -131,6 +131,9 @@ pub struct Prefs {
     pub paste_pills: bool,
     /// A turn that changed files ends with a card listing them.
     pub turn_card: bool,
+    /// While the agent thinks (no tool running, no text coming), the working line says a
+    /// playful word ("Pondering", "Spelunking") instead of "Thinking".
+    pub playful_thinking: bool,
     /// Files changed by commands (not the edit tools) are found with git.
     pub command_changes: bool,
     /// A terminal shows what it showed before Wundur last quit.
@@ -170,6 +173,7 @@ impl Default for Prefs {
             inset_text: true,
             paste_pills: true,
             turn_card: true,
+            playful_thinking: true,
             command_changes: true,
             keep_terminal_history: true,
             shell_integration: true,
