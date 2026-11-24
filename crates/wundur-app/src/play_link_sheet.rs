@@ -33,6 +33,12 @@ pub struct PlayLinkSheet {
     focus: FocusHandle,
     /// When the link's numbers were last read from the API.
     refreshed_at: Option<Instant>,
+    /// The stats view (by day) shows in place of the rest.
+    show_stats: bool,
+    /// The link's activity by UTC hour, once read.
+    stats: Option<pl::Stats>,
+    stats_loading: bool,
+    stats_error: Option<String>,
     /// Reads the numbers again every [`REFRESH_EVERY`] while the sheet is open.
     _poll: Option<Task<()>>,
     /// The session's folder (where the build runs and `project.json` is).
@@ -82,6 +88,10 @@ impl PlayLinkSheet {
         let mut sheet = Self {
             focus,
             refreshed_at: None,
+            show_stats: false,
+            stats: None,
+            stats_loading: false,
+            stats_error: None,
             _poll: None,
             root,
             record_root: None,
@@ -114,6 +124,9 @@ impl PlayLinkSheet {
                     .update(cx, |s, cx| {
                         if !s.working() {
                             s.refresh(true, cx);
+                            if s.show_stats {
+                                s.load_stats(true, cx);
+                            }
                         }
                         // "Updated 2 minutes ago" moves on too.
                         cx.notify();
@@ -198,6 +211,91 @@ impl PlayLinkSheet {
             });
         })
         .detach();
+    }
+
+    /// Read the link's stats by hour. `quiet` (the timer's): a failure keeps what's shown.
+    fn load_stats(&mut self, quiet: bool, cx: &mut Context<Self>) {
+        let Some(id) = self.record.as_ref().map(|r| r.id.clone()) else { return };
+        if self.stats_loading {
+            return;
+        }
+        self.stats_loading = true;
+        cx.notify();
+        let task = cx.background_spawn(async move { pl::stats(&id) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.stats_loading = false;
+                match result {
+                    Ok(stats) => {
+                        s.stats = Some(stats);
+                        s.stats_error = None;
+                    }
+                    Err(_) if quiet => {}
+                    Err(e) => s.stats_error = Some(pl::message(&e)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// For the control channel: the stats view with [`Self::look`]'s sample numbers.
+    pub fn show_stats_look(&mut self, cx: &mut Context<Self>) {
+        self.show_stats = true;
+        cx.notify();
+    }
+
+    fn open_stats(&mut self, cx: &mut Context<Self>) {
+        self.show_stats = true;
+        self.load_stats(false, cx);
+        cx.notify();
+    }
+
+    /// The stats view: the chart and table by day, with refresh.
+    fn render_stats(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, red) = (theme.muted_foreground, theme.red);
+        let today = chrono::Local::now().date_naive();
+        let content = match (&self.stats, &self.stats_error) {
+            (_, Some(e)) => div().text_xs().text_color(red).child(e.clone()).into_any_element(),
+            (Some(stats), None) => {
+                let (days, late) = crate::play_link_stats::days(stats, &chrono::Local, today);
+                crate::play_link_stats::render(&days, late, cx)
+            }
+            (None, None) => div().text_xs().text_color(muted).child("Reading the stats…").into_any_element(),
+        };
+        div()
+            .id("play-stats")
+            .max_h(px(520.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(div().flex_1().min_w_0().truncate().child(self.view.as_ref().map(|v| v.url.clone()).unwrap_or_default()))
+                    .child(if self.stats_loading { "Updating…".to_string() } else { "Refreshes every 30 seconds".to_string() })
+                    .child(
+                        Button::new("play-stats-refresh")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::RotateCw)
+                            .tooltip("Refresh")
+                            .disabled(self.stats_loading)
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.load_stats(false, cx);
+                                s.refresh(false, cx);
+                            })),
+                    ),
+            )
+            .child(content)
+            .into_any_element()
     }
 
     /// Forget the link (gone): the next Share makes a new one.
@@ -453,6 +551,19 @@ impl PlayLinkSheet {
         self.signed_out = false;
         self.loading = false;
         self.refreshed_at = Some(Instant::now());
+        // A week of activity, by UTC hour, ending now.
+        let now = chrono::Utc::now();
+        let hours = (0..7)
+            .flat_map(|d| [2, 9, 15, 20].into_iter().map(move |h| (d, h)))
+            .filter_map(|(d, h)| {
+                let t = now - chrono::Duration::days(6 - d) - chrono::Duration::hours(h);
+                let n = ((d * 7 + h * 3) % 6) as u64;
+                (n > 0).then(|| pl::HourStats { hour: t.format("%Y-%m-%dT%H").to_string(), views: n + 1, players: n / 2, play_seconds: n * 150, plays_timed: n / 2, rating_sum: if n > 3 { 4 } else { 0 }, ratings: u64::from(n > 3) })
+            })
+            .collect::<Vec<_>>();
+        let mut hours = hours;
+        hours.sort_by(|a, b| a.hour.cmp(&b.hour));
+        self.stats = Some(pl::Stats { since: Some((now - chrono::Duration::days(6)).format("%Y-%m-%dT00").to_string()), hours });
         cx.notify();
     }
 
@@ -733,6 +844,9 @@ impl PlayLinkSheet {
                                 cx.notify();
                             })))
                         })
+                        .when(self.view.is_some() && !self.confirm_off, |d| {
+                            d.child(Button::new("play-all-stats").small().ghost().icon(gpui_kit::assets::IconName::ChartColumn).label("Stats by day").on_click(cx.listener(|s, _, _, cx| s.open_stats(cx))))
+                        })
                         .child(div().flex_1())
                         .when(!self.missing && !self.confirm_off, |d| {
                             d.child(Button::new("play-off").small().ghost().label("Turn off link").disabled(busy).on_click(cx.listener(|s, _, _, cx| {
@@ -829,7 +943,9 @@ impl Render for PlayLinkSheet {
             (Phase::Confirm(_), _) => if has_link { "Upload and update" } else { "Upload and share" },
             (Phase::Idle, _) => if has_link { "Update link" } else { "Share" },
         };
-        let body: AnyElement = if self.detecting {
+        let body: AnyElement = if self.show_stats {
+            self.render_stats(cx)
+        } else if self.detecting {
             div().text_xs().text_color(muted).child("Looking for the web build…").into_any_element()
         } else {
             div()
@@ -877,7 +993,10 @@ impl Render for PlayLinkSheet {
             .occlude()
             .capture_key_down(cx.listener(|s, ev: &KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" && !s.working() {
-                    if let Phase::Confirm(_) = s.phase {
+                    if s.show_stats {
+                        s.show_stats = false;
+                        cx.notify();
+                    } else if let Phase::Confirm(_) = s.phase {
                         s.phase = Phase::Idle;
                         cx.notify();
                     } else {
@@ -888,7 +1007,7 @@ impl Render for PlayLinkSheet {
             }))
             .child(
                 div()
-                    .w(px(540.))
+                    .w(px(if self.show_stats { 640. } else { 540. }))
                     .p_4()
                     .flex()
                     .flex_col()
@@ -922,6 +1041,12 @@ impl Render for PlayLinkSheet {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .when(self.show_stats, |d| {
+                                d.child(Button::new("play-stats-back").small().ghost().icon(IconName::ArrowLeft).label("Back").on_click(cx.listener(|s, _, _, cx| {
+                                    s.show_stats = false;
+                                    cx.notify();
+                                })))
+                            })
                             .child(div().flex_1())
                             .when(confirming, |d| {
                                 d.child(Button::new("play-back").small().ghost().label("Cancel").on_click(cx.listener(|s, _, _, cx| {
@@ -930,7 +1055,7 @@ impl Render for PlayLinkSheet {
                                 })))
                             })
                             .when(!confirming, |d| d.child(Button::new("play-done").small().ghost().label("Close").disabled(busy).on_click(cx.listener(|_, _, _, cx| cx.emit(CloseSheet)))))
-                            .child(
+                            .when(!self.show_stats, |d| d.child(
                                 Button::new("play-share")
                                     .small()
                                     .primary()
@@ -946,7 +1071,7 @@ impl Render for PlayLinkSheet {
                                             s.share(cx);
                                         }
                                     })),
-                            ),
+                            )),
                     ),
             )
     }
@@ -993,7 +1118,7 @@ fn ago(t: std::time::SystemTime) -> String {
 }
 
 /// A play's length: "45s", "5m 12s", "1h 3m".
-fn duration(secs: f64) -> String {
+pub(crate) fn duration(secs: f64) -> String {
     let s = secs.max(0.).round() as u64;
     match s {
         0..60 => format!("{s}s"),
