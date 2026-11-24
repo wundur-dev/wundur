@@ -62,9 +62,7 @@ jobs:
         run: |
           APP="$RUNNER_TEMP/bundle/Wundur Studio.app"
           # Inside out: the helper, then the window, then the bundle. No --deep.
-          for item in "$APP/Contents/MacOS/wundur-hook" "$APP/Contents/MacOS/wundur-mcp"; do
-            codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$item"
-          done
+          codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$APP/Contents/MacOS/wundur-mcp"
           # The window may use the microphone (speaking a message): its entitlement.
           for item in "$APP/Contents/MacOS/wundur" "$APP"; do
             codesign --force --options runtime --timestamp --entitlements crates/wundur-app/assets/macos/wundur.entitlements --sign "$APPLE_SIGN_IDENTITY" "$item"

@@ -2,8 +2,8 @@
 # bundle-macos.sh <version> <out-dir> [build-number]
 #
 # Build the release binaries for Apple silicon and Intel, join each pair into one universal
-# binary, and assemble Wundur.app in <out-dir>. `wundur` is the window; `wundur-hook` and
-# `wundur-mcp` sit beside it because the window finds them next to its own executable.
+# binary, and assemble Wundur.app in <out-dir>. `wundur` is the window; `wundur-mcp`
+# sits beside it because the window finds it next to its own executable.
 # The build number (CFBundleVersion) defaults to 1; the release workflow passes its run number.
 # Not signed here: the release workflow signs and notarizes the bundle it produces.
 
@@ -23,7 +23,7 @@ done
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-for bin in wundur wundur-hook wundur-mcp; do
+for bin in wundur wundur-mcp; do
     lipo -create -output "$APP/Contents/MacOS/$bin" \
         "$TARGET/aarch64-apple-darwin/release/$bin" "$TARGET/x86_64-apple-darwin/release/$bin"
 done

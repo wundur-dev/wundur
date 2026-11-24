@@ -7,7 +7,7 @@
 <p align="center"><a href="https://wundur.ai">wundur.ai</a></p>
 
 A native desktop app for working with coding agents (Claude Code so far): a list of
-sessions, each a whole workspace with its chat or the agent's own terminal, files, skills
+sessions, each a whole workspace with its chat, files, skills
 and terminals. Written in Rust with gpui (the UI framework behind Zed) and gpui-component.
 Prototype.
 
@@ -75,12 +75,12 @@ running it asks whether to quit anyway.
 
     +-----------+----------------------------------------------------------------+
     | + New     | [grip] Files          ...  | [Claude Code][greet.py][zsh]       |
-    | ● session | (file tree)                |  (chat or the agent's own terminal) |
+    | ● session | (file tree)                |  (the chat)                         |
     |   folder  |                            |                                     |
     | ○ session | [Files][Skills]            |                                     |
     |   ...     | [grip] Agent               |                                     |
     |           | (subagents)                |                                     |
-    |           | [Agent]                    | [Chat][Terminal]                    |
+    |           | [Agent]                    |                                     |
     +-----------+----------------------------+-------------------------------------+
 
 - **Sessions are the top level**, listed down the left. Each is a whole workspace: a folder
@@ -103,22 +103,15 @@ running it asks whether to quit anyway.
 - **Sessions come back.** The open sessions (folder, agent, conversation, number) and the
   shown one are saved whenever they change, so a restart or a crash loses nothing. On the
   next start they open again in their order, each dormant: the conversation shows at once
-  from its file and the agent starts only when needed (a message, or its Terminal shown).
+  from its file and the agent starts only when needed (a message).
   Closing a session takes it off the list; quitting does not.
 - **Rename a folder** (File > Rename Folder…, or a session's context menu): its sessions
   close, the folder is renamed, Claude Code's project folder under `~/.claude/projects`
   (sessions and memory) moves with it, and the same sessions open again in the new place.
-- **Chat and Terminal views** of one session, the tabs along the bottom of the chat. A
-  Claude Code session runs the real `claude` interface once, in a pseudo-terminal, for the
-  session's whole life. Terminal shows that terminal; Chat draws the same conversation from
-  the session's file (followed as it grows) and its message box types into that same process
-  (pasted, then Enter; Stop sends Escape). Switching only changes which view is shown, so it
-  is instant at any length. Permission prompts show in Chat with Allow and Deny and in the
-  terminal at the same time; whichever answers first counts. Each session remembers its
-  view; "New sessions open in" on the strip sets the default. Hidden for backends without a
-  terminal interface, and for SSH folders (those run the structured stream, Chat only).
-  A message whose Enter the interface lost (busy starting on a long conversation, say) is
-  seen still sitting in its input box and Enter is pressed again, with a note in the chat.
+- **One view, the chat.** A Claude Code session runs `claude` headless, behind the window,
+  over its structured stream (see "How Claude runs"); its own terminal interface is never
+  run here. Permission prompts show in Chat with Allow and Deny. A terminal tab is a shell,
+  where `claude` can be run by hand for what only its interface does (`/login`, say).
 - **Cost or context.** On a subscription plan the session shows how full its context is
   ("22% of context", from the last turn's tokens against the model's window); billed per use
   (an API key or token in the environment, a cloud provider, or an `apiKeyHelper` in Claude
@@ -149,20 +142,13 @@ running it asks whether to quit anyway.
   to, under a "Context compacted here" divider whose summary opens on a click. Tool results
   in a history keep their first 16 KB. A 150 MB scratch session with five compactions opens
   in about 0.15 s.
-- **Questions before Claude is up**: the folder trust question shows in Chat with Trust and
-  Don't trust (answered in the terminal as a person would, with the arrow keys and Enter);
-  anything else it asks before it is up (no SessionStart hook within 6 seconds, or a list to
-  choose from) shows "is asking something in the terminal" with Show terminal, and the
-  session's dot turns amber.
 - **Chat** reads like the chat apps people know: a centred column (760 px at most), the
   person's messages as rounded bubbles on the right, Claude's replies as plain text across
   the column, code blocks with their language and a copy button, Copy under each message on
   hover. The composer floats at the bottom of the column: the text, images to send as
   thumbnails (paste, drop, or the paperclip; click one to see it full size, x to remove), the
   model, the permission mode and a send button that turns into stop while Claude works.
-  The reply streams as it is written: while Claude works, the text is read off its own
-  terminal and shown as a preview, replaced by the formatted reply from the session file
-  when it is done. The thinking line shows how long the turn has run. Copy conversation
+  The reply streams as it is written. The thinking line shows how long the turn has run. Copy conversation
   (Cmd+Opt+C, the chat's ... menu, File menu) copies the whole thread as Markdown.
 - **Long pastes** (10 lines or 1,000 characters) go into the message box as one pill,
   "Pasted text · 40 lines", where the cursor is: one unit (the cursor steps over it, one
@@ -187,24 +173,18 @@ running it asks whether to quit anyway.
   once; git-ignored files stay out). New File… and New Folder… from the buttons in the
   panel's header (at the project root) or a right-click (in that folder): the name is typed
   in place, `a/b.rs` makes the folders between, and a new file opens.
-- **Model and permission mode** from the composer. A new model restarts Claude Code on the
-  same conversation with `--model` between turns (Claude Code's own `/model` would also save
-  it as the default for every new session in the person's settings). The permission mode is
-  switched as a person would, with Shift+Tab until the status line shows it; the hooks
-  report the mode it is in. A message starting with `/` is typed, not pasted, so Claude Code
-  takes it as a command.
-- **Images**: images sent from Chat are pasted into Claude Code as file paths, which it turns
-  into its own `[Image #N]` attachments; in the Terminal view Cmd+V with an image on the
-  clipboard sends Ctrl+V, Claude Code's own image paste, and a copy is kept. Pointing at an
-  `[Image #N]` on the terminal screen shows that image. Images in history show as
-  thumbnails. They are kept in `~/Library/Caches/wundur/images/<session>` and removed after
-  30 days; nothing is uploaded anywhere else.
+- **Model and permission mode** from the composer. A new model, effort or permission mode
+  ends the agent's process; the next message starts it again on the same conversation with
+  it (Claude Code's own `/model` would also save the model as the default for every new
+  session in the person's settings).
+- **Images**: images sent from Chat go to Claude Code with the message. Images in history
+  show as thumbnails. They are kept in `~/Library/Caches/wundur/images/<session>` and
+  removed after 30 days; nothing is uploaded anywhere else.
 - **Light and dark** follow the macOS appearance, live; the System | Light | Dark buttons in
   the titlebar (or View > Appearance) set it (saved as `appearance`). Both carry the round 4 hierarchy; the terminal has a light
   palette too and answers programs that ask for its colours (OSC 10/11), so those that adapt
   can. The accent is the icon's periwinkle (#6084E8); crane yellow marks what wants
-  attention. Claude Code draws its own interface with its own theme setting, so in the light
-  terminal its theme may need to be set to light in Claude Code.
+  attention.
 - **The icon** (`crates/wundur-app/assets/icon`): the owner's art at 128 px and up, the
   character alone for 16 to 64 px, in `Wundur.icns`; the Dock shows it while the app runs.
 - **Worktrees** are explicit: the browser's right side is titled with the folder's repository
@@ -252,8 +232,7 @@ running it asks whether to quit anyway.
 Environment: `WUNDUR_MODEL=haiku` picks the model; `WUNDUR_PERMISSION_MODE=default`
 starts sessions in that permission mode; `WUNDUR_PERF=1` prints timings;
 `WUNDUR_CONTROL=<fifo>` accepts test commands (`open`, `term`, `type`, `split`, `send`,
-`allow`, `new`, `browse`, `tab`, `tabs`, `move-session`, `fold-sessions`, `view`,
-`term-type`, `term-screen`, `chat`, `chat-top`, `chat-scroll`, `panel`, `earlier`, `resume`, `fork`, `takeover`, `key`, `state`,
+`allow`, `new`, `browse`, `tab`, `tabs`, `move-session`, `fold-sessions`, `chat`, `chat-top`, `chat-scroll`, `panel`, `earlier`, `resume`, `fork`, `takeover`, `key`, `state`,
 ...; see `control.rs`, `shell.rs`, `workspace.rs`); `WUNDUR_BACKGROUND=1` opens windows
 without taking focus; `WUNDUR_CONFIG_DIR` moves the settings folder (and the window's
 socket with it); `WUNDUR_TEST_BACKENDS=1` adds the scripted test agent to the browser.
@@ -297,36 +276,25 @@ socket with it); `WUNDUR_TEST_BACKENDS=1` adds the scripted test agent to the br
 
 ## How Claude runs
 
-Each session runs `claude` (`--session-id <new id>`, or `--resume <id>`, with
-`--fork-session` for a fork) in a pseudo-terminal in the project folder, plus
-`--settings <file>`: a settings file of the window's own (in a `wundur-<pid>` folder in
-the system's temporary folder, removed when the window closes) that adds hooks. Nothing in
-`~/.claude` is changed. Each hook runs `wundur-hook <socket> <token> <event>` (built next
-to `wundur`; standard library only), which passes the hook's input to the window over a
-local socket. Otherwise it is started as in a person's terminal: no stream flags, TERM
-`xterm-256color`, LANG set when the window has none, and the variables a running Claude Code
-gives its children unset (when the window was itself started from one).
+Each session runs `claude -p --output-format stream-json --input-format stream-json
+--verbose --include-partial-messages --permission-prompt-tool stdio` in the project folder
+(`--resume <id>` to continue a conversation, with `--fork-session` for a fork), started with
+the first message, locally or over SSH the same way. One JSON object per line arrives on its
+output: the session's start, the reply as it streams, each tool call and result, permission
+prompts (`control_request`, answered from Chat with a `control_response`) and the end of each
+turn with its cost and usage. Messages, permission answers and interrupts go back on its
+input. `backends/claude/stream.rs` has the format; lines it does not know are skipped, so a
+newer `claude` does not break the window.
 
-The hooks:
+On this machine it is also started with `--mcp-config <file>`: a tool servers file of the window's own (in a
+`wundur-<tag>-<pid>` folder in the system's temporary folder, removed when the window closes)
+naming `wundur-mcp` (built next to `wundur`), the tool server for Wundur's own tools, which
+passes each call to the window over a local socket. Nothing in `~/.claude` is changed.
 
-- `SessionStart`: the interface is up; messages typed before it wait until then.
-- `UserPromptSubmit`, `PreToolUse`, `Stop`, `Notification`: the status dot (working, which
-  tool, idle, unseen) from what the interface says rather than guessed.
-- `PermissionRequest`: the hook waits; Chat shows Allow and Deny, and the answer goes back as
-  the hook's decision. The interface shows its own prompt at the same moment; answered there,
-  `PostToolUse` ends the wait.
-
-The chat itself comes from the session file under `~/.claude/projects`, read from where the
-last read stopped every 100 ms: messages, tool calls and results, diffs, subagents and token
-counts. The interface writes whole messages, not a stream, so the reply being written is read
-off the agent's terminal meanwhile (`backends/claude/screen.rs`) and shown as a preview until
-the finished one arrives. The cost is an estimate, marked `~`,
-from the token counts and the published per-token prices (`backends/claude/pricing.rs`).
-
-The structured route (`claude -p --output-format stream-json --input-format stream-json
---verbose --include-partial-messages --permission-prompt-tool stdio`, permission prompts as
-`control_request` lines) stays for backends without a terminal interface and for SSH
-folders, whose hooks could not reach the window.
+An earlier session is read from its file under `~/.claude/projects` when it is opened again:
+messages, tool calls and results, diffs, subagents and token counts. The file has no cost,
+so that is an estimate, marked `~`, from the token counts and the published per-token prices
+(`backends/claude/pricing.rs`).
 
 ## Remote over SSH: the plan
 
@@ -373,9 +341,9 @@ For reading and navigating code in the editor (not for the Claude panel).
   that do not fit scroll rather than shrink; there is no overflow menu.
 - Session list and browser: the browser has no remote recent folders and lists folders only (not files). The live dot sees agents
   on this machine only.
-- Claude Code sessions: the cost is an estimate from token counts; the streaming preview is
-  plain text until the reply is done. A permission answered in the terminal shows as allowed in Chat even when it was refused
-  there.
+- Claude Code sessions: a reopened session's cost is an estimate from token counts. What
+  only Claude Code's own interface does (its `/login`, its interactive commands) is done in
+  a shell terminal, not in Chat.
 - Terminal: no mouse reporting, no kitty keyboard protocol, no IME composition (dead keys
   and CJK input), no cursor blink, fixed colours and font (Menlo 12.5).
 - Skills: plugin skills are found from `installed_plugins.json` and their `skills/` folder

@@ -275,9 +275,8 @@ impl AgentSession {
             return;
         }
         self.restore.working = true;
-        // The agent forgets the turn too in Chat, when it can continue a conversation without
-        // it (its own terminal interface keeps the whole conversation).
-        let ask = (!self.interactive()).then(|| self.chat.session_id.clone()).flatten();
+        // The agent forgets the turn too, when it can continue a conversation without it.
+        let ask = self.chat.session_id.clone();
         let (host, backend, cwd) = (self.host.clone(), self.backend.clone(), self.cwd.clone());
         // What this agent changed in the turn, as its card of changes has it.
         let mine: Vec<PathBuf> = self.chat.changes(turn).into_iter().map(|c| c.path).collect();

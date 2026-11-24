@@ -157,7 +157,7 @@ pub fn request_quit(cx: &mut App) {
     }
 }
 
-/// Quit now: the window's socket and hook settings go first.
+/// Quit now: the window's sockets and its sessions' tool servers files go first.
 pub fn quit_now(cx: &mut App) {
     instance::stop_listening();
     hooks::cleanup(cx);

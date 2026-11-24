@@ -123,29 +123,6 @@ fn user_images(v: &Value) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether a session file exists and holds a message (read until the first one).
-pub fn has_messages(host: &dyn Host, path: &Path) -> bool {
-    has_messages_from(host, path, 0)
-}
-
-/// Whether the file holds a message from byte `from` on (a turn written since then).
-pub fn has_messages_from(host: &dyn Host, path: &Path, from: u64) -> bool {
-    let mut found = false;
-    let _ = host.for_each_line(path, from, None, &mut |_, line| {
-        if (line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\""))
-            && serde_json::from_str::<Value>(line)
-                .ok()
-                .and_then(|v| v.get("type").and_then(Value::as_str).map(|t| t == "user" || t == "assistant"))
-                == Some(true)
-        {
-            found = true;
-            return false;
-        }
-        true
-    });
-    found
-}
-
 /// The sessions of `folder`, newest first, at most `max`.
 pub fn list_sessions(
     host: &dyn Host,
@@ -661,145 +638,6 @@ fn subagent_line_events(v: &Value, tool_use_id: &str, mapper: &mut Mapper) -> Ve
     mapper.map(raw)
 }
 
-/// Follow a session file being written by Claude Code in a terminal: every complete line added
-/// after now (and to its subagents' transcripts) is mapped and sent to `sink`, until `stop`.
-/// An assistant message that ends its turn also ends the turn here, with its token counts, and
-/// each new message's cost is estimated from its usage. Only what was added is read, when it
-/// was added: on this machine the folder's change notices wake the follower; on another (over
-/// ssh, where nothing tells) it looks every 300 ms while the file grows and less often, up to
-/// every 2 s, while it does not.
-pub fn follow(host: &dyn Host, path: &Path, cwd: &str, sink: &crate::agent::Sink, stop: &std::sync::atomic::AtomicBool) {
-    use crate::agent::Message;
-    use std::collections::HashMap;
-    use std::sync::atomic::Ordering;
-
-    struct Tail {
-        offset: u64,
-        /// The start of a line not yet complete.
-        partial: Vec<u8>,
-        mapper: Mapper,
-        tally: Tally,
-    }
-    impl Tail {
-        fn new(offset: u64, cwd: &str) -> Self {
-            Self { offset, partial: Vec::new(), mapper: Mapper::new(cwd), tally: Tally::default() }
-        }
-        /// New complete lines, read from where the last read stopped.
-        fn lines(&mut self, host: &dyn Host, p: &Path) -> Vec<Value> {
-            let Ok(len) = host.len(p) else { return Vec::new() };
-            if len < self.offset {
-                // Rewritten: start over.
-                self.offset = 0;
-                self.partial.clear();
-            }
-            if len == self.offset {
-                return Vec::new();
-            }
-            let Ok(bytes) = host.read_from(p, self.offset) else { return Vec::new() };
-            self.offset += bytes.len() as u64;
-            self.partial.extend_from_slice(&bytes);
-            let Some(end) = self.partial.iter().rposition(|b| *b == b'\n') else { return Vec::new() };
-            let rest = self.partial.split_off(end + 1);
-            let chunk = std::mem::replace(&mut self.partial, rest);
-            String::from_utf8_lossy(&chunk).lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
-        }
-    }
-
-    let size = |p: &Path| host.len(p).unwrap_or(0);
-    let mut main = Tail::new(size(path), cwd);
-    main.mapper.history = true;
-    let agents_dir = path.with_extension("").join("subagents");
-    // Subagent transcripts: file name to (tail, the tool call that started it).
-    let mut agents: HashMap<String, (Tail, Option<String>)> = HashMap::new();
-    if let Ok(entries) = host.read_dir(&agents_dir) {
-        for e in entries.iter().filter(|e| e.name.ends_with(".jsonl")) {
-            agents.insert(e.name.clone(), (Tail::new(size(&agents_dir.join(&e.name)), cwd), None));
-        }
-    }
-    let mut live = super::live::LiveOutputs::new(host, path);
-    // Woken by the folder's change notices where the host can watch (the session file and its
-    // subagents' transcripts are in it).
-    let (woken, wake) = std::sync::mpsc::channel::<()>();
-    let watch = path
-        .parent()
-        .and_then(|dir| host.watch(dir, std::sync::Arc::new(move |_| { let _ = woken.send(()); })));
-    let mut round = 0u64;
-    let mut quiet = 0u32;
-    while !stop.load(Ordering::Relaxed) {
-        let mut grew = false;
-        for v in main.lines(host, path) {
-            grew = true;
-            for e in line_events(&v, &mut main.mapper) {
-                if let Some(l) = live.as_mut() {
-                    l.observe(&e);
-                }
-                sink(Message::Event(e));
-            }
-            if v.get("isSidechain").and_then(Value::as_bool) != Some(true) {
-                let usd = main.tally.add(&v);
-                if usd > 0.0 {
-                    sink(Message::Event(Event::CostEstimate { usd }));
-                }
-            }
-            if let Some(end) = turn_end(&v) {
-                sink(Message::Event(end));
-            }
-        }
-        // Subagents: a directory listing per look (one look in three when polling).
-        if (watch.is_some() || round.is_multiple_of(3))
-            && let Ok(entries) = host.read_dir(&agents_dir)
-        {
-            for e in entries.iter().filter(|e| e.name.ends_with(".jsonl")) {
-                let entry = agents.entry(e.name.clone()).or_insert_with(|| (Tail::new(0, cwd), None));
-                if entry.1.is_none() {
-                    let meta = agents_dir.join(e.name.replace(".jsonl", ".meta.json"));
-                    entry.1 = host
-                        .read_to_string(&meta)
-                        .ok()
-                        .and_then(|m| serde_json::from_str::<Value>(&m).ok())
-                        .and_then(|m| m.get("toolUseId").and_then(Value::as_str).map(str::to_string));
-                }
-                let Some(parent) = entry.1.clone() else { continue };
-                for v in entry.0.lines(host, &agents_dir.join(&e.name)) {
-                    grew = true;
-                    for ev in subagent_line_events(&v, &parent, &mut entry.0.mapper) {
-                        if let Some(l) = live.as_mut() {
-                            l.observe(&ev);
-                        }
-                        sink(Message::Event(ev));
-                    }
-                    let usd = entry.0.tally.add(&v);
-                    if usd > 0.0 {
-                        sink(Message::Event(Event::CostEstimate { usd }));
-                    }
-                }
-            }
-        }
-        // Running commands' output (written elsewhere, not watched).
-        let running = live.as_ref().is_some_and(|l| l.active());
-        if let Some(l) = live.as_mut() {
-            for e in l.poll(host) {
-                sink(Message::Event(e));
-            }
-        }
-        round += 1;
-        if watch.is_some() {
-            // Until the folder changes: soon while a command runs (its output is elsewhere),
-            // else a slow look in case a notice was missed.
-            let wait = std::time::Duration::from_millis(if running { 200 } else { 2000 });
-            if wake.recv_timeout(wait).is_ok() {
-                while wake.try_recv().is_ok() {}
-            }
-        } else {
-            // Over ssh each look is a round trip: every 300 ms while the file grows, backing off
-            // to every 2 s while it does not.
-            quiet = if grew { 0 } else { quiet.saturating_add(1) };
-            let ms = (300u64 << quiet.min(3)).min(2000);
-            std::thread::sleep(std::time::Duration::from_millis(ms));
-        }
-    }
-}
-
 /// An assistant message that ends the turn (`stop_reason` `end_turn`), as a turn end with its
 /// token counts. The terminal interface does not write the cost to the file.
 fn turn_end(v: &Value) -> Option<Event> {
@@ -1238,46 +1076,6 @@ mod tests {
     }
 
     #[test]
-    fn follows_lines_added_to_a_session_file() {
-        use crate::agent::Message;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::{Arc, Mutex};
-        let dir = std::env::temp_dir().join(format!("wb-follow-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.jsonl");
-        let text = fixture("session_history.jsonl");
-        let lines: Vec<&str> = text.lines().collect();
-        std::fs::write(&path, format!("{}\n", lines[0])).unwrap();
-        let got = Arc::new(Mutex::new(Vec::new()));
-        let g = got.clone();
-        let sink: crate::agent::Sink = Arc::new(move |m| {
-            if let Message::Event(e) = m {
-                g.lock().unwrap().push(e)
-            }
-        });
-        let stop = Arc::new(AtomicBool::new(false));
-        let (p, s) = (path.clone(), stop.clone());
-        let t = std::thread::spawn(move || follow(&crate::host::LocalHost, &p, "/tmp/wb-proj", &sink, &s));
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        // The rest arrives, the last line without its newline yet.
-        let rest = lines[1..].join("\n");
-        std::fs::write(&path, format!("{}\n{rest}", lines[0])).unwrap();
-        // Until both agents have ended (a busy machine delays the change notice), at most 10 s.
-        let ended = |got: &Mutex<Vec<Event>>| got.lock().unwrap().iter().filter(|e| matches!(e, Event::SubagentEnded { .. })).count();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while ended(&got) < 2 && std::time::Instant::now() < until {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        t.join().unwrap();
-        let mut chat = Conversation::new("/tmp/wb-proj");
-        chat.apply_all(got.lock().unwrap().clone());
-        // The first line was there before: not replayed. The two Agent calls and their ends came.
-        assert_eq!(chat.agents.len(), 2, "{:?}", chat.items.len());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn a_session_named_on_a_command_line_is_live_even_when_its_folder_is_unknown() {
         use crate::agent::LiveReason;
         // A `claude --resume` started days ago from a path with a space; `lsof` and
@@ -1403,29 +1201,6 @@ mod tests {
         let earlier = load_segment(&crate::host::LocalHost, &path, "/p", from, to).unwrap();
         assert!(matches!(&earlier[0], Item::User(t) if t == "first"));
         assert!(matches!(&earlier[1], Item::Assistant { text, .. } if text == "one"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_session_without_a_message_has_nothing_to_resume() {
-        let dir = std::env::temp_dir().join(format!("wundur-hasmsg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let host = crate::host::LocalHost;
-        let path = dir.join("s.jsonl");
-        assert!(!has_messages(&host, &path), "no file yet");
-        std::fs::write(&path, "{\"type\":\"permission-mode\"}\n{\"type\":\"file-history-snapshot\"}\n").unwrap();
-        assert!(!has_messages(&host, &path), "only bookkeeping lines");
-        std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n").unwrap();
-        assert!(has_messages(&host, &path));
-        // From a point on: only what was written after it counts.
-        let at = std::fs::metadata(&path).unwrap().len();
-        let mut more = std::fs::read_to_string(&path).unwrap();
-        more += "{\"type\":\"system\",\"subtype\":\"informational\"}\n";
-        std::fs::write(&path, &more).unwrap();
-        assert!(!has_messages_from(&host, &path, at), "a notice is not a turn");
-        more += "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n";
-        std::fs::write(&path, &more).unwrap();
-        assert!(has_messages_from(&host, &path, at));
         let _ = std::fs::remove_dir_all(dir);
     }
 

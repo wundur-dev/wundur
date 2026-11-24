@@ -1,6 +1,6 @@
 //! Local sockets on every OS, through `interprocess`: Unix domain sockets on macOS and Linux,
 //! named pipes on Windows. A socket's address is a path either way: a file on Unix (so it can
-//! be tidied, and forwarded over ssh), `\\.\pipe\<name>` on Windows; `wundur-hook` is given
+//! be tidied, and forwarded over ssh), `\\.\pipe\<name>` on Windows; `wundur-mcp` is given
 //! the same path on its command line and opens it the same way.
 
 use std::io;

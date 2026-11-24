@@ -23,7 +23,7 @@ use wundur_core::host::Host;
 use crate::AppSettings;
 use crate::actions::*;
 use crate::chat_panel::{ChatPanel, ChatPanelEvent};
-use crate::agent_session::{AgentSession, SessionEvent, View};
+use crate::agent_session::{AgentSession, SessionEvent};
 use crate::agent_side::AgentSide;
 use crate::changes_panel::ChangesPanel;
 use crate::doc_panel::{DocContext, DocEvent, DocPanel};
@@ -323,9 +323,6 @@ impl Workspace {
                     cx.emit(WorkspaceEvent::AgentEdited(path.clone()));
                 }
                 SessionEvent::TurnEnded => ws.files.update(cx, |t, cx| t.refresh(cx)),
-                SessionEvent::TerminalLink { line, column, browser } => {
-                    ws.open_terminal_link(line, *column, *browser, window, cx)
-                }
                 SessionEvent::ShowPage(path) if crate::model_view::is_model(path) => ws.open_model(path.clone(), window, cx),
                 SessionEvent::ShowModel(path, clip) => {
                     ws.open_model(path.clone(), window, cx);
@@ -1048,7 +1045,6 @@ impl Workspace {
                         ws.panel_subs.remove(&view.entity_id());
                         cx.notify();
                     }
-                    TerminalEvent::Output => {}
                     TerminalEvent::SendToChat { text, label } => {
                         ws.claude.update(cx, |p, cx| p.take_terminal(text, label, window, cx));
                     }
@@ -1578,16 +1574,6 @@ impl Workspace {
                     t.start_create(dir, cmd == "new-folder", window, cx)
                 });
             }
-            "view" => {
-                let view = if arg == "terminal" { View::Terminal } else { View::Chat };
-                self.session.update(cx, |s, cx| s.set_view(view, cx));
-                return format!("{:?}", self.session.read(cx).view);
-            }
-            "default-view" => {
-                let settings = cx.global::<AppSettings>().0.clone();
-                settings.borrow_mut().default_view = arg.to_string();
-                let _ = settings.borrow().save();
-            }
             "retry" => {
                 // Tests: what Retry does (the person's last message sent again).
                 self.session.update(cx, |s, cx| s.send_again(cx));
@@ -1648,47 +1634,17 @@ impl Workspace {
                 return chat.items.iter().rev().take(6).rev().map(|i| format!("{i:?}").chars().take(90).collect::<String>()).collect::<Vec<_>>().join(" | ");
             }
             "chat-last" => {
-                // The chat's last item: a preview or not, and the start of its text (tests).
+                // The chat's last item, and the start of its text (tests).
                 let chat = &self.session.read(cx).chat;
-                let n = chat.items.len();
                 return match chat.items.last() {
                     Some(wundur_core::conversation::Item::Assistant { text, streaming }) => format!(
-                        "{} {} chars streaming={streaming}: {}",
-                        if chat.preview_item() == Some(n - 1) { "PREVIEW" } else { "reply" },
+                        "reply {} chars streaming={streaming}: {}",
                         text.len(),
                         text.chars().take(50).collect::<String>().replace('\n', " / ")
                     ),
                     Some(other) => format!("{:?}", std::mem::discriminant(other)),
                     None => "empty".into(),
                 };
-            }
-            "term-dump" => {
-                // The agent's terminal screen, blank lines kept, written to a file (tests).
-                return match self.session.read(cx).terminal_view() {
-                    Some(t) => match std::fs::write(arg, t.read(cx).screen_text()) {
-                        Ok(()) => "ok".into(),
-                        Err(e) => e.to_string(),
-                    },
-                    None => "no terminal view".into(),
-                };
-            }
-            "term-screen" => {
-                return match self.session.read(cx).terminal_view() {
-                    Some(t) => t.read(cx).screen_text().lines().filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | "),
-                    None => "no terminal view".into(),
-                };
-            }
-            "term-type" => {
-                // Type into the session's terminal view (tests): `\n` is Enter, `\e` Escape.
-                let text = arg.replace("\\n", "\r").replace("\\e", "\u{1b}");
-                match self.session.read(cx).terminal_view() {
-                    Some(t) => {
-                        if let Some(pty) = &t.read(cx).pty {
-                            pty.write(text.into_bytes());
-                        }
-                    }
-                    None => return "no terminal view".into(),
-                }
             }
             "expand" => {
                 let ids: Vec<String> = self
@@ -1773,15 +1729,6 @@ impl Workspace {
                 let m = (arg != "default").then(|| arg.to_string());
                 self.session.update(cx, |s, cx| s.set_mode(m, cx));
             }
-            "live-mode" => return format!("{:?}", self.session.read(cx).live_mode),
-            "term-paste" => match self.session.read(cx).terminal_view() {
-                Some(t) => t.update(cx, |t, cx| t.test_paste(cx)),
-                None => return "no terminal view".into(),
-            },
-            "trust" | "distrust" => {
-                self.session.update(cx, |s, cx| s.answer_trust(cmd == "trust", cx));
-            }
-            "asking" => return format!("{:?}", self.session.read(cx).asking),
             "chat" => {
                 // The session's chat state, briefly (tests).
                 let s = self.session.read(cx);
@@ -1803,8 +1750,7 @@ impl Workspace {
                     })
                     .collect();
                 return format!(
-                    "view={:?} busy={} items={} agents={} tokens={:?} cost={:.4} session={:?} last={:?} edits={:?} images={images:?}",
-                    s.view,
+                    "busy={} items={} agents={} tokens={:?} cost={:.4} session={:?} last={:?} edits={:?} images={images:?}",
                     c.busy,
                     c.items.len(),
                     c.agents.len(),

@@ -745,42 +745,6 @@ impl ChatPanel {
             .into_any_element()
     }
 
-    /// The text of item `ix` when it is a preview of the reply being written (read off the
-    /// agent's screen), not text from its record.
-    pub(super) fn preview_text(&self, ix: usize, item: &Item, cx: &App) -> Option<String> {
-        if self.agent.is_some() || self.session.read(cx).chat.preview_item() != Some(ix) {
-            return None;
-        }
-        match item {
-            Item::Assistant { text, .. } => Some(text.clone()),
-            _ => None,
-        }
-    }
-
-    /// The reply being written, as plain text with its lines kept (the screen has already
-    /// turned its Markdown into terminal text); the finished reply replaces it, formatted.
-    pub(super) fn render_preview(&self, text: String, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (fg, muted) = (theme.foreground, theme.muted_foreground);
-        let mut col = div().w_full().flex().flex_col().text_color(fg).line_height(rems(1.5));
-        for line in text.lines() {
-            col = col.child(if line.trim().is_empty() { div().h(rems(0.75)) } else { div().child(line.to_string()) });
-        }
-        col.child(
-            div()
-                .pt_1()
-                .flex()
-                .items_center()
-                .gap_1()
-                .mr_2()
-                .text_xs()
-                .text_color(muted)
-                .child(self.spinner(muted).xsmall())
-                .child("Writing…"),
-        )
-        .into_any_element()
-    }
-
     /// Plain text, its find matches marked (as `find_marks` marks Markdown's).
     /// The person's typed text: the find marks on it, and each `[Image 1]` (where they put an
     /// image) in the accent, like its token in the message box.
@@ -1176,10 +1140,10 @@ impl ChatPanel {
     }
 
     /// What the working line says ("Thinking · 12s", or the tool running), or `None` when it
-    /// does not show (idle, a question waiting, the Terminal view).
+    /// does not show (idle, a question waiting).
     pub(super) fn working_label(&self, cx: &App) -> Option<String> {
         let session = self.session.read(cx);
-        if session.chat.needs_input() || session.view == View::Terminal {
+        if session.chat.needs_input() {
             return None;
         }
         // The turn is over, its agents in the background still at it (the box at the line's
@@ -1262,62 +1226,6 @@ impl ChatPanel {
             )
             .into_any_element(),
         )
-    }
-
-    /// The interface waits on a question before it is up: Trust / Don't trust for the folder
-    /// question, else a pointer to the terminal.
-    pub(super) fn render_asking(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session = self.session.read(cx);
-        let asking = session.asking?;
-        if session.view == View::Terminal {
-            return None;
-        }
-        let name = session.backend.name();
-        let theme = cx.theme();
-        let (warning, border, muted) = (theme.warning, theme.border, theme.muted_foreground);
-        let weak = self.session.downgrade();
-        let show = {
-            let weak = weak.clone();
-            Button::new("asking-show").xsmall().label("Show terminal").on_click(move |_, window, cx| {
-                let _ = weak.update(cx, |s, cx| s.set_view(View::Terminal, cx));
-                if let Some(t) = weak.upgrade().and_then(|s| s.read(cx).terminal_view()) {
-                    let f = t.read(cx).focus.clone();
-                    window.focus(&f, cx);
-                }
-            })
-        };
-        let mut row = div()
-            .flex_none()
-            .px_2()
-            .py_1()
-            .flex()
-            .items_center()
-            .gap_2()
-            .border_t_1()
-            .border_color(border)
-            .text_size(px(11.5))
-            .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(warning));
-        row = match asking {
-            Asking::Trust => {
-                let (w1, w2) = (weak.clone(), weak.clone());
-                row.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(format!("{name} asks whether you trust this folder: it will be able to read, edit and run files here."))
-                        .child(div().text_color(muted).child("Your answer goes to its own prompt, as if typed.")),
-                )
-                .child(Button::new("trust").xsmall().primary().label("Trust").on_click(move |_, _, cx| {
-                    let _ = w1.update(cx, |s, cx| s.answer_trust(true, cx));
-                }))
-                .child(Button::new("distrust").xsmall().label("Don't trust").on_click(move |_, _, cx| {
-                    let _ = w2.update(cx, |s, cx| s.answer_trust(false, cx));
-                }))
-                .child(show)
-            }
-            Asking::Other => row.child(div().flex_1().min_w_0().child(format!("{name} is asking something in the terminal."))).child(show),
-        };
-        Some(row.into_any_element())
     }
 }
 

@@ -625,9 +625,6 @@ impl ChatPanel {
         let has_text = !self.input.read(cx).value().trim().is_empty();
         let mono = !cx.global::<crate::AppSettings>().0.borrow().always_proportional
             && wundur_core::markdown_marks::has_fence(&self.input.read(cx).value());
-        let restarting = session.restarting.clone();
-        let queued = session.queued_count();
-        let name = session.backend.name();
         let chips = self.render_chips(cx);
         let waiting = self.render_waiting(cx);
         let undo_plan = self.render_undo_plan(cx);
@@ -707,22 +704,6 @@ impl ChatPanel {
                     .on_action(cx.listener(|p, replace: &ReplaceMisspelling, window, cx| p.replace_misspelling(replace, window, cx)))
                     .on_action(cx.listener(|p, a: &LearnSpelling, window, cx| p.accept_spelling(&a.word, true, window, cx)))
                     .on_action(cx.listener(|p, a: &IgnoreSpelling, window, cx| p.accept_spelling(&a.word, false, window, cx)))
-                    .when_some(restarting, |d, why| {
-                        // Restarting (a new model or mode): what is typed now waits for it.
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_size(px(11.5))
-                                .text_color(muted)
-                                .child(Icon::new(IconName::LoaderCircle).xsmall())
-                                .child(match queued {
-                                    0 => format!("Restarting {name} {why}. A message sent now goes when it is up."),
-                                    n => format!("Restarting {name} {why}. {n} message{} waiting to go.", if n == 1 { "" } else { "s" }),
-                                }),
-                        )
-                    })
                     .children(chips)
                     .child(
                         Textarea::new(&self.input)
@@ -1344,10 +1325,7 @@ impl ChatPanel {
     /// The permission mode menu.
     fn render_mode_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let session = self.session.read(cx);
-        // The session's mode; what the interface reports only while it runs the session (it
-        // may have been switched there, with Shift+Tab).
-        let live = session.interactive().then(|| session.live_mode.clone()).flatten();
-        let mode = live.or_else(|| session.permission_mode.clone());
+        let mode = session.permission_mode.clone();
         let caps = session.backend.capabilities();
         let w_mode = self.session.downgrade();
         let modes: Vec<(Option<String>, &'static str)> = session
