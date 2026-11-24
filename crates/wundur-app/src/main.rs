@@ -297,6 +297,13 @@ fn main() {
         // SAFETY: the first thing main does; no other thread exists yet to read the environment.
         unsafe { std::env::remove_var(name) };
     }
+    // GPUI Fast's scroll layers off, unless asked for (GPUI_SCROLL_LAYERS=1): they keep up to
+    // 64 MB of textures a window so that scrolling draws from them, and the owner saw no
+    // difference in scrolling without them (2026-11-24). It is read when a window is made.
+    if std::env::var_os("GPUI_SCROLL_LAYERS").is_none() {
+        // SAFETY: as above, before any other thread exists.
+        unsafe { std::env::set_var("GPUI_SCROLL_LAYERS", "0") };
+    }
     let (request, note) = match parse_args() {
         Ok(v) => v,
         Err(e) => {
