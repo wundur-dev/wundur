@@ -801,7 +801,7 @@ impl ChatPanel {
         cx.emit(ChatPanelEvent::OpenFile(path, line));
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, hover) = (theme.muted_foreground, theme.secondary_hover);
         let session = self.session.read(cx);
@@ -880,7 +880,7 @@ impl ChatPanel {
             .child(Icon::new(IconName::Bot).small())
             // The model, its effort and the permission mode: here rather than in the message
             // box, so the box's row keeps its things in place.
-            .child(self.render_model_control(cx))
+            .child(self.render_model_control(window, cx))
             .children(self.render_effort_control(cx).map(|e| div().flex_none().child(e)))
             .children(permission_prompts.then(|| div().flex_none().child(self.render_mode_button(cx))))
             .child(div().flex_1().min_w_0().truncate().children(status))
@@ -1051,6 +1051,8 @@ impl Render for ChatPanel {
             self.spelled_as = Some(crate::prefs(cx).spell_check);
             self.check_spelling_soon(std::time::Duration::ZERO, window, cx);
         }
+        // Before the header: the model box there is sized to the name it shows.
+        self.sync_model_select(window, cx);
         let started = std::time::Instant::now();
         if crate::perf::enabled() {
             // Build, layout and paint: from here to the frame being on screen.
@@ -1088,7 +1090,7 @@ impl Render for ChatPanel {
             // box that does not passes it on).
             .on_action(cx.listener(|p, _: &crate::actions::FindInChat, window, cx| p.open_find(window, cx)))
             .on_action(cx.listener(|p, _: &gpui_kit::component::input::Search, window, cx| p.open_find(window, cx)))
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .children(self.render_find(cx))
             .child(
                 div()
@@ -1111,7 +1113,6 @@ impl Render for ChatPanel {
             )
             .child({
                 let slash = self.render_slash(cx);
-                self.sync_model_select(window, cx);
                 self.render_composer(slash, window, cx)
             })
             .children(self.render_fix(cx))
