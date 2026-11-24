@@ -181,8 +181,7 @@ pub fn load(dir: &Path) -> Option<Asset> {
 
 /// Write the record in `dir`.
 pub fn save(dir: &Path, asset: &Asset) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join(RECORD), serde_json::to_string_pretty(asset).unwrap_or_default())
+    crate::save::whole(&dir.join(RECORD), serde_json::to_string_pretty(asset).map_err(std::io::Error::other)?)
 }
 
 /// The estimated price of an image, in cents, by its quality (gpt-image at 1024 px; the owner's

@@ -650,8 +650,7 @@ pub fn load(dir: &std::path::Path) -> Option<Record> {
 
 /// Write the record in `dir`.
 pub fn save(dir: &std::path::Path, record: &Record) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join(RECORD), serde_json::to_string_pretty(record).unwrap_or_default())
+    crate::save::whole(&dir.join(RECORD), serde_json::to_string_pretty(record).map_err(std::io::Error::other)?)
 }
 
 /// A file name for `label` (a view's "Front"): lowercase, safe, with `ext`.

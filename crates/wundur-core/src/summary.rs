@@ -837,11 +837,8 @@ pub fn keep(session: &str, key: &str, summary: &TurnSummary) {
     let Some(path) = cache_file(session) else { return };
     let mut all = cached(session);
     all.insert(key.to_string(), summary.clone());
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(text) = serde_json::to_string_pretty(&all) {
-        let _ = std::fs::write(path, text);
+        let _ = crate::save::whole(&path, text);
     }
 }
 

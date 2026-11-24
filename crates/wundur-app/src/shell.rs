@@ -192,12 +192,7 @@ fn read_kept_rows() -> KeptRows {
 /// Written whole beside the file and moved over it, so a crash mid-write leaves the old one.
 fn write_kept_rows(rows: &KeptRows) -> std::io::Result<()> {
     let Some(file) = kept_rows_file() else { return Ok(()) };
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let part = file.with_extension("json.part");
-    std::fs::write(&part, serde_json::to_vec(rows).map_err(std::io::Error::other)?)?;
-    std::fs::rename(part, file)
+    wundur_core::save::whole(&file, serde_json::to_vec(rows).map_err(std::io::Error::other)?)
 }
 
 /// A session's state on its dot.

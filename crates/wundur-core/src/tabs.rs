@@ -118,11 +118,7 @@ impl NameStore {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let text = serde_json::to_string_pretty(&self.names).map_err(std::io::Error::other)?;
-        std::fs::write(path, text)
+        crate::save::whole(path, serde_json::to_string_pretty(&self.names).map_err(std::io::Error::other)?)
     }
 }
 

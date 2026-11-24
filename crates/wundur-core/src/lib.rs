@@ -58,6 +58,7 @@ pub mod play_link;
 pub mod questions;
 pub mod sandbox;
 pub mod secrets;
+pub mod save;
 pub mod settings;
 pub mod skill_install;
 pub mod skills;
