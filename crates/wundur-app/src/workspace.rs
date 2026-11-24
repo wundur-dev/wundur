@@ -219,6 +219,11 @@ pub struct Workspace {
     focus: FocusHandle,
     panel_subs: HashMap<EntityId, Vec<Subscription>>,
     _watch: Option<wundur_core::host::Watch>,
+    /// Whether it has been drawn yet: a session restored at startup and never looked at
+    /// doesn't read its folder's source files for definitions.
+    shown_once: bool,
+    /// The file list to index definitions from, once it is shown.
+    symbols_wanted: Option<Arc<wundur_core::links::FileIndex>>,
     _subs: Vec<Subscription>,
 }
 
@@ -284,7 +289,13 @@ impl Workspace {
                 }
                 FileTreeEvent::Indexed(index) => {
                     *ws.doc_ctx.index.borrow_mut() = index.clone();
-                    ws.build_symbols(index.clone(), cx);
+                    // Definitions are looked up in an open file: read for a session once it
+                    // has been shown, not for every session there is.
+                    if ws.shown_once {
+                        ws.build_symbols(index.clone(), cx);
+                    } else {
+                        ws.symbols_wanted = Some(index.clone());
+                    }
                     ws.claude.update(cx, |p, cx| {
                         p.index = index.clone();
                         cx.notify();
@@ -385,6 +396,8 @@ impl Workspace {
             models: Vec::new(),
             assets: Vec::new(),
             _watch: watch,
+            shown_once: false,
+            symbols_wanted: None,
             _subs: subs,
         };
         this.load_branch(cx);
@@ -1318,43 +1331,10 @@ impl Workspace {
         .detach();
     }
 
-    /// Read the project's source files in the background and index their definitions.
-    fn build_symbols(
-        &mut self,
-        index: Arc<wundur_core::links::FileIndex>,
-        cx: &mut Context<Self>,
-    ) {
-        let host = self.host.clone();
-        let target = self.doc_ctx.symbols.clone();
-        cx.spawn(async move |_, cx: &mut AsyncApp| {
-            let started = std::time::Instant::now();
-            let symbols = cx
-                .background_spawn(async move {
-                    let mut out = wundur_core::symbols::SymbolIndex::default();
-                    for path in index.files().take(8_000) {
-                        if wundur_core::files::language_for(&path) == "text" {
-                            continue;
-                        }
-                        if let Ok(bytes) = host.read(&path)
-                            && bytes.len() < 512 * 1024
-                            && let Ok(text) = String::from_utf8(bytes)
-                        {
-                            out.add(wundur_core::symbols::definitions(&path, &text));
-                        }
-                    }
-                    out
-                })
-                .await;
-            if crate::perf::enabled() {
-                eprintln!(
-                    "perf symbol index: {} definitions in {:?}",
-                    symbols.len(),
-                    started.elapsed()
-                );
-            }
-            *target.borrow_mut() = Arc::new(symbols);
-        })
-        .detach();
+    /// Bring the folder's index of definitions up to date (see `symbol_store`: one for the
+    /// folder, shared by its sessions, its files read in the background).
+    fn build_symbols(&mut self, index: Arc<wundur_core::links::FileIndex>, cx: &mut Context<Self>) {
+        crate::symbol_store::update(self.host.clone(), self.root.clone(), index, &self.doc_ctx.symbols, cx);
     }
 
     // ----- actions -----
@@ -1809,6 +1789,13 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Count::Workspace);
+        // Shown for the first time: what only a shown session needs is made now.
+        if !self.shown_once {
+            self.shown_once = true;
+            if let Some(index) = self.symbols_wanted.take() {
+                self.build_symbols(index, cx);
+            }
+        }
         if !self.first_frame_logged {
             self.first_frame_logged = true;
             // A session opened later (from the browser): its own time, with WUNDUR_PERF=1.
