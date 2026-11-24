@@ -24,6 +24,7 @@ use wundur_core::settings::Settings;
 mod about;
 mod account_menu;
 mod play_link_sheet;
+mod play_link_stats;
 mod project_wizard;
 mod inbox;
 mod tasks;

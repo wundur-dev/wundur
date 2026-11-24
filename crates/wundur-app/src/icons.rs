@@ -104,6 +104,8 @@ icon_assets!(
         // The title bar's Share and the Play link sheet's Open.
         Share2,
         ExternalLink,
+        // The Play link sheet's Stats by day.
+        ChartColumn,
     ]
 );
 

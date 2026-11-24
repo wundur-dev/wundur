@@ -666,6 +666,37 @@ pub fn list() -> Result<Vec<ShareView>, Error> {
     Ok(call::<Shares>("GET", "/v1/shares", None)?.shares)
 }
 
+/// One UTC hour of a link's activity (`GET /v1/shares/{id}/stats`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HourStats {
+    /// `2026-11-23T19`: the UTC hour.
+    pub hour: String,
+    pub views: u64,
+    pub players: u64,
+    pub play_seconds: u64,
+    pub plays_timed: u64,
+    pub rating_sum: u64,
+    pub ratings: u64,
+}
+
+/// A link's activity by UTC hour: only hours that had some, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Stats {
+    pub hours: Vec<HourStats>,
+    /// The UTC hour it was published.
+    pub since: Option<String>,
+}
+
+/// The first UTC hour the API kept stats by hour: activity before it is only in the totals.
+pub const STATS_START: &str = "2026-11-24T00";
+
+/// `GET /v1/shares/{id}/stats`: the link's activity by UTC hour (owner only).
+pub fn stats(id: &str) -> Result<Stats, Error> {
+    call("GET", &format!("/v1/shares/{}/stats", encode(id)), None)
+}
+
 /// `POST /v1/shares/{id}/extend`: 7 more days.
 pub fn extend(id: &str) -> Result<ShareView, Error> {
     call("POST", &format!("/v1/shares/{}/extend", encode(id)), None)
@@ -1091,6 +1122,18 @@ mod tests {
         assert!(message(&api("shares_unavailable", "Share links are not available right now.")).starts_with("Sharing isn't available right now."));
         assert!(is_gone(api("gone", "").code()));
         assert!(!is_gone(api("files_missing", "").code()));
+    }
+
+    #[test]
+    fn stats_read_the_api_shape() {
+        let s: Stats = serde_json::from_str(
+            r#"{"hours":[{"hour":"2026-11-23T19","views":4,"players":2,"play_seconds":830,"plays_timed":2,"rating_sum":9,"ratings":2}],"since":"2026-11-20T15"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.since.as_deref(), Some("2026-11-20T15"));
+        assert_eq!(s.hours[0], HourStats { hour: "2026-11-23T19".into(), views: 4, players: 2, play_seconds: 830, plays_timed: 2, rating_sum: 9, ratings: 2 });
+        let empty: Stats = serde_json::from_str(r#"{"hours":[],"since":null}"#).unwrap();
+        assert_eq!(empty, Stats::default());
     }
 
     #[test]
