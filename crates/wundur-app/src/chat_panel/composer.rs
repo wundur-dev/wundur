@@ -1118,7 +1118,7 @@ impl ChatPanel {
 
     /// The model list box (every model the agent offers, typed to filter), or the field typing a
     /// model's name in its place.
-    pub(super) fn render_model_control(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_model_control(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some((input, _)) = &self.model_input {
             return div()
                 .flex_1()
@@ -1137,12 +1137,13 @@ impl ChatPanel {
         let session = self.session.read(cx);
         let model = session.chat.model.clone().or_else(|| session.model.clone()).unwrap_or_else(|| "default model".into());
         match &self.model_select {
-            // As wide as the model's name and its chevron (up to 220), narrower when the
-            // header is.
+            // As wide as the model's whole name and its chevron when the header has the room;
+            // the first thing in the header to give way when it has not (the effort and
+            // mode beside it keep their size).
             Some(select) => div()
                 .flex_shrink(1.)
                 .min_w(px(70.))
-                .w(px((short_model(&model).chars().count() as f32 * 7. + 28.).clamp(70., 220.)))
+                .w(text_width(&select.shown, px(13.), window, cx) + px(MODEL_BOX_CHROME))
                 .child(
                     Select::new(&select.state)
                         .xsmall()
@@ -1286,7 +1287,12 @@ impl ChatPanel {
         let picked = session.model.clone().or_else(|| session.chat.model.clone()).unwrap_or_default();
         // The list shows models, not their variants (the effort control picks those).
         let picked = listed.iter().find(|m| m.id == picked).map_or(picked, |m| m.base.clone());
-        let (groups, selected) = model_groups(&bases(&listed), &recent, &picked);
+        let bases = bases(&listed);
+        let (groups, selected) = model_groups(&bases, &recent, &picked);
+        // What the box shows: the picked model's name in the list, else its short id.
+        let shown = selected
+            .and_then(|_| bases.iter().find(|m| m.id == picked).map(|m| m.label.clone()))
+            .unwrap_or_else(|| short_model(&session.chat.model.clone().or_else(|| session.model.clone()).unwrap_or_else(|| "default model".into())));
         let key = format!("{picked}|{}|{}", listed.len(), recent.join(","));
         if self.model_select.as_ref().is_some_and(|s| s.key == key) {
             return;
@@ -1312,11 +1318,12 @@ impl ChatPanel {
                     let id = p.variant_of(&id, None, cx).unwrap_or(id);
                     p.session.update(cx, |s, cx| s.set_model(&id, cx));
                 });
-                self.model_select = Some(ModelSelect { state, key: String::new(), _sub: sub });
+                self.model_select = Some(ModelSelect { state, key: String::new(), shown: String::new(), _sub: sub });
             }
         }
         if let Some(select) = &mut self.model_select {
             select.key = key;
+            select.shown = shown;
         }
     }
 
@@ -1673,6 +1680,8 @@ const OTHER_MODEL: &str = "\u{0}other";
 pub(super) struct ModelSelect {
     state: Entity<SelectState<SearchableVec<SelectGroup<ModelItem>>>>,
     key: String,
+    /// The name the box shows for the model picked (its width is made to fit it).
+    shown: String,
     _sub: Subscription,
 }
 
@@ -1746,6 +1755,15 @@ pub(super) fn remember_model(name: &str, cx: &mut App) {
 }
 
 /// `claude-opus-5-5` as `opus-5-5`; a short name stays.
+/// What the model box adds around its name: padding and the chevron.
+const MODEL_BOX_CHROME: f32 = 30.;
+
+/// How wide `text` is in the chat's font at `size`.
+fn text_width(text: &str, size: Pixels, window: &mut Window, cx: &App) -> Pixels {
+    let run = TextRun { len: text.len(), font: gpui_kit::font(crate::fonts::chat(cx)), color: cx.theme().foreground, background_color: None, underline: None, strikethrough: None };
+    window.text_system().shape_line(text.to_string().into(), size, &[run], None).width
+}
+
 pub(super) fn short_model(model: &str) -> String {
     model.strip_prefix("claude-").unwrap_or(model).to_string()
 }
