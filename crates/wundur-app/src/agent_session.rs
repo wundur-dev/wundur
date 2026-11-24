@@ -138,6 +138,8 @@ pub struct AgentSession {
     fork_next: bool,
     /// The next start (with `fork_next`) leaves out the undone last turn.
     rewind_next: Option<wundur_core::agent::Rewind>,
+    /// A message is being sent again (see `send_again`): a second ask meanwhile does nothing new.
+    resending: bool,
     /// Restore points for undoing the last turn (see `undo.rs`).
     restore: undo::RestorePoints,
     /// Its agent may write anywhere; else only in its folder and `writable` (see
@@ -220,6 +222,7 @@ impl AgentSession {
             unseen: false,
             fork_next: false,
             rewind_next: None,
+            resending: false,
             restore: Default::default(),
             writes_anywhere: false,
             writable: Vec::new(),
@@ -761,17 +764,62 @@ impl AgentSession {
         cx.notify();
     }
 
-    /// Send the person's last message again (after signing in).
+    /// Send the person's last message again (after signing in, or when a usage limit resets).
+    ///
+    /// The attempt that failed is still in the agent's record of the conversation: sent again
+    /// on top of it, the agent read the message twice (three times after two failures) and the
+    /// chat showed it as many. Where the agent can continue without a turn, the failed attempt
+    /// is taken out first, so the message is there once. Not when the turn got as far as using
+    /// a tool: that work is kept, and the message follows it as before.
     pub fn send_again(&mut self, cx: &mut Context<Self>) {
-        let last = self.chat.items.iter().rev().find_map(|i| match i {
-            wundur_core::conversation::Item::User(t) => Some(t.clone()),
-            _ => None,
-        });
+        use wundur_core::conversation::Item;
+        // Already on its way (a second click): once is the point.
+        if self.resending {
+            return;
+        }
+        let Some(at) = self.chat.items.iter().rposition(|i| matches!(i, Item::User(_))) else { return };
+        let Item::User(text) = self.chat.items[at].clone() else { return };
+        let images = match at.checked_sub(1).map(|b| &self.chat.items[b]) {
+            Some(Item::Images(paths)) => paths.clone(),
+            _ => Vec::new(),
+        };
         self.chat.refused_signed_out = false;
         self.scheduled_retry = None;
-        if let Some(text) = last {
+        let did_nothing = !self.chat.items[at..].iter().any(|i| matches!(i, Item::Tool(_)));
+        let id = self.chat.session_id.clone().filter(|_| did_nothing && !self.chat.busy);
+        let Some(id) = id else {
             self.send(&text, cx);
-        }
+            return;
+        };
+        self.resending = true;
+        let (host, backend, cwd) = (self.host.clone(), self.backend.clone(), self.cwd.clone());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let point = cx.background_spawn(async move { backend.rewind_point(host.as_ref(), &cwd, &id) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.resending = false;
+                // Something came meanwhile (another message, a turn): it goes as it would have.
+                let same = s.chat.items.iter().rposition(|i| matches!(i, Item::User(_))) == Some(at) && !s.chat.busy;
+                match point {
+                    Ok(point) if same => {
+                        // The agent starts again on the conversation without the attempt: a
+                        // copy cut before it, or none when it was the first message.
+                        s.stop(cx);
+                        match point {
+                            Some(p) => {
+                                s.rewind_next = Some(p);
+                                s.fork_next = true;
+                            }
+                            None => s.chat.session_id = None,
+                        }
+                        s.chat.drop_last_turn();
+                        s.send_with(&text, images, cx);
+                    }
+                    // This agent can't leave a turn out: the message follows the attempt.
+                    _ => s.send(&text, cx),
+                }
+            });
+        })
+        .detach();
     }
 
     /// Whether it runs on another machine.
