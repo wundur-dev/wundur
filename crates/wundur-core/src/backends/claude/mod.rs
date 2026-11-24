@@ -185,6 +185,10 @@ impl Backend for ClaudeBackend {
         std::fs::metadata(history::project_sessions_dir(&home, project).join(format!("{id}.jsonl"))).and_then(|m| m.modified()).ok()
     }
 
+    fn can_forget_turns(&self) -> bool {
+        true
+    }
+
     fn rewind_point(&self, host: &dyn Host, project: &Path, id: &str) -> Result<Option<crate::agent::Rewind>, String> {
         let home = skills::claude_home(host).ok_or("Claude Code's folder was not found")?;
         let file = |folder: &Path| history::project_sessions_dir(&home, folder).join(format!("{id}.jsonl"));
