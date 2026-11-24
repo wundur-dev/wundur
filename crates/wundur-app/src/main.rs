@@ -30,6 +30,7 @@ mod tasks;
 mod tasks_web;
 mod updater;
 mod asset_panel;
+mod assets_page;
 mod asset_store;
 mod hosted_store;
 mod actions;

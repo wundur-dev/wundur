@@ -329,7 +329,7 @@ fn make_frame(id: SharedString, kind: MakeKind, body: AnyElement, cx: &mut Conte
 }
 
 /// Play a sound file: `afplay` on a Mac, the system's player elsewhere.
-fn play(file: &std::path::Path, cx: &mut App) {
+pub(crate) fn play(file: &std::path::Path, cx: &mut App) {
     if cfg!(target_os = "macos")
         && let Ok(mut child) = std::process::Command::new("afplay").arg(file).spawn()
     {

@@ -44,6 +44,7 @@ pub mod git_status;
 pub mod images;
 pub mod google_fonts;
 pub mod host;
+pub mod library;
 pub mod links;
 pub mod markdown_marks;
 pub mod mcp;
