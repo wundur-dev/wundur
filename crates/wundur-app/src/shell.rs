@@ -264,6 +264,44 @@ impl Row {
     }
 }
 
+/// A line of a conversation as plain words, for a row's second line: Markdown's marks would
+/// show as they are there (a reply that opens with a code fence read "```sh ...").
+fn plain_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.trim_start();
+    // A code fence and its language, at the start.
+    if let Some(after) = rest.strip_prefix("```") {
+        rest = after.trim_start_matches(|c: char| c.is_alphanumeric()).trim_start();
+    }
+    // A heading's or a quote's or a list item's mark.
+    rest = rest.trim_start_matches(['#', '>']).trim_start();
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => {}
+            '*' | '_' if chars.peek() == Some(&c) => {
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_string()
+}
+
+#[cfg(test)]
+mod plain_line_tests {
+    use super::plain_line;
+
+    #[test]
+    fn markdown_marks_are_left_out_of_a_row() {
+        assert_eq!(plain_line("```sh\ngit push"), "git push");
+        assert_eq!(plain_line("Wundur is using **641 MB** now"), "Wundur is using 641 MB now");
+        assert_eq!(plain_line("## Carrying on from `main`"), "Carrying on from main");
+        assert_eq!(plain_line("so post deploy run ```bash"), "so post deploy run bash");
+        assert_eq!(plain_line("a_b * c"), "a_b * c", "single marks are ordinary characters");
+    }
+}
+
 /// A session row being dragged to a new place.
 #[derive(Clone)]
 struct SessionDrag {
@@ -2466,16 +2504,16 @@ impl Shell {
     /// `project`, the root of the project it is listed under: then the row sits in that
     /// project's card, `first` and `last` in it rounded to its corners, and `divider` draws a
     /// hairline over it parting it from the row above.
-    fn session_row(&self, ix: usize, project: Option<&Path>, first: bool, last: bool, divider: bool, cx: &mut Context<Self>) -> AnyElement {
-        // Two lines: its name, with how long ago it last did something at the right; then what
-        // it is about: that it needs the person or is working (a coloured dot and word), the
-        // last turn's headline or what it is doing, and how full its context is once that
-        // matters at the right. The shown one is tinted, with an accent bar along its left edge.
+    fn session_row(&self, ix: usize, project: Option<&Path>, cx: &mut Context<Self>) -> AnyElement {
+        // Two lines: its name, the whole width of the row; then what it is about: that it needs
+        // the person or is working (a coloured dot and word), the last turn's headline or what
+        // it is doing, and at the right how full its context is once that matters and how long
+        // ago it last did something. The shown one is tinted, with an accent bar along its left edge.
         let theme = cx.theme();
         let (fg, muted, border, hover, ring) = (crate::theme::list_text(cx), theme.muted_foreground, theme.border, theme.secondary_hover, theme.ring);
         let (yellow, green) = (theme.yellow, theme.green);
         let in_card = project.is_some();
-        let ground = if in_card { crate::theme::session_card_ground(cx) } else { crate::theme::tool_ground(cx) };
+        let ground = crate::theme::tool_ground(cx);
         let active = ix == self.active && self.browser.is_none();
         let number = self.tabs[ix].number;
         let row = &self.tabs[ix].row;
@@ -2501,6 +2539,8 @@ impl Shell {
             (None, Some(sm)) => (sm.label(theme).filter(|_| !active), Some(sm.headline.clone())),
             (None, None) => (None, row.activity.clone()),
         };
+        // As plain words; one that is only marks (a reply that was all a code fence) says nothing.
+        let about = about.map(|a| plain_line(&a)).filter(|a| a.chars().any(char::is_alphanumeric));
         // Nothing said yet: where it is (a folder inside the project, else its branch).
         let about = about.or(deeper).or_else(|| if in_card { row.branch.clone() } else { Some(row.place.clone()) });
         let worktree = row.worktree.then_some(());
@@ -2508,21 +2548,18 @@ impl Shell {
         // dot on its icon.
         let unseen = if row.dot.is_none() { self.dot(ix, cx).map(|(c, _)| c) } else { None };
         let key = self.key(ix);
-        let auto = self.list_name(ix, cx);
+        let auto = plain_line(&self.list_name(ix, cx));
         let current = self.name(ix, cx);
         let title = panels::session_title(&key, auto.clone(), cx);
         let drag = SessionDrag { number, name: current.clone().into() };
         let (k1, a1, c1) = (key, auto, current);
         let menu = self.session_menu(ix, cx);
-        // The card's corners (its own radius, less its border).
-        let r = px(7.);
         div()
                 .id(("session-row", number))
                 .group(SharedString::from(format!("session-row-{number}")))
                 .relative()
-                .when(!in_card, |d| d.mx(px(6.)).rounded(px(6.)))
-                .when(in_card && first, |d| d.rounded_t(r))
-                .when(in_card && last, |d| d.rounded_b(r))
+                .when(!in_card, |d| d.mx(px(6.)))
+                .rounded(px(6.))
                 .pl(px(10.))
                 .pr(px(10.))
                 .py(px(7.))
@@ -2531,20 +2568,20 @@ impl Shell {
                 .cursor_pointer()
                 .when(active, |d| d.bg(sel))
                 .when(!active, |d| d.hover(|d| d.bg(hover)))
-                // The hairline parting it from the row above, short of the card's sides.
-                .when(divider, |d| d.child(div().absolute().top_0().left(px(10.)).right(px(10.)).h(px(1.)).bg(border.opacity(0.75))))
-                // The shown one's accent: a 3px left border on the row itself. The row's corner
-                // radius curves it where the row is rounded (top when first, bottom when last in
-                // its card) and leaves it straight where the row is square. The border takes its
-                // width out of the left padding, so the text does not move.
+                // The shown one's accent: a 3px left border on the row itself, curved with the
+                // row's corners. The border takes its width out of the left padding, so the text
+                // does not move.
                 .when(active, |d| d.border_l_3().border_color(ring).pl(px(7.)))
                 .child(
+                    // Centred on the name's line (the row's first), as a bullet is on its text.
                     div()
                         .relative()
-                        .pt(px(1.))
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
                         .flex_none()
                         .child(Icon::new(gpui_kit::assets::IconName::MessageCircle).small().text_color(if active { ring } else { muted }))
-                        .children(unseen.map(|c| div().absolute().top(px(-1.)).right(px(-2.)).size(px(7.)).rounded_full().border_1().border_color(ground).bg(c))),
+                        .children(unseen.map(|c| div().absolute().top(px(1.)).right(px(-2.)).size(px(7.)).rounded_full().border_1().border_color(ground).bg(c))),
                 )
                 .child(
                     div()
@@ -2553,23 +2590,9 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_sm()
-                                        .text_color(fg)
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(title),
-                                )
-                                .children(when.map(|t| div().flex_none().text_size(px(11.)).text_color(muted).child(t))),
-                        )
+                        // A step lighter than its project's heading is bold: the heading is the
+                        // label, this is the thing to click.
+                        .child(div().min_w_0().truncate().text_sm().text_color(fg).font_weight(FontWeight::MEDIUM).child(title))
                         .child(
                             div()
                                 .flex()
@@ -2591,7 +2614,8 @@ impl Shell {
                                     None => div().flex_1(),
                                 })
                                 .children(worktree.map(|_| div().flex_none().px_1().rounded_sm().bg(border).text_size(px(10.)).child("worktree")))
-                                .children(filling.map(|(t, color)| div().flex_none().text_size(px(11.)).text_color(color).child(t))),
+                                .children(filling.map(|(t, color)| div().flex_none().text_size(px(11.)).text_color(color).child(t)))
+                                .children(when.map(|t| div().flex_none().text_size(px(11.)).text_color(muted).child(t))),
                         ),
                 )
                 // Rename and close, on hover (right-click is easy to miss on a Mac).
@@ -3249,9 +3273,9 @@ impl Shell {
             .id(("project-row", pi))
             .group(SharedString::from(format!("project-row-{pi}")))
             .mx(px(6.))
-            .mt_2()
+            .mt(px(14.))
             .px_1()
-            .h(px(28.))
+            .h(px(26.))
             .flex()
             .items_center()
             .gap_1()
@@ -3260,7 +3284,7 @@ impl Shell {
             .hover(|d| d.bg(hover))
             .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().text_color(muted))
             .child(Icon::new(gpui_kit::assets::IconName::Folder).small().text_color(muted))
-            .child(div().flex_1().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(crate::sheet_tabs::mix(muted, fg, 0.35)).child(title))
             // How many sessions it has, in a pill: amber while one needs the person, green while
             // one works (seen folded too), the counts spelled out on hover.
             .child({
@@ -4064,28 +4088,22 @@ impl Shell {
                     // its folder), with a faint line down from the chevron along the card.
                     if !project.folded && !members.is_empty() {
                         let root = project.root.clone();
-                        let mut card = div()
-                            .flex()
-                            .flex_col()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(border)
-                            .bg(crate::theme::session_card_ground(cx));
-                        let n = members.len();
-                        for (i, &ix) in members.iter().enumerate() {
-                            // No hairline beside the shown one: its tint parts it already.
-                            let divider = i > 0 && ix != self.active && members[i - 1] != self.active;
-                            card = card.child(self.session_row(ix, Some(&root), i == 0, i + 1 == n, divider, cx));
+                        // No card around them and no lines between them: being set in under the
+                        // heading, and the room around each, is what groups them.
+                        let mut rows = div().flex().flex_col().gap(px(1.));
+                        for &ix in &members {
+                            rows = rows.child(self.session_row(ix, Some(&root), cx));
                         }
+                        // The faint line down from the chevron stays: it says the project is
+                        // open, and which rows are its own.
                         col = col.child(
                             div()
                                 .relative()
                                 .pl(px(PROJECT_CARD_INSET))
                                 .pr(px(6.))
-                                .pt(px(2.))
-                                .pb(px(2.))
-                                .child(div().absolute().left(px(PROJECT_GUIDE_X)).top_0().bottom(px(6.)).w(px(1.)).bg(border))
-                                .child(card),
+                                .pt(px(1.))
+                                .child(div().absolute().left(px(PROJECT_GUIDE_X)).top_0().bottom(px(4.)).w(px(1.)).bg(border))
+                                .child(rows),
                         );
                     }
                 }
@@ -4094,7 +4112,7 @@ impl Shell {
                         col = col.child(div().px(px(14.)).pt_3().pb_1().text_size(px(11.)).text_color(muted).child("Other"));
                     }
                     for ix in members {
-                        col = col.child(self.session_row(ix, None, false, false, false, cx));
+                        col = col.child(self.session_row(ix, None, cx));
                     }
                 }
             }
