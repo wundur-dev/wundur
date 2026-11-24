@@ -928,6 +928,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_attempt_that_failed_is_cut_with_the_error_claude_wrote_for_it() {
+        // What the file holds after a message that could not be answered (signed out, or at
+        // the usage limit): the message, and a reply Claude Code made up from the error.
+        let file = [
+            r#"{"type":"assistant","uuid":"r0","parentUuid":"u0","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}"#,
+            r#"{"type":"user","uuid":"u1","parentUuid":"r0","message":{"role":"user","content":"review the app"}}"#,
+            r#"{"type":"assistant","uuid":"e1","parentUuid":"u1","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Failed to authenticate"}]}}"#,
+        ]
+        .join("\n");
+        let cut = rewind_point(&file).unwrap().unwrap();
+        assert_eq!((cut.at.as_str(), cut.drops.as_str()), ("r0", "u1"), "sent again, the message is there once");
+    }
+
+    #[test]
     fn the_last_turn_is_cut_before_the_persons_last_message() {
         let line = |ty: &str, uuid: &str, content: &str| {
             format!(r#"{{"type":"{ty}","uuid":"{uuid}","parentUuid":"p","message":{{"role":"{ty}","content":{content}}}}}"#)
