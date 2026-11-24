@@ -1,0 +1,35 @@
+name: Checks
+
+# What AGENTS.md asks for before a change is done, run for every pull request and for main:
+# clippy with no warnings, and the tests of the core and the app. main only changes by merging
+# a pull request, so a red run here is a change that should not merge yet.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a pull request replaces its run; runs on main each finish.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # macOS: the app only builds there so far (GPUI's Metal backend, AppKit).
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain is pinned in rust-toolchain.toml; rustup installs it on first use.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy -p wundur-core -p wundur-app -- -D warnings
+
+      - name: Tests
+        run: cargo test -p wundur-core -p wundur-app
