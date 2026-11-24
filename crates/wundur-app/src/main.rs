@@ -75,6 +75,7 @@ mod settings_mcp;
 mod settings_packs;
 mod settings_parent;
 mod settings_tools;
+mod symbol_store;
 mod settings_window;
 mod shell;
 mod skills_panel;
