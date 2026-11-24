@@ -338,6 +338,11 @@ fn chat() -> SettingPage {
                 |p| &mut p.turn_card,
             ),
             pref(
+                "Playful thinking words",
+                "While the agent thinks, the line under the message box says a word like Pondering or Spelunking instead of Thinking. A running tool still shows what it runs.",
+                |p| &mut p.playful_thinking,
+            ),
+            pref(
                 "Find files changed by commands",
                 "Files a command changed (a formatter, sed, a generator) join a turn's changes, found with git.",
                 |p| &mut p.command_changes,

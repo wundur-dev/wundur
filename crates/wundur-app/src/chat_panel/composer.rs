@@ -635,6 +635,7 @@ impl ChatPanel {
         let effort_control = self.render_effort_control(cx);
         let mode_button = permission_prompts.then(|| self.render_mode_button(cx));
         let send = self.render_send(busy, has_text, cx);
+        let working = self.render_working_line(cx);
         let paste_target = cx.entity().downgrade();
         let me = paste_target.clone();
         div()
@@ -731,7 +732,21 @@ impl ChatPanel {
                             .children(effort_control.map(|e| div().flex_none().child(e)))
                             .children(mode_button.map(|m| div().flex_none().child(m)))
                             .child(div().flex_1())
-                            .children(undo.map(|u| div().flex_none().child(u)))
+                            .children(undo.map(|u| div().flex_none().child(u))),
+                    )
+                    // The box's bottom row, there whether or not the agent works so the box
+                    // never changes height: what it does (and for how long) on the left, Send
+                    // or Stop on the right.
+                    .child(div().h(px(1.)).w_full().bg(border))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .h(px(36.))
+                            .pl_1()
+                            .min_w_0()
+                            .child(div().flex_1().min_w_0().h(px(28.)).children(working))
                             .child(div().flex_none().child(send)),
                     ),
             )

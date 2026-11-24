@@ -1165,7 +1165,9 @@ impl ChatPanel {
         let doing = match (answering, tool, session.chat.status.as_deref()) {
             (true, _, _) => "Writing".to_string(),
             (_, Some(t), _) => t,
-            (_, None, None | Some("thinking" | "working" | "sending" | "requesting")) => "Thinking".into(),
+            (_, None, None | Some("thinking" | "working" | "sending" | "requesting")) => {
+                if crate::prefs(cx).playful_thinking { self.thinking_word.into() } else { "Thinking".into() }
+            }
             (_, None, Some(_)) => "Working".into(),
         };
         Some(match self.busy_since.map(|t| format_elapsed(t.elapsed())) {
@@ -1174,12 +1176,13 @@ impl ChatPanel {
         })
     }
 
-    /// The working line's place at the foot of the conversation, as a chat app shows it while
-    /// the agent works. The session's own chat keeps the place empty and the workspace draws
-    /// the line over it ([`Self::working_overlay`]): GPUI rebuilds a view, and everything in
-    /// it, whenever it changes, so a spinner turning ten times a second inside the chat laid
-    /// the whole conversation out ten times a second. Drawn apart, it turns alone and the chat
-    /// stays cached. An agent's own chat draws it in place.
+    /// The working line's place, in the message box's bottom row beside Send (empty while
+    /// nothing runs, so the box keeps its height). The session's own chat keeps the place
+    /// empty and the workspace draws the line over it ([`Self::working_overlay`]): GPUI
+    /// rebuilds a view, and everything in it, whenever it changes, so a spinner turning ten
+    /// times a second inside the chat laid the whole conversation out ten times a second.
+    /// Drawn apart, it turns alone and the chat stays cached. An agent's own chat draws it in
+    /// place.
     pub(super) fn render_working_line(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let label = self.working_label(cx)?;
         if self.agent.is_some() {
@@ -1187,14 +1190,7 @@ impl ChatPanel {
             return Some(working_line(label, spinner_at(self.pulse.read(cx).0, muted).small().into_any_element(), None, muted).into_any_element());
         }
         let slot = self.working_slot.clone();
-        Some(
-            div()
-                .flex_none()
-                .w_full()
-                .h(px(WORKING_LINE_HEIGHT))
-                .child(canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {}).size_full())
-                .into_any_element(),
-        )
+        Some(canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {}).size_full().into_any_element())
     }
 
     /// The working line, for the workspace to draw over its place in the chat (in window
@@ -1593,25 +1589,34 @@ mod run_pill_tests {
     }
 }
 
-/// The working line's height: its place in the chat is kept to it.
-const WORKING_LINE_HEIGHT: f32 = 28.;
-
-/// A spinner and grey words, in the conversation's column, and at the end what else is at work.
+/// The working line: spinner, what the agent does and for how long, and the background
+/// agents' box. It fills the place it is given (the message box's bottom row).
 fn working_line(label: String, spinner: AnyElement, agents: Option<AnyElement>, muted: Hsla) -> Div {
-    div().flex_none().w_full().h(px(WORKING_LINE_HEIGHT)).flex().justify_center().px_4().pb_2().child(
-        div()
-            .w_full()
-            .h_full()
-            .max_w(px(COLUMN))
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(px(13.))
-            .text_color(muted)
-            .child(spinner)
-            .child(div().flex_1().min_w_0().truncate().child(label))
-            .children(agents),
-    )
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(13.))
+        .text_color(muted)
+        .child(spinner)
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .children(agents)
+}
+
+/// What the working line says while the agent thinks, when playful words are on (one per
+/// turn, so it does not flicker).
+const THINKING_WORDS: &[&str] = &[
+    "Pondering", "Mulling", "Musing", "Ruminating", "Cogitating", "Noodling", "Puzzling",
+    "Tinkering", "Brewing", "Simmering", "Percolating", "Conjuring", "Spelunking", "Scheming",
+    "Untangling", "Sleuthing", "Rummaging", "Whittling", "Plotting", "Daydreaming",
+    "Contemplating", "Deliberating", "Hatching", "Mapping", "Sketching", "Wondering",
+];
+
+/// A thinking word for a new turn.
+pub(super) fn pick_thinking_word() -> &'static str {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize);
+    THINKING_WORDS[nanos % THINKING_WORDS.len()]
 }
 
 #[cfg(test)]
