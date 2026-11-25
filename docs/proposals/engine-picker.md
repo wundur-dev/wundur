@@ -47,6 +47,14 @@ Consoles is my addition. It's the only platform answer that really narrows the l
 Unity), so it's worth one checkbox. Multi-select is also my suggestion: "web and mobile" is a common
 answer, and a single choice would force people to pick "All".
 
+When more than one is ticked, one more line under the boxes asks **Which comes first?** It lists
+the ticked platforms plus **No preference** (the default). The first platform counts double in the
+ranking. This matters most for mobile. A browser engine on a phone runs inside a web view: on
+iPhone that caps it at 60 fps, and heavier scenes often struggle to reach even that. Unity and
+Godot build native apps that don't have that cap. So "mobile first" moves Godot and Unity to the
+top, while "web first, mobile too" keeps Phaser or Three.js on top and still says what a phone
+costs.
+
 ### 2. What type of game?
 
 - **2D**: flat art, seen from the side or from above.
@@ -123,14 +131,15 @@ that adds or replaces an engine takes part automatically.
 |---|---|---|---|---|
 | Web | best | best | works (larger download) | works (large builds, weak on phones) |
 | Desktop | works (wrapped) | works (wrapped) | best | best |
-| Mobile | works (wrapped) | works (wrapped) | best | best |
+| Mobile | works (in a web view: 60 fps cap on iPhone, struggles with heavy scenes) | works (same, and 3D feels it more) | best (native app) | best (native app) |
 | Consoles | no | no | works (through a porting company) | best |
 | Code only | best | best | works | works |
 | Editor | no | no | best | best |
 | Camera: first/third person | – | works (controls built by hand) | best | best |
 
 `best` scores 2, `works` scores 1, and an empty cell scores 1. With several platforms ticked, the
-platform scores add up. **Code or editor** counts only when answered, and "Editor" rules out
+platform scores add up, and the platform that comes first counts double. Consoles is the only
+answer that rules engines out; every other platform answer only weights the ranking. **Code or editor** counts only when answered, and "Editor" rules out
 Phaser and Three.js (an answer of `no`). Ties are broken by: installed first, then how well
 agents work in the engine (a pack field, `agent_fit`, which puts Unity last for the reasons in
 the engine-packs proposal), then the cards' order.
@@ -146,6 +155,8 @@ every combination.
 |---|---|
 | Web · 2D · side view | Phaser, Godot, Unity |
 | Mobile · 3D · first person | Godot, Unity, Three.js |
+| Web + mobile, **web first** · 2D | Phaser, Godot, Unity (Phaser's line warns about the 60 fps cap on iPhone) |
+| Web + mobile, **mobile first** · 2D | Godot, Unity, Phaser |
 | All · isometric drawn art | Godot, Unity, Phaser |
 | All · isometric 3D models | Godot, Unity, Three.js |
 | Web · 3D · chase · code only | Three.js, Godot, Unity |
