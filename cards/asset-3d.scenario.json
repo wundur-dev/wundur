@@ -964,7 +964,7 @@
     "refresh": [
       {"if": "data.model.building", "after": 3, "state": "Model ready"},
       {"if": "data.sets.1", "after": 2.5, "state": "Two versions"},
-      {"after": 2.5, "state": "Views ready"}
+      {"if": "data.busy", "after": 2.5, "state": "Views ready"}
     ]
   }
 }

@@ -286,6 +286,26 @@ impl CardState {
         Some(Effect::Call { id, request: self.request(&refresh.call, &[]) })
     }
 
+    /// The manifest's refresh asked once whatever its condition says, to catch up a card whose
+    /// data may be behind the service's: an answer that came before the work it started
+    /// showed, or a card read back from its record. Nothing while the card has no data yet,
+    /// or while an action's call or another refresh is on its way.
+    pub fn refresh_once(&mut self, manifest: &Manifest) -> Option<Effect> {
+        let refresh = manifest.refresh.as_ref()?;
+        if self.refreshing.is_some() || self.waiting.is_some() || !expr::truthy(&self.root["data"]) {
+            return None;
+        }
+        let id = self.next;
+        self.next += 1;
+        self.refreshing = Some(id);
+        Some(Effect::Call { id, request: self.request(&refresh.call, &[]) })
+    }
+
+    /// Whether `id` is a refresh on its way (not an action's call or save).
+    pub fn is_refresh(&self, id: u64) -> bool {
+        self.refreshing == Some(id)
+    }
+
     /// Whether the manifest's refresh wants asking (now or once the one in flight is back).
     pub fn refreshes(&self, manifest: &Manifest) -> bool {
         manifest.refresh.as_ref().is_some_and(|r| self.scope(&[]).test(&r.when))
@@ -432,6 +452,23 @@ mod tests {
         let Some(Effect::Call { id, .. }) = s.refresh(&m) else { panic!("asked again") };
         s.finish(&m, id, Ok(json!({ "id": "snd_1", "status": "done" })));
         assert!(s.refresh(&m).is_none(), "done: no more asking");
+    }
+
+    #[test]
+    fn a_card_that_may_be_behind_is_refreshed_once_whatever_it_says() {
+        let m = manifest();
+        let mut s = CardState::new(&m);
+        assert!(s.refresh_once(&m).is_none(), "no data yet: nothing to ask about");
+        // The service's answer says nothing is running (it hadn't started yet).
+        s.put("data", json!({ "id": "snd_1", "status": "queued" }));
+        assert!(s.refresh(&m).is_none(), "its own condition doesn't hold");
+        let Some(Effect::Call { id, request }) = s.refresh_once(&m) else { panic!() };
+        assert_eq!(request.path, "/v1/sounds/snd_1");
+        assert!(s.is_refresh(id));
+        assert!(s.refresh_once(&m).is_none(), "one at a time");
+        s.finish(&m, id, Ok(json!({ "id": "snd_1", "status": "running" })));
+        assert!(!s.is_refresh(id));
+        assert!(s.refresh(&m).is_some(), "now it says so itself, and is refreshed as usual");
     }
 
     #[test]
