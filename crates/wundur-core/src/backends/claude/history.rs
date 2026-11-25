@@ -888,6 +888,8 @@ fn macos_cwd(pid: u32) -> Option<PathBuf> {
 /// [`crate::agent::Backend::rewind_point`]): the person's last message (not a tool result,
 /// not a subagent's) and the last reply before it. `Some(None)`: the turn is the first, so
 /// nothing is kept. `None`: no message from the person.
+const INTERRUPTED: &str = "[Request interrupted by user";
+
 pub fn rewind_point(text: &str) -> Option<Option<crate::agent::Rewind>> {
     let mut last_reply: Option<String> = None;
     let mut found: Option<(String, Option<String>)> = None;
@@ -912,7 +914,16 @@ pub fn rewind_point(text: &str) -> Option<Option<crate::agent::Rewind>> {
                     }
                     _ => false,
                 };
-                if typed {
+                // Claude Code's own note that the person stopped the turn is written as a
+                // message of theirs. It is not what they said: cutting there (and not before
+                // the message that began the turn) is refused, and left a stopped turn
+                // impossible to undo or edit.
+                let stopped = match content {
+                    Some(Value::String(s)) => s.trim_start().starts_with(INTERRUPTED),
+                    Some(Value::Array(blocks)) => blocks.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).all(|t| t.trim_start().starts_with(INTERRUPTED)),
+                    _ => false,
+                };
+                if typed && !stopped {
                     found = Some((uuid.to_string(), last_reply.clone()));
                 }
             }
@@ -939,6 +950,22 @@ mod tests {
         .join("\n");
         let cut = rewind_point(&file).unwrap().unwrap();
         assert_eq!((cut.at.as_str(), cut.drops.as_str()), ("r0", "u1"), "sent again, the message is there once");
+    }
+
+    #[test]
+    fn a_stopped_turn_is_cut_before_its_message_not_at_the_note_that_it_was_stopped() {
+        // As Claude Code leaves the file when a turn is stopped at once (seen 2026-11-24).
+        let file = [
+            r#"{"type":"assistant","uuid":"r0","parentUuid":"u0","message":{"role":"assistant","content":[{"type":"text","text":"Should I test it next?"}]}}"#,
+            r#"{"type":"user","uuid":"u1","parentUuid":"r0","message":{"role":"user","content":"yeah let's do that and see how it goes"}}"#,
+            r#"{"type":"user","uuid":"x1","parentUuid":"p9","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+        ]
+        .join("\n");
+        let cut = rewind_point(&file).unwrap().unwrap();
+        assert_eq!((cut.at.as_str(), cut.drops.as_str()), ("r0", "u1"));
+        // Stopped while a tool ran: the same note, worded for that.
+        let file = file.replace("[Request interrupted by user]", "[Request interrupted by user for tool use]");
+        assert_eq!(rewind_point(&file).unwrap().unwrap().drops, "u1");
     }
 
     #[test]

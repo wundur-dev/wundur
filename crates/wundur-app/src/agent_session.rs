@@ -138,6 +138,10 @@ pub struct AgentSession {
     fork_next: bool,
     /// The next start (with `fork_next`) leaves out the undone last turn.
     rewind_next: Option<wundur_core::agent::Rewind>,
+    /// The conversation the agent was last started as a copy of, until the copy is known to
+    /// be there: a start that fails leaves the copy's id with no conversation behind it, and
+    /// the session must go back to this one (see `settle_fork`).
+    forked_from: Option<String>,
     /// A message is being sent again (see `send_again`): a second ask meanwhile does nothing new.
     resending: bool,
     /// Restore points for undoing the last turn (see `undo.rs`).
@@ -222,6 +226,7 @@ impl AgentSession {
             unseen: false,
             fork_next: false,
             rewind_next: None,
+            forked_from: None,
             resending: false,
             restore: Default::default(),
             writes_anywhere: false,
@@ -990,6 +995,29 @@ impl AgentSession {
 
     // ----- the agent -----
 
+    /// After a start as a copy of a conversation (a fork, or a turn left out): if the copy is
+    /// there, the session is that conversation now; if the start failed before the agent made
+    /// it, the session goes back to the one it was copied from. Without this a refused start
+    /// left the session with an id no conversation has, and every message after it failed
+    /// with "No conversation found".
+    fn settle_fork(&mut self) {
+        let Some(original) = self.forked_from.clone() else { return };
+        if self.host.is_remote() {
+            self.forked_from = None;
+            return;
+        }
+        let exists = |id: &str| self.backend.session_modified(self.host.as_ref(), &self.cwd, id).is_some();
+        match self.chat.session_id.clone() {
+            // Still the original: the copy has no id yet (the agent hasn't said). Wait.
+            Some(now) if now == original => {}
+            Some(now) if exists(&now) => self.forked_from = None,
+            _ => {
+                self.chat.session_id = Some(original);
+                self.forked_from = None;
+            }
+        }
+    }
+
     fn start(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         // Registered for its tool server (Wundur's own tools).
         if self.hooks.is_none() && !self.host.is_remote() {
@@ -1009,6 +1037,9 @@ impl AgentSession {
             instructions: session_instructions(cx),
         };
         self.confined = options.sandbox.is_some();
+        if options.fork {
+            self.forked_from = options.resume.clone();
+        }
         let (tx, rx) = async_channel::unbounded::<Message>();
         self.agent.start(
             self.host.clone(),
@@ -1136,6 +1167,7 @@ impl AgentSession {
                 }
                 self.watch_turn(cx);
                 if applied.turn_ended {
+                    self.settle_fork();
                     self.after_turn(cx);
                     self.find_command_changes(cx);
                     self.idle_later(cx);
@@ -1145,11 +1177,16 @@ impl AgentSession {
                 }
             }
             Message::Log(line) => {
+                // The copy it was to continue in was never made: back to the original.
+                if line.contains("No conversation found with session ID") {
+                    self.settle_fork();
+                }
                 if !self.rewind_refused(&line) && !line.trim().is_empty() {
                     self.chat.push_notice(format!("{}: {line}", self.backend.name()));
                 }
             }
             Message::Closed => {
+                self.settle_fork();
                 self.agent.stop();
                 if self.chat.busy {
                     self.chat.push_error(format!("{} stopped before the turn finished.", self.backend.name()));
