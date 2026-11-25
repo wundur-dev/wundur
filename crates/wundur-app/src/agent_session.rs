@@ -1297,6 +1297,7 @@ impl AgentSession {
             if !self.host.is_remote() {
                 self.chat.attach_assets(&crate::asset_store::started_in(&self.cwd, &id));
                 self.chat.attach_assets(&crate::hosted_store::started_in(&self.cwd, &id));
+                self.chat.attach_cards(&wundur_core::cards::remote::started_in(&self.cwd, &id));
             }
         }
     }

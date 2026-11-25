@@ -14,14 +14,15 @@ Built: the manifest format, the renderer (`crates/wundur-cards`), the card's dat
 (`crates/wundur-core/src/cards`), the preview program, and three reference manifests in
 `cards/` that reproduce today's cards.
 
-Not built yet, in the app:
+Built in the app too: it asks the API which workflows the account may use
+(`GET /v1/workflows`), lists them in the Create menu, draws their cards in the chat, performs
+their calls and saves, and keeps each card with its chat. The cards built into the app (3D
+asset, image, sound effect) stay until the API offers a workflow with the same id (`asset-3d`,
+`image`, `sound-effect`), whose manifest then takes that card's place. Signed out, the menu
+offers only signing in.
 
-- Fetching manifests from the API and listing them in the Create menu.
-- Performing a card's calls and saves for real (the preview answers them from a scenario).
-- Putting manifest cards in the chat in place of the built-in ones.
-
-So nothing here changes what people see in Wundur today. The API can start serving manifests
-and the data they read; the app work above follows.
+Not built yet: telling the person when a long wait ends while they are looking elsewhere,
+lists a person edits (add and remove items), and a progress bar.
 
 ## The split
 

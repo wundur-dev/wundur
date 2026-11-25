@@ -34,6 +34,7 @@ mod asset_panel;
 mod assets_page;
 mod asset_store;
 mod hosted_store;
+mod card_store;
 mod actions;
 mod app_icon;
 mod attention;

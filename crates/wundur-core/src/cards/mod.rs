@@ -11,6 +11,7 @@
 
 pub mod expr;
 pub mod manifest;
+pub mod remote;
 pub mod state;
 
 pub use expr::Scope;

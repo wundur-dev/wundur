@@ -118,6 +118,9 @@ pub enum Item {
     /// A quick image or sound effect the person is making from their Wundur account (the
     /// window's id for its card). Wundur's own, not the agent's.
     Make(u64),
+    /// A card drawn from a manifest the service sent (its record's folder; see
+    /// `crate::cards::remote`). Wundur's own, not the agent's.
+    Card(std::path::PathBuf),
     /// A turn's summary (see [`crate::summary`]), at the end of its turn, above its card of
     /// changes. `key`: the turn's (see [`crate::summary::TurnText::key`]).
     Summary { key: String, state: crate::summary::State },
@@ -621,8 +624,17 @@ impl Conversation {
     /// (this is called again as each is read in), and only goes at the end when the whole chat
     /// is here and its turn still isn't (a record whose key was taken from an unfinished turn).
     pub fn attach_assets(&mut self, found: &[(std::path::PathBuf, Option<String>)]) {
+        self.attach(found, Item::Asset);
+    }
+
+    /// Put the manifest cards started in this chat back, as [`Self::attach_assets`] does its.
+    pub fn attach_cards(&mut self, found: &[(std::path::PathBuf, Option<String>)]) {
+        self.attach(found, Item::Card);
+    }
+
+    fn attach(&mut self, found: &[(std::path::PathBuf, Option<String>)], item: fn(std::path::PathBuf) -> Item) {
         for (dir, turn) in found {
-            if self.items.iter().any(|i| matches!(i, Item::Asset(d) if d == dir)) {
+            if self.items.iter().any(|i| matches!(i, Item::Asset(d) | Item::Card(d) if d == dir)) {
                 continue;
             }
             let at = match turn {
@@ -636,7 +648,7 @@ impl Conversation {
                     }
                 }
             };
-            self.items.insert(at, Item::Asset(dir.clone()));
+            self.items.insert(at, item(dir.clone()));
             self.revision += 1;
         }
     }
@@ -1167,7 +1179,7 @@ pub fn to_markdown(items: &[Item], agent: &str) -> String {
             Item::Outgoing { to, text, .. } => format!("**To {to}:** {}", text.trim()),
             Item::ToolRun { tool, command, .. } => format!("**Tool {tool}:** `{command}`"),
             // Wundur's own cards, not part of the conversation.
-            Item::SignIn(_) | Item::Install(_) | Item::NewAsset | Item::Make(_) => continue,
+            Item::SignIn(_) | Item::Install(_) | Item::NewAsset | Item::Make(_) | Item::Card(_) => continue,
             Item::Asset(dir) => format!("*[Game asset: {}]*", dir.display()),
             Item::Compacted { trigger, tokens, .. } => {
                 let mut facts: Vec<String> = trigger.iter().cloned().collect();

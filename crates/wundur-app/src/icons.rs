@@ -124,7 +124,8 @@ pub fn solid(name: &str) -> SharedString {
     SharedString::from(format!("icons/solid/{name}.svg"))
 }
 
-/// gpui-component's icons plus [`ExtraIcons`] and the filled toolbar icons.
+/// gpui-component's icons plus [`ExtraIcons`], the filled toolbar icons and, behind them, the
+/// whole Lucide set.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -135,7 +136,11 @@ impl AssetSource for AppAssets {
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
-        gpui_kit::assets::Assets.load(path)
+        // Then every Lucide icon: a card manifest from the service may name any of them.
+        match gpui_kit::assets::Assets.load(path)? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => gpui_kit::assets::AllAssets.load(path),
+        }
     }
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
