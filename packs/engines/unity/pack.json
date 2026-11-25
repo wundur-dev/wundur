@@ -21,6 +21,23 @@
       }
     ],
     "create": "unity",
-    "run": "Open the folder in Unity Hub (Add > Add project from disk), then press Play."
+    "run": "Open the folder in Unity Hub (Add > Add project from disk), then press Play.",
+    "fit": {
+      "platforms": {
+        "web": {"level": "works", "note": "web builds are large and weak on phones"},
+        "desktop": {"level": "best", "note": "native desktop builds"},
+        "mobile": {"level": "best", "note": "native mobile apps, without a web view's frame cap"},
+        "consoles": {"level": "best", "note": "builds for consoles"}
+      },
+      "workflow": {
+        "code": {"level": "works", "note": "agents find its scene files hard to edit"},
+        "editor": {"level": "best", "note": "a full editor and a large asset store"}
+      },
+      "cameras": {
+        "first-person": {"level": "best", "note": "3D characters and physics built in"},
+        "third-person": {"level": "best", "note": "3D characters and physics built in"}
+      },
+      "agent_fit": 1
+    }
   }
 }

@@ -1,6 +1,6 @@
 # Proposal: "Help me choose" in the New Project wizard
 
-Status: proposal for the owner to read. Written 2026-11-25.
+Status: built 2026-11-25 (`crates/wundur-core/src/engine_fit.rs`, the wizard). Written 2026-11-25.
 
 ## The idea in one paragraph
 
@@ -140,8 +140,9 @@ that adds or replaces an engine takes part automatically.
 `best` scores 2, `works` scores 1, and an empty cell scores 1. With several platforms ticked, the
 platform scores add up, and the platform that comes first counts double. Consoles is the only
 answer that rules engines out; every other platform answer only weights the ranking. **Code or editor** counts only when answered, and "Editor" rules out
-Phaser and Three.js (an answer of `no`). Ties are broken by: installed first, then how well
-agents work in the engine (a pack field, `agent_fit`, which puts Unity last for the reasons in
+Phaser and Three.js (an answer of `no`). Ties are broken by: how the engine does on the platform that comes first
+(so "mobile first" puts native engines ahead of a web view even on equal points), then installed
+first, then how well agents work in the engine (a pack field, `agent_fit`, which puts Unity last for the reasons in
 the engine-packs proposal), then the cards' order.
 
 **The reason line** is built from the two strongest facts for that engine plus its biggest

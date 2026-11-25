@@ -20,6 +20,26 @@
         "help": "The starter runs with Vite, which needs Node.js (npm comes with it)."
       }
     ],
-    "run": "npm install && npm run dev"
+    "run": "npm install && npm run dev",
+    "fit": {
+      "platforms": {
+        "web": {"level": "best", "note": "made for 3D in the browser, and plays right in Wundur"},
+        "desktop": {"level": "works", "note": "desktop through a wrapper app"},
+        "mobile": {
+          "level": "works",
+          "note": "on phones it runs in a web view, capped at 60 fps on iPhone, and 3D feels it"
+        },
+        "consoles": {"level": "no"}
+      },
+      "workflow": {
+        "code": {"level": "best", "note": "all code, so the agent can build every part"},
+        "editor": {"level": "no"}
+      },
+      "cameras": {
+        "first-person": {"level": "works", "note": "you build the player controls and physics yourself"},
+        "third-person": {"level": "works", "note": "you build the player controls and physics yourself"}
+      },
+      "agent_fit": 3
+    }
   }
 }
