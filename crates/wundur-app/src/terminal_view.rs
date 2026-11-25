@@ -1600,6 +1600,20 @@ impl Render for TerminalView {
         let blocks_cache = self.blocks.clone();
         let generation = self.generation;
         let folds = self.folds.clone();
+        // The rows as this frame will draw them, worked out before the buttons laid over them
+        // are placed. They used to be placed from the rows the frame before had drawn: when
+        // output came and the rows moved, the buttons sat a row off for a frame, over the
+        // text beside them, until the next frame put them right. The size is the last one
+        // laid out (a frame that also resizes is put right by the paint, as before).
+        if let Some(pty) = self.pty.as_ref().filter(|_| !self.raw) {
+            let (avail, line_h) = (f32::from(self.bounds.get().size.height), f32::from(self.cell.get().height));
+            if avail > 0. && line_h > 0. {
+                let blocks = self.blocks();
+                let actions = action_ids(&blocks, crate::prefs(cx).command_actions);
+                let rows = layout(pty, &blocks, &self.folds.borrow(), &actions, line_h, avail);
+                *self.shown.borrow_mut() = rows.unwrap_or_default();
+            }
+        }
         let shown = self.shown.clone();
         let buttons = self.block_bars(cx);
         let color_output = crate::prefs(cx).color_output;
