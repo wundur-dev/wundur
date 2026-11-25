@@ -47,8 +47,14 @@ pub enum CardEvent {
 #[derive(Clone, Default)]
 pub struct Hooks {
     pub picture: Option<DrawPicture>,
+    /// A picture at a link. Without this GPUI fetches it, which needs the application to have
+    /// given GPUI an HTTP client; Wundur fetches it itself and draws the file.
+    pub remote_picture: Option<DrawRemotePicture>,
     pub spinner: Option<DrawSpinner>,
 }
+
+/// A picture at a link, drawn to fill its box (a still block until it has been fetched).
+pub type DrawRemotePicture = Rc<dyn Fn(&str, ObjectFit, &mut App) -> AnyElement>;
 
 /// A picture file drawn to fill its box, fitted as asked.
 pub type DrawPicture = Rc<dyn Fn(&Path, ObjectFit, &mut App) -> AnyElement>;
@@ -280,7 +286,10 @@ impl CardView {
             return div().size_full().bg(p.skeleton).into_any_element();
         }
         if src.starts_with("https://") || src.starts_with("http://") {
-            return img(SharedString::from(src.to_string())).size_full().object_fit(fit).into_any_element();
+            return match &self.hooks.remote_picture {
+                Some(draw) => draw(src, fit, cx),
+                None => img(SharedString::from(src.to_string())).size_full().object_fit(fit).with_fallback(move || div().size_full().bg(p.skeleton).into_any_element()).into_any_element(),
+            };
         }
         let path = self.file(src);
         match &self.hooks.picture {
