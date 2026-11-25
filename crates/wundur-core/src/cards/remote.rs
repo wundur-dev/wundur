@@ -201,10 +201,10 @@ pub fn save(files: &Value, folder: &str, project: &Path) -> Result<Value, Failur
 /// the project), and give its path. A link already fetched is used as it is.
 pub fn fetched(url: &str) -> Result<PathBuf, String> {
     let dir = crate::settings::config_dir().ok_or("no folder to keep it in")?.join("card-files");
-    // The link without its query (a signature that changes) names the file, so one model
-    // opened twice is fetched once.
+    // The whole link names the file: the service gives a picture one link for as long as it
+    // is that picture and another when it changes, so what was fetched is still right.
     let plain = url.split(['?', '#']).next().unwrap_or(url);
-    let hash = plain.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let hash = url.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
     let path = dir.join(format!("{hash:016x}-{}", file_name(plain)));
     if !path.is_file() {
         crate::asset_flow::download(url, &path)?;

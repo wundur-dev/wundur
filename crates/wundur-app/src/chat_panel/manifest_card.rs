@@ -63,6 +63,34 @@ fn in_project(project: &Path, target: &str) -> Option<PathBuf> {
     path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)).then(|| project.join(path))
 }
 
+thread_local! {
+    /// Pictures at links that cards have asked for: the file each was fetched to, or nothing
+    /// while it's being fetched (or when it couldn't be: asked again the next time the app runs).
+    static FETCHED: RefCell<HashMap<String, Option<PathBuf>>> = RefCell::default();
+}
+
+/// A picture at one of the service's links: fetched once to a file of the app's, off the UI
+/// thread, and drawn from there as any other picture is. A still block until it's here.
+fn remote_picture(url: &str, fit: ObjectFit, cx: &mut App) -> AnyElement {
+    match FETCHED.with_borrow(|f| f.get(url).cloned()) {
+        Some(Some(path)) => return crate::thumbs::picture(&path, crate::thumbs::LARGE).size_full().object_fit(fit).into_any_element(),
+        Some(None) => {}
+        None => {
+            FETCHED.with_borrow_mut(|f| f.insert(url.to_string(), None));
+            let url = url.to_string();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let link = url.clone();
+                if let Ok(path) = cx.background_spawn(async move { remote::fetched(&link) }).await {
+                    FETCHED.with_borrow_mut(|f| f.insert(url, Some(path)));
+                    cx.update(|cx| cx.refresh_windows());
+                }
+            })
+            .detach();
+        }
+    }
+    div().size_full().bg(cx.theme().skeleton).into_any_element()
+}
+
 /// How the app draws a card's pictures and spinners: pictures decoded small and let go when
 /// off screen, the spinner the system's (one drawn by GPUI asks for a frame on every step,
 /// for as long as something is being made).
@@ -70,6 +98,7 @@ fn hooks() -> Hooks {
     let spinners: Rc<RefCell<HashMap<String, crate::native_spinner::NativeSpinner>>> = Default::default();
     Hooks {
         picture: Some(Rc::new(|path, fit, _| crate::thumbs::picture(path, crate::thumbs::LARGE).size_full().object_fit(fit).into_any_element())),
+        remote_picture: Some(Rc::new(remote_picture)),
         spinner: Some(Rc::new(move |key, size, color, _| {
             if !crate::native_spinner::NativeSpinner::available() {
                 return Icon::new(IconName::LoaderCircle).size(px(size)).text_color(color).into_any_element();

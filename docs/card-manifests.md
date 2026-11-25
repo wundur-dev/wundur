@@ -318,9 +318,12 @@ While `while` holds, the app repeats the call every `every` seconds and puts the
    model, the card has nothing to draw from.
 2. **Worked-out values in the data.** Labels with their counts and plurals, which item is
    current, what is allowed now (`can_build`), what is being made (`busy`), how far it has got.
-3. **Links that stay the same while the picture does.** A card is drawn many times a minute.
-   If a picture's link changes with each answer it is downloaded again each time. Keep one
-   link per picture for as long as the card can show it, or redirect from a stable one.
+3. **One link per picture.** A card is drawn many times a minute, and the app fetches each
+   link once and keeps the file. So a picture keeps the same link for as long as it is that
+   picture (or it is downloaded again with every answer), and gets a different link when it
+   changes (or the card goes on showing the old one). A stable address that redirects to a
+   signed one is fine; put the picture's own id in it (`…/assembled.png?v=img_d4df`), so a
+   redraw changes the link.
 4. **Empty means absent.** A blank name is sent as `""`. Treat empty text as not given.
 5. **Defaults of its own.** A form that leaves a field alone sends nothing for it.
 6. **Errors a person can read.** `message` is shown as it is. `code` lets the manifest offer the
