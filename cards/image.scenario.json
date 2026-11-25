@@ -1,0 +1,24 @@
+{
+  "account": {"signed_in": true, "plan": "free"},
+  "states": [
+    {"name": "Empty"},
+    {"name": "Filled in", "form": {"prompt": "a gold coin icon, top-down", "quality": "high", "background": "transparent"}},
+    {"name": "Making", "form": {"prompt": "a gold coin icon, top-down"}, "card": {"busy": true, "working": "Making it", "action": "make"}},
+    {
+      "name": "Refused",
+      "form": {"prompt": "a gold coin icon, top-down"},
+      "card": {"error": "You've used this month's images. They come back on 1 December."}
+    },
+    {
+      "name": "Done",
+      "form": {"prompt": "a gold coin icon, top-down", "background": "transparent"},
+      "ui": {"step": "done", "saved": ["samples/coin.png"]},
+      "data": {"url": "https://files.example/img_1.png", "images_left": 4}
+    },
+    {"name": "Signed out", "account": {"signed_in": false}}
+  ],
+  "replies": {
+    "make": {"after": 2.5, "data": {"url": "https://files.example/img_1.png", "images_left": 4}},
+    "make:save": {"after": 0.4, "data": ["samples/coin.png"]}
+  }
+}

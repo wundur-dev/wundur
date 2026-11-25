@@ -3,14 +3,15 @@
 Instructions for coding agents (Claude Code, Codex and others) working on this repo.
 
 A native macOS window for Claude Code, in Rust with GPUI. Crates: `wundur-core` (sessions,
-backends, files; no UI) and `wundur-app` (the window).
+backends, files; no UI), `wundur-app` (the window) and `wundur-cards` (cards drawn from
+manifests the service sends, and the preview for designing them).
 
 ## Build and check
 
 ```sh
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo build -p wundur-app --release
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo test -p wundur-core -p wundur-app
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo clippy -p wundur-core -p wundur-app
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo test -p wundur-core -p wundur-app -p wundur-cards
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo clippy -p wundur-core -p wundur-app -p wundur-cards
 ```
 
 Every checkout and worktree builds into one shared build cache: `CARGO_TARGET_DIR` when the
@@ -20,6 +21,22 @@ Use the commands as written; don't give a worktree a cache of its own (a full bu
 
 On an exFAT drive, macOS leaves `._*` files that break builds and git; delete them first:
 `find . -name '._*' -type f -not -path './target/*' -delete`.
+
+## Card manifests
+
+A workflow's card (image, sound effect, 3D asset) can be described by the service as a manifest
+and drawn by `wundur-cards`; `docs/card-manifests.md` is the format. The manifests in `cards/`
+are the reference ones, each with a scenario (made-up answers and named states) beside it.
+Design and check a card in the preview, which draws it with the app's own renderer and again on
+every save; it is its own program and is never bundled into Wundur.app:
+
+```sh
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/workbench-target}" cargo run -p wundur-cards --bin wundur-card-preview -- cards/sound-effect.json
+```
+
+A change to what a manifest can say (a component, a property, an action, a filter) changes
+three things together: the reader and its check in `wundur-core/src/cards`, the renderer in
+`wundur-cards`, and `docs/card-manifests.md`.
 
 ## At completion: run commands
 

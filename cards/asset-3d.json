@@ -1,0 +1,1414 @@
+{
+  "schema": 1,
+  "id": "asset-3d",
+  "version": "1",
+  "label": "3D asset…",
+  "icon": "box",
+  "form": {"kind": "", "name": "", "description": "", "fields": {}, "references": [], "note": ""},
+  "ui": {
+    "step": "",
+    "set": "",
+    "folded": false,
+    "brief_open": false,
+    "options_open": false,
+    "compare_open": false,
+    "engine": "",
+    "detail": null,
+    "finish": "",
+    "saved": []
+  },
+  "refresh": {"call": {"path": "/v1/assets/{data.id}?view=card"}, "while": "data.busy", "every": 2.5},
+  "actions": {
+    "create": [
+      {"check": "form.description", "message": "Describe the asset first."},
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/assets?view=card",
+          "spends": true,
+          "working": "Making the views",
+          "body": {"kind": "{form.kind || catalog.kinds.first.id}", "name": "{form.name}", "description": "{form.description}", "fields": "{form.fields}"},
+          "files": {"references": "{form.references}"}
+        }
+      }
+    ],
+    "change": [
+      {"check": "form.note", "message": "Say what to change first."},
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/assets/{data.id}/sets?view=card",
+          "spends": true,
+          "working": "Making the revision",
+          "body": {"from": "{set.id}", "instruction": "{form.note}"}
+        }
+      },
+      {"set": {"form.note": "", "ui.set": ""}}
+    ],
+    "retry": [
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/assets/{data.id}/sets?view=card",
+          "spends": true,
+          "working": "Trying another direction",
+          "body": {"from": "{set.id}", "retry": true}
+        }
+      },
+      {"set": {"ui.set": ""}}
+    ],
+    "approve": [
+      {"call": {"method": "POST", "path": "/v1/assets/{data.id}/sets/{set.id}/approve?view=card", "working": "Approving"}},
+      {"set": {"ui.step": "", "ui.set": ""}}
+    ],
+    "build": [
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/assets/{data.id}/models?view=card",
+          "working": "Starting the model",
+          "body": {"engine": "{ui.engine || data.model.engine}", "detail": "{ui.detail || data.model.detail}", "finish": "{ui.finish}"}
+        }
+      }
+    ],
+    "discard": [{"call": {"method": "POST", "path": "/v1/assets/{data.id}/models/{attempt.id}/reject?view=card", "working": "Discarding"}}],
+    "import": [
+      {"call": {"method": "POST", "path": "/v1/assets/{data.id}/models/{attempt.id}/import?view=card", "spends": true, "working": "Importing"}},
+      {"save": {"files": "{data.delivered}", "folder": "assets/{data.slug}", "into": "ui.saved"}},
+      {"set": {"ui.step": ""}}
+    ]
+  },
+  "parts": {
+    "header": {
+      "type": "row",
+      "padding": [12, 16],
+      "wrap": true,
+      "align": "center",
+      "gap": [16, 8],
+      "children": [
+        {
+          "type": "row",
+          "gap": 12,
+          "align": "center",
+          "children": [
+            {"type": "icon", "name": "box"},
+            {
+              "type": "column",
+              "children": [
+                {"type": "text", "text": "{data.name|or:New 3D asset}", "size": "lg", "weight": "semibold", "truncate": true},
+                {"type": "text", "text": "{data.subtitle}", "when": "data.subtitle", "size": "xs", "truncate": true, "color": "muted"}
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "when": "!data && account.signed_in && catalog",
+          "grow": 1,
+          "justify": "center",
+          "children": [
+            {
+              "type": "segmented",
+              "id": "kind",
+              "bind": "form.kind",
+              "options": "catalog.kinds",
+              "default": "{catalog.kinds.first.id}",
+              "max_width": 440,
+              "grow": 1
+            }
+          ]
+        },
+        {"type": "spacer", "when": "data || !account.signed_in || !catalog"},
+        {
+          "type": "row",
+          "when": "data",
+          "gap": 6,
+          "align": "center",
+          "children": [
+            {"type": "icon", "name": "circle-check", "size": "sm", "color": "success"},
+            {"type": "text", "text": "Saved", "size": "xs", "color": "muted"},
+            {
+              "type": "button",
+              "id": "fold",
+              "label": "",
+              "icon": "x",
+              "style": "ghost",
+              "size": "xs",
+              "tooltip": "Close the card (it stays as one line; what's being made carries on)",
+              "click": {"set": {"ui.folded": true}}
+            }
+          ]
+        },
+        {"type": "button", "id": "close", "when": "!data", "label": "", "icon": "x", "style": "ghost", "tooltip": "Close", "click": {"close": true}}
+      ]
+    },
+    "error": {
+      "type": "row",
+      "id": "error",
+      "when": "card.error",
+      "padding": [8, 12],
+      "radius": 8,
+      "background": "danger/8",
+      "align": "center",
+      "gap": 8,
+      "children": [
+        {"type": "text", "text": "{card.error}", "grow": 1, "size": "xs", "color": "danger"},
+        {
+          "type": "button",
+          "id": "request-access",
+          "label": "Request access",
+          "click": {"app": "request_access"},
+          "when": "card.error_code == 'plan_required'",
+          "size": "xs"
+        },
+        {
+          "type": "button",
+          "id": "upgrade",
+          "label": "Upgrade",
+          "click": {"app": "upgrade"},
+          "when": "card.error_code == 'quota_exceeded'",
+          "size": "xs"
+        }
+      ]
+    },
+    "brief": {
+      "type": "column",
+      "gap": 8,
+      "children": [
+        {
+          "type": "row",
+          "id": "brief",
+          "gap": 8,
+          "align": "center",
+          "click": {"toggle": "ui.brief_open"},
+          "children": [
+            {"type": "icon", "name": "chevron-right", "when": "!ui.brief_open", "size": "sm"},
+            {"type": "icon", "name": "chevron-down", "when": "ui.brief_open", "size": "sm"},
+            {"type": "text", "text": "Asset brief", "weight": "semibold", "shrink": 0},
+            {"type": "text", "text": "{data.description}", "when": "!ui.brief_open", "grow": 1, "truncate": true, "color": "muted"}
+          ]
+        },
+        {
+          "type": "column",
+          "when": "ui.brief_open",
+          "padding": [0, 0, 0, 22],
+          "gap": 8,
+          "children": [
+            {"type": "text", "text": "{data.description}"},
+            {
+              "type": "row",
+              "when": "data.references",
+              "gap": 8,
+              "align": "center",
+              "children": [
+                {"type": "text", "text": "References", "size": "xs", "color": "muted"},
+                {
+                  "type": "image",
+                  "each": "data.references",
+                  "as": "reference",
+                  "src": "{reference.url}",
+                  "width": 40,
+                  "height": 40,
+                  "radius": 6,
+                  "fit": "cover",
+                  "background": "surface",
+                  "click": {"open": "{reference.url}"}
+                }
+              ]
+            },
+            {"type": "text", "text": "{data.settings_line}", "when": "data.settings_line", "size": "xs", "color": "muted"}
+          ]
+        }
+      ]
+    }
+  },
+  "card": {
+    "type": "column",
+    "let": {"step": "ui.step || data.stage || 'brief'"},
+    "children": [
+      {"type": "use", "part": "header"},
+      {
+        "type": "row",
+        "padding": [0, 16],
+        "children": [
+          {
+            "type": "steps",
+            "id": "steps",
+            "bind": "ui.step",
+            "default": "{step}",
+            "reached": "data.steps_done",
+            "grow": 1,
+            "items": [{"id": "brief", "label": "Brief"}, {"id": "views", "label": "Views"}, {"id": "model", "label": "3D model"}]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "!data && !account.signed_in",
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 8,
+            "children": [
+              {"type": "text", "text": "Game assets are made on your Wundur account."},
+              {
+                "type": "text",
+                "text": "Sign in (it's free: 5 images and 2 model credits a month) to describe an asset, review its views and build a 3D model.",
+                "size": "xs",
+                "color": "muted"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [{"type": "spacer"}, {"type": "button", "id": "sign-in", "label": "Sign in", "click": {"app": "sign_in"}, "style": "primary"}]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "!data && account.signed_in && !catalog",
+        "padding": [12, 16, 16, 16],
+        "children": [{"type": "text", "text": "Asking Wundur what it can make…", "size": "xs", "color": "muted"}]
+      },
+      {
+        "type": "column",
+        "when": "!data && account.signed_in && catalog",
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 12,
+            "children": [
+              {
+                "type": "column",
+                "let": {"kind": "catalog.kinds[form.kind] || catalog.kinds.first", "look": "kind.fields.style"},
+                "gap": 12,
+                "children": [
+                  {
+                    "type": "column",
+                    "gap": 8,
+                    "children": [
+                      {"type": "text", "text": "Describe your asset", "weight": "semibold"},
+                      {
+                        "type": "textarea",
+                        "id": "description",
+                        "bind": "form.description",
+                        "rows": [3, 8],
+                        "placeholder": "e.g. A tiger raptor scout in a tactical vest. Include its silhouette, materials and defining details.",
+                        "disabled": "card.busy"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "row",
+                    "wrap": true,
+                    "align": "center",
+                    "gap": 12,
+                    "children": [
+                      {
+                        "type": "row",
+                        "when": "look",
+                        "gap": 4,
+                        "align": "center",
+                        "children": [
+                          {"type": "text", "text": "{look.label}", "color": "muted"},
+                          {"type": "icon", "name": "info", "when": "look.help", "size": "xs", "tooltip": "{look.help}"}
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "when": "look",
+                        "grow": 1,
+                        "min_width": 300,
+                        "wrap": true,
+                        "gap": 12,
+                        "children": [
+                          {
+                            "type": "row",
+                            "id": "look",
+                            "each": "look.options",
+                            "as": "option",
+                            "grow": 1,
+                            "min_width": 150,
+                            "padding": [6, 12, 6, 6],
+                            "radius": 10,
+                            "border": true,
+                            "align": "center",
+                            "gap": 12,
+                            "selected": "(form.fields.style || look.default) == option",
+                            "click": {"set": {"form.fields.style": "{option}"}},
+                            "children": [
+                              {
+                                "type": "image",
+                                "src": "{look.option_images[option]}",
+                                "width": 48,
+                                "height": 48,
+                                "shrink": 0,
+                                "radius": 8,
+                                "fit": "cover",
+                                "background": "surface"
+                              },
+                              {"type": "text", "text": "{option|capital}", "grow": 1, "truncate": true},
+                              {
+                                "type": "row",
+                                "when": "(form.fields.style || look.default) == option",
+                                "width": 20,
+                                "height": 20,
+                                "shrink": 0,
+                                "radius": 10,
+                                "background": "accent",
+                                "align": "center",
+                                "justify": "center",
+                                "children": [{"type": "icon", "name": "check", "size": "xs", "color": "white"}]
+                              },
+                              {
+                                "type": "row",
+                                "when": "(form.fields.style || look.default) != option",
+                                "width": 20,
+                                "height": 20,
+                                "shrink": 0,
+                                "radius": 10,
+                                "border": "muted/60",
+                                "children": []
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {"type": "divider", "when": "look", "vertical": true, "height": 36, "align_self": "center"},
+                      {
+                        "type": "files",
+                        "id": "references",
+                        "bind": "form.references",
+                        "max": 3,
+                        "label": "Add references",
+                        "accept": ["png", "jpg", "jpeg", "webp"],
+                        "tooltip": "Pictures for the design (colours, costume, shapes), never the pose."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "row",
+                    "justify": "end",
+                    "align": "center",
+                    "gap": 8,
+                    "padding": [0, 0, 8, 0],
+                    "border_bottom": true,
+                    "children": [
+                      {"type": "text", "text": "Name", "color": "muted"},
+                      {
+                        "type": "input",
+                        "id": "name",
+                        "bind": "form.name",
+                        "width": 320,
+                        "max_width": "fill",
+                        "shrink": 1,
+                        "placeholder": "Named from the description"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "column",
+                    "when": "kind.fields.1",
+                    "gap": 12,
+                    "children": [
+                      {
+                        "type": "row",
+                        "id": "options",
+                        "gap": 8,
+                        "align": "center",
+                        "click": {"toggle": "ui.options_open"},
+                        "children": [
+                          {"type": "icon", "name": "chevron-right", "when": "!ui.options_open", "size": "sm"},
+                          {"type": "icon", "name": "chevron-down", "when": "ui.options_open", "size": "sm"},
+                          {"type": "text", "text": "More options", "weight": "semibold"}
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "when": "ui.options_open",
+                        "wrap": true,
+                        "gap": [24, 12],
+                        "children": [
+                          {
+                            "type": "column",
+                            "gap": 6,
+                            "grow": 1,
+                            "basis": 260,
+                            "min_width": 240,
+                            "children": [
+                              {
+                                "type": "row",
+                                "gap": 8,
+                                "align": "center",
+                                "children": [
+                                  {"type": "text", "text": "{field.label}", "weight": "semibold"},
+                                  {"type": "icon", "name": "info", "when": "field.option_help && field.help", "size": "xs", "tooltip": "{field.help}"}
+                                ]
+                              },
+                              {
+                                "type": "segmented",
+                                "id": "choice",
+                                "bind": "form.fields[field.id]",
+                                "options": "field.options",
+                                "capitalize": true,
+                                "default": "{field.default}"
+                              },
+                              {
+                                "type": "text",
+                                "text": "{field.option_help[form.fields[field.id] || field.default] || field.help}",
+                                "size": "xs",
+                                "color": "muted"
+                              }
+                            ],
+                            "each": "kind.fields",
+                            "as": "field",
+                            "when": "field.type == 'enum' && field.id != 'style'"
+                          },
+                          {
+                            "type": "column",
+                            "gap": 6,
+                            "grow": 1,
+                            "basis": 260,
+                            "min_width": 240,
+                            "children": [
+                              {
+                                "type": "row",
+                                "gap": 8,
+                                "align": "center",
+                                "children": [
+                                  {"type": "text", "text": "{field.label}", "weight": "semibold"},
+                                  {"type": "icon", "name": "info", "when": "field.option_help && field.help", "size": "xs", "tooltip": "{field.help}"}
+                                ]
+                              },
+                              {
+                                "type": "segmented",
+                                "id": "flag",
+                                "bind": "form.fields[field.id]",
+                                "options": [{"id": false, "label": "No"}, {"id": true, "label": "Yes"}],
+                                "default": "{field.default || false}"
+                              },
+                              {"type": "text", "text": "{field.help}", "size": "xs", "color": "muted"}
+                            ],
+                            "each": "kind.fields",
+                            "as": "field",
+                            "when": "field.type == 'bool'"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "column",
+                        "each": "kind.fields",
+                        "as": "field",
+                        "when": "ui.options_open && (field.type == 'text' || field.type == 'number')",
+                        "gap": 6,
+                        "children": [
+                          {
+                            "type": "row",
+                            "gap": 8,
+                            "align": "center",
+                            "children": [
+                              {"type": "text", "text": "{field.label}", "weight": "semibold"},
+                              {"type": "text", "text": "Optional", "when": "!field.required", "color": "muted"}
+                            ]
+                          },
+                          {"type": "input", "id": "text", "bind": "form.fields[field.id]", "placeholder": "{field.label}"},
+                          {"type": "text", "text": "{field.help}", "when": "field.help", "size": "xs", "color": "muted"}
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {"type": "use", "part": "error"}
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [
+              {
+                "type": "text",
+                "text": "1 image ({account.allowance.images.left} left) · References lock on generation",
+                "grow": 1,
+                "basis": 160,
+                "size": "xs",
+                "color": "muted",
+                "tooltip": "Making the views uses 1 image. The references are sent with them, so they can't be changed after."
+              },
+              {"type": "button", "id": "cancel", "label": "Cancel", "click": {"close": true}, "disabled": "card.busy"},
+              {
+                "type": "button",
+                "id": "create",
+                "label": "Make views",
+                "click": "create",
+                "style": "primary",
+                "icon": "sparkles",
+                "loading": "card.busy"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "data && step == 'brief'",
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 12,
+            "children": [
+              {"type": "text", "text": "{data.description}"},
+              {
+                "type": "row",
+                "when": "data.references",
+                "gap": 8,
+                "children": [
+                  {
+                    "type": "image",
+                    "each": "data.references",
+                    "as": "reference",
+                    "src": "{reference.url}",
+                    "width": 72,
+                    "height": 72,
+                    "radius": 8,
+                    "fit": "cover",
+                    "background": "surface",
+                    "click": {"open": "{reference.url}"}
+                  }
+                ]
+              },
+              {"type": "text", "text": "{data.settings_line}", "when": "data.settings_line", "size": "xs", "color": "muted"}
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [
+              {
+                "type": "text",
+                "text": "The brief is fixed once the views are made. To change it, make a revision.",
+                "grow": 1,
+                "basis": 160,
+                "size": "xs",
+                "color": "muted"
+              },
+              {"type": "button", "id": "to-views", "label": "Back to the views", "click": {"set": {"ui.step": "views"}}, "style": "ghost"}
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "data && step == 'views'",
+        "let": {"set": "data.sets[ui.set] || data.sets.last"},
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 16,
+            "children": [
+              {
+                "type": "column",
+                "when": "set.status == 'generating'",
+                "gap": 16,
+                "children": [
+                  {
+                    "type": "row",
+                    "gap": 12,
+                    "align": "center",
+                    "children": [
+                      {"type": "spinner"},
+                      {
+                        "type": "column",
+                        "grow": 1,
+                        "children": [
+                          {"type": "text", "text": "{set.working|or:Generating views}…", "size": "base", "weight": "semibold"},
+                          {"type": "text", "text": "You'll be able to review and refine them here.", "color": "muted"}
+                        ]
+                      },
+                      {"type": "text", "text": "v{set.number}", "color": "muted"}
+                    ]
+                  },
+                  {
+                    "type": "row",
+                    "wrap": true,
+                    "gap": 12,
+                    "children": [
+                      {
+                        "type": "column",
+                        "each": "set.views",
+                        "as": "view",
+                        "grow": 1,
+                        "min_width": 110,
+                        "align": "center",
+                        "gap": 8,
+                        "children": [{"type": "placeholder", "width": "fill", "height": 200}, {"type": "text", "text": "{view.label}", "color": "muted"}]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "column",
+                "when": "set.status != 'generating'",
+                "gap": 16,
+                "children": [
+                  {
+                    "type": "column",
+                    "gap": 12,
+                    "children": [
+                      {
+                        "type": "row",
+                        "gap": 8,
+                        "align": "center",
+                        "children": [
+                          {"type": "text", "text": "Views v{set.number}", "size": "base", "weight": "semibold"},
+                          {"type": "text", "text": "·", "color": "muted"},
+                          {"type": "text", "text": "{set.state_label}", "grow": 1, "truncate": true, "color": "muted"},
+                          {
+                            "type": "text",
+                            "text": "Click a view to inspect",
+                            "when": "set.status == 'ready'",
+                            "size": "xs",
+                            "shrink": 0,
+                            "color": "muted"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "wrap": true,
+                        "gap": 12,
+                        "children": [
+                          {
+                            "type": "column",
+                            "each": "set.views",
+                            "as": "view",
+                            "grow": 1,
+                            "min_width": 110,
+                            "align": "center",
+                            "gap": 8,
+                            "children": [
+                              {
+                                "type": "image",
+                                "id": "view",
+                                "src": "{view.url}",
+                                "width": "fill",
+                                "height": 200,
+                                "radius": 12,
+                                "border": true,
+                                "background": "surface",
+                                "fit": "contain",
+                                "click": {"open": "{view.url}"}
+                              },
+                              {"type": "text", "text": "{view.label}", "color": "muted"}
+                            ]
+                          }
+                        ],
+                        "when": "set.status == 'ready'"
+                      },
+                      {
+                        "type": "text",
+                        "text": "{set.error.message|or:These views didn't come out (not counted); try another direction.}",
+                        "when": "set.status == 'failed'",
+                        "size": "xs",
+                        "color": "danger"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "row",
+                    "when": "data.sets.1",
+                    "gap": 12,
+                    "align": "center",
+                    "children": [
+                      {"type": "text", "text": "Versions", "size": "xs", "color": "muted"},
+                      {
+                        "type": "row",
+                        "wrap": true,
+                        "align": "end",
+                        "gap": 8,
+                        "children": [
+                          {
+                            "type": "column",
+                            "id": "version",
+                            "each": "data.sets",
+                            "as": "version",
+                            "align": "center",
+                            "gap": 4,
+                            "click": {"set": {"ui.set": "{version.id}"}},
+                            "children": [
+                              {
+                                "type": "row",
+                                "radius": 8,
+                                "clip": true,
+                                "border": "transparent",
+                                "selected": "version.id == set.id",
+                                "children": [{"type": "image", "src": "{version.thumb}", "width": 48, "height": 48, "fit": "cover", "background": "surface"}]
+                              },
+                              {"type": "text", "text": "v{version.number}{version.caption}", "size": "xs", "color": "muted"}
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "column",
+                    "when": "!(set.approved && data.steps_done >= 2)",
+                    "gap": 8,
+                    "children": [
+                      {
+                        "type": "row",
+                        "gap": 8,
+                        "align": "center",
+                        "children": [
+                          {"type": "text", "text": "Refine v{set.number}", "size": "base", "weight": "semibold", "grow": 1},
+                          {
+                            "type": "button",
+                            "id": "retry",
+                            "label": "Try another direction",
+                            "click": "retry",
+                            "style": "ghost",
+                            "icon": "refresh-cw",
+                            "disabled": "card.busy || data.busy"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "gap": 12,
+                        "align": "start",
+                        "children": [
+                          {
+                            "type": "textarea",
+                            "id": "note",
+                            "bind": "form.note",
+                            "rows": [1, 5],
+                            "grow": 1,
+                            "placeholder": "What would you change? e.g. broader shoulders, less armor"
+                          },
+                          {
+                            "type": "button",
+                            "id": "change",
+                            "label": "Make revision",
+                            "click": "change",
+                            "size": "md",
+                            "icon": "sparkles",
+                            "disabled": "card.busy || data.busy || set.status != 'ready'"
+                          }
+                        ]
+                      },
+                      {"type": "text", "text": "Creates a new version · 1 image. Earlier versions are kept.", "size": "xs", "color": "muted"}
+                    ]
+                  }
+                ]
+              },
+              {"type": "use", "part": "brief"},
+              {"type": "use", "part": "error"}
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [
+              {
+                "type": "button",
+                "id": "to-model",
+                "label": "Back to the model",
+                "click": {"set": {"ui.step": ""}},
+                "when": "data.steps_done >= 2",
+                "style": "ghost"
+              },
+              {"type": "divider", "when": "data.steps_done >= 2", "vertical": true, "height": 18, "align_self": "center"},
+              {
+                "type": "text",
+                "text": "Generation continues when this card is closed.",
+                "grow": 1,
+                "basis": 160,
+                "size": "xs",
+                "color": "muted",
+                "when": "set.status == 'generating'"
+              },
+              {
+                "type": "text",
+                "text": "{data.views_status}",
+                "grow": 1,
+                "basis": 160,
+                "size": "xs",
+                "color": "muted",
+                "when": "set.status != 'generating'"
+              },
+              {
+                "type": "button",
+                "id": "close-card",
+                "label": "Close card",
+                "click": {"set": {"ui.folded": true}},
+                "when": "set.status == 'generating'"
+              },
+              {
+                "type": "button",
+                "id": "approve",
+                "label": "Approve views & continue",
+                "click": "approve",
+                "when": "set.status != 'generating' && !(set.approved && data.steps_done >= 2)",
+                "style": "primary",
+                "size": "md",
+                "icon_right": "arrow-right",
+                "disabled": "card.busy || data.busy || set.status != 'ready'"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "data && step == 'model'",
+        "let": {"model": "data.model", "attempt": "data.model.attempt", "set": "data.sets[data.approved_set]"},
+        "overlay": {
+          "type": "column",
+          "when": "data.model.building",
+          "max_width": 420,
+          "padding": [12, 16],
+          "radius": 12,
+          "background": "background",
+          "border": true,
+          "shadow": true,
+          "align": "center",
+          "gap": 8,
+          "children": [
+            {"type": "spinner"},
+            {"type": "text", "text": "{data.model.stage_label|or:Building the model}", "weight": "semibold"},
+            {"type": "text", "text": "{data.model.note}", "size": "xs", "align": "center", "color": "muted"}
+          ]
+        },
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 16,
+            "children": [
+              {
+                "type": "column",
+                "when": "attempt && !model.building",
+                "gap": 8,
+                "children": [
+                  {
+                    "type": "row",
+                    "padding": [12, 16],
+                    "radius": 12,
+                    "border": true,
+                    "background": "surface/50",
+                    "align": "center",
+                    "gap": 12,
+                    "wrap": true,
+                    "children": [
+                      {"type": "icon", "name": "box", "size": "lg"},
+                      {
+                        "type": "column",
+                        "when": "attempt.status == 'succeeded'",
+                        "grow": 1,
+                        "basis": 260,
+                        "min_width": 200,
+                        "children": [
+                          {"type": "text", "text": "Model v{attempt.number} is ready to inspect", "size": "base", "weight": "semibold"},
+                          {"type": "text", "text": "{attempt.line}", "size": "xs", "color": "muted"},
+                          {
+                            "type": "text",
+                            "text": "Opens beside the chat: drag to orbit, scroll to zoom. Check the hands, feet and silhouette from every angle.",
+                            "size": "xs",
+                            "color": "muted"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "button",
+                        "id": "discard",
+                        "label": "Discard",
+                        "click": "discard",
+                        "when": "attempt.status == 'succeeded' && !attempt.imported",
+                        "style": "ghost",
+                        "disabled": "card.busy || data.busy"
+                      },
+                      {
+                        "type": "button",
+                        "id": "preview",
+                        "label": "Open 3D preview",
+                        "click": {"open": "{attempt.preview_url}"},
+                        "when": "attempt.status == 'succeeded'",
+                        "icon": "eye"
+                      },
+                      {
+                        "type": "column",
+                        "when": "attempt.status == 'failed'",
+                        "grow": 1,
+                        "basis": 260,
+                        "min_width": 200,
+                        "children": [
+                          {"type": "text", "text": "{attempt.error.message|or:That model didn't come out (not counted).}", "color": "danger"},
+                          {"type": "text", "text": "Build it again, or pick another generator.", "size": "xs", "color": "muted"}
+                        ]
+                      }
+                    ]
+                  },
+                  {"type": "text", "text": "{model.history}", "when": "model.history", "size": "xs", "color": "muted"}
+                ]
+              },
+              {
+                "type": "row",
+                "padding": [12, 16],
+                "radius": 12,
+                "border": true,
+                "wrap": true,
+                "align": "start",
+                "gap": [24, 8],
+                "children": [
+                  {"type": "text", "text": "Approved views · v{set.number}", "size": "base", "weight": "semibold", "min_width": 150},
+                  {
+                    "type": "row",
+                    "grow": 1,
+                    "min_width": 200,
+                    "wrap": true,
+                    "gap": 12,
+                    "children": [
+                      {
+                        "type": "column",
+                        "each": "set.views",
+                        "as": "view",
+                        "align": "center",
+                        "gap": 4,
+                        "children": [
+                          {
+                            "type": "image",
+                            "src": "{view.url}",
+                            "width": 72,
+                            "height": 72,
+                            "radius": 8,
+                            "border": true,
+                            "background": "surface",
+                            "fit": "contain",
+                            "click": {"open": "{view.url}"}
+                          },
+                          {"type": "text", "text": "{view.label}", "size": "xs", "color": "muted"}
+                        ]
+                      }
+                    ]
+                  },
+                  {"type": "link", "id": "review-views", "text": "Review views", "align_self": "center", "click": {"set": {"ui.step": "views"}}}
+                ]
+              },
+              {
+                "type": "row",
+                "wrap": true,
+                "gap": [32, 16],
+                "children": [
+                  {
+                    "type": "column",
+                    "grow": 3,
+                    "basis": 420,
+                    "min_width": 280,
+                    "gap": 8,
+                    "children": [
+                      {
+                        "type": "row",
+                        "align": "center",
+                        "children": [
+                          {"type": "text", "text": "Model generator", "size": "lg", "weight": "semibold", "grow": 1},
+                          {
+                            "type": "link",
+                            "id": "compare",
+                            "when": "!ui.compare_open",
+                            "text": "Compare generators",
+                            "click": {"toggle": "ui.compare_open"}
+                          },
+                          {
+                            "type": "link",
+                            "id": "compare-hide",
+                            "when": "ui.compare_open",
+                            "text": "Hide comparison",
+                            "click": {"toggle": "ui.compare_open"}
+                          }
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "gap": 8,
+                        "align": "center",
+                        "padding": [0, 12, 0, 40],
+                        "children": [
+                          {"type": "text", "text": "Generator", "size": "xs", "color": "muted", "grow": 1},
+                          {
+                            "type": "text",
+                            "text": "Uses",
+                            "size": "xs",
+                            "color": "muted",
+                            "width": 130,
+                            "shrink": 0,
+                            "when": "card.width == 0 || card.width >= 520"
+                          },
+                          {"type": "text", "text": "On import", "size": "xs", "color": "muted", "width": 120, "shrink": 0}
+                        ]
+                      },
+                      {
+                        "type": "column",
+                        "radius": 8,
+                        "border": true,
+                        "clip": true,
+                        "divide": true,
+                        "children": [
+                          {
+                            "type": "row",
+                            "gap": 8,
+                            "align": "center",
+                            "id": "engine",
+                            "each": "model.engines",
+                            "as": "engine",
+                            "padding": [8, 12],
+                            "selected": "(ui.engine || model.engine) == engine.id",
+                            "disabled": "engine.locked || model.building",
+                            "click": {"set": {"ui.engine": "{engine.id}", "ui.finish": ""}},
+                            "children": [
+                              {
+                                "type": "row",
+                                "gap": 12,
+                                "align": "center",
+                                "children": [
+                                  {
+                                    "type": "row",
+                                    "when": "(ui.engine || model.engine) == engine.id",
+                                    "width": 18,
+                                    "height": 18,
+                                    "shrink": 0,
+                                    "radius": 9,
+                                    "border": "accent",
+                                    "align": "center",
+                                    "justify": "center",
+                                    "children": [{"type": "row", "width": 8, "height": 8, "radius": 4, "background": "accent", "children": []}]
+                                  },
+                                  {
+                                    "type": "row",
+                                    "when": "(ui.engine || model.engine) != engine.id",
+                                    "width": 18,
+                                    "height": 18,
+                                    "shrink": 0,
+                                    "radius": 9,
+                                    "border": "muted/70",
+                                    "children": []
+                                  },
+                                  {"type": "text", "text": "{engine.label}", "weight": "medium", "truncate": true}
+                                ],
+                                "grow": 1
+                              },
+                              {
+                                "type": "text",
+                                "text": "{engine.uses}",
+                                "color": "muted",
+                                "width": 130,
+                                "shrink": 0,
+                                "when": "card.width == 0 || card.width >= 520"
+                              },
+                              {"type": "text", "text": "{engine.cost_label}", "color": "muted", "width": 120, "shrink": 0}
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "row",
+                        "when": "model.locked_note",
+                        "gap": 8,
+                        "align": "center",
+                        "children": [
+                          {"type": "text", "text": "{model.locked_note}", "grow": 1, "size": "xs", "color": "muted"},
+                          {"type": "button", "id": "request", "label": "Request access", "click": {"app": "request_access"}, "size": "xs"}
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": "{engine.label}: {engine.help}",
+                        "each": "model.engines",
+                        "as": "engine",
+                        "when": "ui.compare_open",
+                        "size": "xs",
+                        "color": "muted"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "column",
+                    "grow": 2,
+                    "basis": 240,
+                    "min_width": 220,
+                    "gap": 8,
+                    "children": [
+                      {"type": "text", "text": "Geometry", "size": "lg", "weight": "semibold"},
+                      {"type": "text", "text": "Triangle limit", "weight": "semibold"},
+                      {
+                        "type": "segmented",
+                        "id": "detail",
+                        "bind": "ui.detail",
+                        "options": "model.details",
+                        "default": "{model.detail}",
+                        "disabled": "model.building"
+                      },
+                      {"type": "text", "text": "{model.details[ui.detail || model.detail].help}", "size": "xs", "color": "muted"},
+                      {
+                        "type": "column",
+                        "when": "model.engines[(ui.engine || model.engine)].finishes",
+                        "gap": 8,
+                        "padding": [4, 0, 0, 0],
+                        "children": [
+                          {"type": "text", "text": "Surface finish", "weight": "semibold"},
+                          {
+                            "type": "segmented",
+                            "id": "finish",
+                            "bind": "ui.finish",
+                            "options": "model.engines[(ui.engine || model.engine)].finishes",
+                            "capitalize": true,
+                            "default": "{model.engines[(ui.engine || model.engine)].finishes.first}",
+                            "disabled": "model.building"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "row",
+                "when": "model.engines[(ui.engine || model.engine)].license",
+                "padding": [12, 16],
+                "radius": 10,
+                "border": "warning/60",
+                "background": "warning/12",
+                "align": "center",
+                "gap": 12,
+                "children": [
+                  {"type": "icon", "name": "triangle-alert", "color": "warning"},
+                  {"type": "text", "text": "{model.engines[(ui.engine || model.engine)].license}", "grow": 1}
+                ]
+              },
+              {"type": "use", "part": "error"}
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [
+              {
+                "type": "button",
+                "id": "to-views",
+                "label": "Back to views",
+                "click": {"set": {"ui.step": "views"}},
+                "style": "ghost",
+                "icon": "arrow-left"
+              },
+              {"type": "divider", "vertical": true, "height": 18, "align_self": "center"},
+              {"type": "text", "text": "{model.status}", "grow": 1, "basis": 160, "size": "xs", "color": "muted", "tooltip": "{model.status_tip}"},
+              {
+                "type": "button",
+                "id": "rebuild",
+                "label": "Rebuild",
+                "click": "build",
+                "when": "attempt.status == 'succeeded' && !attempt.imported && !model.building",
+                "size": "md",
+                "icon": "refresh-cw",
+                "disabled": "card.busy || data.busy || !model.can_build"
+              },
+              {
+                "type": "button",
+                "id": "building",
+                "label": "Building…",
+                "click": {"set": {}},
+                "when": "model.building",
+                "style": "primary",
+                "size": "md",
+                "disabled": true
+              },
+              {
+                "type": "button",
+                "id": "import",
+                "label": "{attempt.import_label}",
+                "click": "import",
+                "when": "attempt.status == 'succeeded' && !attempt.imported && !model.building",
+                "style": "primary",
+                "size": "md",
+                "icon": "folder-open",
+                "disabled": "card.busy || data.busy"
+              },
+              {
+                "type": "button",
+                "id": "continue",
+                "label": "Continue",
+                "click": {"set": {"ui.step": ""}},
+                "when": "attempt.imported && !model.building",
+                "style": "primary",
+                "size": "md",
+                "icon_right": "arrow-right"
+              },
+              {
+                "type": "button",
+                "id": "build-again",
+                "label": "Build again",
+                "click": "build",
+                "when": "attempt.status == 'failed' && !model.building",
+                "style": "primary",
+                "size": "md",
+                "icon": "refresh-cw",
+                "disabled": "card.busy || data.busy || !model.can_build"
+              },
+              {
+                "type": "button",
+                "id": "build",
+                "label": "Build model",
+                "click": "build",
+                "when": "!attempt && !model.building",
+                "style": "primary",
+                "size": "md",
+                "icon": "sparkles",
+                "disabled": "card.busy || data.busy || !model.can_build"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "data && step == 'imported'",
+        "children": [
+          {
+            "type": "column",
+            "padding": [12, 16, 16, 16],
+            "gap": 12,
+            "children": [
+              {"type": "text", "text": "The model is in your project.", "color": "muted"},
+              {
+                "type": "row",
+                "wrap": true,
+                "gap": 16,
+                "children": [
+                  {
+                    "type": "column",
+                    "grow": 1,
+                    "basis": 300,
+                    "min_width": 240,
+                    "gap": 8,
+                    "children": [
+                      {
+                        "type": "row",
+                        "gap": 8,
+                        "align": "center",
+                        "children": [{"type": "icon", "name": "circle-check", "size": "sm", "color": "success"}, {"type": "text", "text": "Imported"}]
+                      },
+                      {
+                        "type": "row",
+                        "each": "ui.saved",
+                        "as": "file",
+                        "padding": [4, 12],
+                        "radius": 6,
+                        "border": true,
+                        "children": [{"type": "text", "text": "{file}", "size": "xs", "color": "muted"}]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "column",
+                    "grow": 1,
+                    "basis": 220,
+                    "max_width": 340,
+                    "gap": 8,
+                    "children": [
+                      {
+                        "type": "row",
+                        "gap": 8,
+                        "align": "center",
+                        "children": [{"type": "icon", "name": "bone", "size": "sm"}, {"type": "text", "text": "Rig", "weight": "semibold"}]
+                      },
+                      {
+                        "type": "text",
+                        "text": "Automatic rigging on Wundur's server is on its way. The model works unrigged in the meantime.",
+                        "size": "xs",
+                        "color": "muted"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {"type": "use", "part": "error"}
+            ]
+          },
+          {
+            "type": "row",
+            "padding": [12, 16],
+            "border_top": true,
+            "gap": 12,
+            "align": "center",
+            "responsive": [{"under": 520, "wrap": true, "justify": "end"}],
+            "children": [
+              {"type": "button", "id": "to-model", "label": "Back to model", "click": {"set": {"ui.step": "model"}}, "style": "ghost"},
+              {"type": "divider", "vertical": true, "height": 18, "align_self": "center"},
+              {"type": "text", "text": "{ui.saved.0}", "grow": 1, "basis": 160, "size": "xs", "color": "muted"},
+              {
+                "type": "button",
+                "id": "open-model",
+                "label": "Open model",
+                "click": {"open": "{ui.saved.0}"},
+                "when": "ui.saved.0",
+                "style": "primary",
+                "icon": "box"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "row": {
+    "type": "row",
+    "padding": [8, 16],
+    "align": "center",
+    "gap": 12,
+    "children": [
+      {
+        "type": "row",
+        "radius": 8,
+        "clip": true,
+        "shrink": 0,
+        "children": [{"type": "image", "src": "{data.thumb}", "width": 40, "height": 40, "fit": "cover", "background": "surface"}]
+      },
+      {"type": "text", "text": "{data.name}", "weight": "semibold", "truncate": true, "max_width": 240, "shrink": 0},
+      {
+        "type": "row",
+        "grow": 1,
+        "gap": 8,
+        "align": "center",
+        "children": [{"type": "spinner", "when": "data.busy", "size": "sm"}, {"type": "text", "text": "{data.status_line}", "truncate": true, "color": "muted"}]
+      },
+      {"type": "button", "id": "unfold", "label": "{data.review|or:Open}", "click": {"set": {"ui.folded": false}}, "tooltip": "Open the card"}
+    ]
+  }
+}

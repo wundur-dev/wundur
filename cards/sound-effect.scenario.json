@@ -1,0 +1,30 @@
+{
+  "account": {"signed_in": true, "plan": "free"},
+  "states": [
+    {"name": "Empty"},
+    {"name": "Filled in", "form": {"prompt": "a wooden door creaking open in a stone hall", "seconds": 3, "loop": true}},
+    {
+      "name": "Making",
+      "form": {"prompt": "a wooden door creaking open in a stone hall"},
+      "card": {"busy": true, "working": "Making it", "action": "make"}
+    },
+    {
+      "name": "Refused",
+      "form": {"prompt": "a wooden door creaking open in a stone hall"},
+      "card": {"error": "You're out of sound effect seconds this month. They come back on 1 December."}
+    },
+    {
+      "name": "Done",
+      "form": {"prompt": "a wooden door creaking open in a stone hall"},
+      "ui": {"step": "done", "saved": ["assets/generated/a-wooden-door-creaking-open-in-a-stone-hall.mp3"]},
+      "data": {"url": "https://files.example/snd_1.mp3", "duration_seconds": 3, "sound_seconds_left": 117}
+    },
+    {"name": "Signed out", "account": {"signed_in": false}}
+  ],
+  "replies": {
+    "make": [
+      {"after": 2, "data": {"url": "https://files.example/snd_1.mp3", "duration_seconds": 3, "sound_seconds_left": 117}},
+      {"after": 1.5, "error": {"message": "You're out of sound effect seconds this month. They come back on 1 December.", "code": "quota_exceeded"}}
+    ]
+  }
+}
