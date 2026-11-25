@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wundur-core", "crates/wundur-app", "crates/wundur-render"]
+members = ["crates/wundur-core", "crates/wundur-app", "crates/wundur-render", "crates/wundur-cards"]
 # The vendored component library is patched in, not a member; excluded so its own tests run
 # (`cargo test --manifest-path vendor/gpui-base/Cargo.toml`).
 exclude = ["vendor/gpui-base"]
@@ -15,6 +15,7 @@ rust-version = "1.99"
 [workspace.dependencies]
 wundur-core = { path = "crates/wundur-core" }
 wundur-render = { path = "crates/wundur-render" }
+wundur-cards = { path = "crates/wundur-cards" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

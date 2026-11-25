@@ -29,7 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy -p wundur-core -p wundur-app -- -D warnings
+        run: cargo clippy -p wundur-core -p wundur-app -p wundur-cards -- -D warnings
 
       - name: Tests
-        run: cargo test -p wundur-core -p wundur-app
+        run: cargo test -p wundur-core -p wundur-app -p wundur-cards

@@ -30,6 +30,7 @@ pub mod acp;
 pub mod agent;
 pub mod assets;
 pub mod backends;
+pub mod cards;
 pub mod changes;
 pub mod cli_tools;
 pub mod command_changes;

@@ -1,0 +1,29 @@
+[package]
+name = "wundur-cards"
+description = "Cards drawn from manifests the service sends (wundur_core::cards), and the preview that shows one while it's being designed."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# The preview: a window that draws one manifest with this crate's renderer, again on every
+# save, against a scenario's made-up answers. Its own program, never part of Wundur.app.
+[[bin]]
+name = "wundur-card-preview"
+path = "src/bin/preview/main.rs"
+
+# The same GPUI backend as the app (see wundur-app), so a card here is the card there.
+[features]
+default = ["gpui-fast"]
+gpui-fast = ["gpui-kit/gpui-fast"]
+
+[dependencies]
+wundur-core = { workspace = true }
+serde_json = { workspace = true }
+# The app's gpui-kit, with the app's features: built alone, this crate then uses what the app
+# already built instead of a second copy of the component library.
+gpui-kit = { version = "=0.9.1", features = ["tree-sitter-languages"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.1", features = ["tree-sitter-languages", "test-support"] }

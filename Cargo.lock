@@ -10010,8 +10010,18 @@ dependencies = [
  "tree-sitter-swift",
  "windows 0.62.2",
  "wry",
+ "wundur-cards",
  "wundur-core",
  "wundur-render",
+]
+
+[[package]]
+name = "wundur-cards"
+version = "0.7.0"
+dependencies = [
+ "gpui-kit",
+ "serde_json",
+ "wundur-core",
 ]
 
 [[package]]

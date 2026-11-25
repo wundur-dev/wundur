@@ -1,0 +1,170 @@
+{
+  "schema": 1,
+  "id": "image",
+  "version": "1",
+  "label": "Image…",
+  "icon": "image",
+  "form": {"prompt": "", "quality": "medium", "size": "1024x1024", "background": "auto"},
+  "ui": {"step": "edit"},
+  "actions": {
+    "make": [
+      {"check": "form.prompt", "message": "Say what the image shows first."},
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/images/generations",
+          "body": {"prompt": "{form.prompt}", "size": "{form.size}", "quality": "{form.quality}", "background": "{form.background}"},
+          "spends": true,
+          "working": "Making it"
+        }
+      },
+      {"save": {"files": [{"url": "{data.url}", "name": "{form.prompt|slug}.png"}], "folder": "assets/generated", "into": "ui.saved"}},
+      {"set": {"ui.step": "done"}}
+    ]
+  },
+  "parts": {
+    "header": {
+      "type": "row",
+      "padding": [12, 12, 8, 12],
+      "gap": 8,
+      "align": "center",
+      "children": [
+        {
+          "type": "row",
+          "width": 26,
+          "height": 26,
+          "shrink": 0,
+          "radius": 8,
+          "background": "surface",
+          "align": "center",
+          "justify": "center",
+          "children": [{"type": "icon", "name": "image", "size": "sm"}]
+        },
+        {"type": "text", "text": "New image", "weight": "semibold"},
+        {"type": "text", "text": "Wundur account", "size": "xs", "color": "muted"}
+      ]
+    }
+  },
+  "card": {
+    "type": "column",
+    "children": [
+      {"type": "use", "part": "header"},
+      {
+        "type": "row",
+        "when": "!account.signed_in",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "align": "center",
+        "children": [
+          {
+            "type": "text",
+            "grow": 1,
+            "size": "xs",
+            "color": "muted",
+            "text": "Images and sound effects come from your Wundur account. Sign in to make them here."
+          },
+          {"type": "button", "id": "cancel", "label": "Cancel", "style": "ghost", "click": {"close": true}},
+          {"type": "button", "id": "sign-in", "label": "Sign in", "style": "primary", "click": {"app": "sign_in"}}
+        ]
+      },
+      {
+        "type": "column",
+        "when": "account.signed_in && ui.step == 'edit'",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "children": [
+          {
+            "type": "input",
+            "id": "prompt",
+            "bind": "form.prompt",
+            "placeholder": "What the image shows, e.g. a gold coin icon, pixel art, top-down",
+            "disabled": "card.busy"
+          },
+          {
+            "type": "row",
+            "wrap": true,
+            "align": "center",
+            "gap": [10, 4],
+            "children": [
+              {
+                "type": "segmented",
+                "id": "quality",
+                "style": "chips",
+                "bind": "form.quality",
+                "disabled": "card.busy",
+                "options": [{"id": "low", "label": "Draft"}, {"id": "medium", "label": "Good"}, {"id": "high", "label": "Best"}]
+              },
+              {
+                "type": "segmented",
+                "id": "size",
+                "style": "chips",
+                "bind": "form.size",
+                "disabled": "card.busy",
+                "options": [{"id": "1024x1024", "label": "Square"}, {"id": "1536x1024", "label": "Wide"}, {"id": "1024x1536", "label": "Tall"}]
+              },
+              {
+                "type": "toggle",
+                "id": "transparent",
+                "bind": "form.background",
+                "on": "transparent",
+                "off": "auto",
+                "label": "Transparent",
+                "disabled": "card.busy"
+              }
+            ]
+          },
+          {"type": "text", "id": "error", "when": "card.error", "size": "xs", "color": "danger", "text": "{card.error}"},
+          {
+            "type": "row",
+            "padding": [4, 0, 0, 0],
+            "gap": 8,
+            "align": "center",
+            "children": [
+              {"type": "text", "when": "!card.busy", "size": "xs", "color": "muted", "text": "Uses one image from your month."},
+              {"type": "text", "when": "card.busy", "size": "xs", "color": "muted", "text": "{card.working|or:Working}…"},
+              {"type": "spacer"},
+              {"type": "button", "id": "cancel", "label": "Cancel", "style": "ghost", "disabled": "card.busy", "click": {"close": true}},
+              {"type": "button", "id": "make", "label": "Make", "style": "primary", "loading": "card.busy", "click": "make"}
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "account.signed_in && ui.step == 'done'",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "children": [
+          {
+            "type": "image",
+            "id": "result",
+            "src": "{ui.saved.0}",
+            "width": 220,
+            "height": 220,
+            "radius": 10,
+            "border": true,
+            "fit": "contain",
+            "click": {"open": "{ui.saved.0}"}
+          },
+          {
+            "type": "text",
+            "size": "xs",
+            "color": "muted",
+            "text": "Saved {ui.saved.0} ({form.size}, {form.quality}). Images left this month: {data.images_left}"
+          },
+          {
+            "type": "row",
+            "gap": 8,
+            "align": "center",
+            "children": [
+              {"type": "button", "id": "open", "label": "Open", "style": "ghost", "click": {"open": "{ui.saved.0}"}},
+              {"type": "spacer"},
+              {"type": "button", "id": "done", "label": "Done", "style": "ghost", "click": {"close": true}},
+              {"type": "button", "id": "again", "label": "Make another", "click": {"set": {"ui.step": "edit"}}}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

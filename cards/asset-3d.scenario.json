@@ -1,0 +1,970 @@
+{
+  "catalog": {
+    "version": "2026-11-25",
+    "kinds": [
+      {
+        "id": "humanoid",
+        "label": "Humanoid",
+        "fields": [
+          {
+            "id": "style",
+            "label": "Look",
+            "type": "enum",
+            "options": ["stylized", "realistic"],
+            "default": "stylized",
+            "help": "How it's drawn: shapes and colour pushed, or true to life.",
+            "option_images": {"stylized": "samples/look-stylized.png", "realistic": "samples/look-realistic.png"}
+          },
+          {
+            "id": "height",
+            "label": "Height",
+            "type": "enum",
+            "options": ["child", "teen", "adult", "giant"],
+            "default": "adult",
+            "help": "Its proportions.",
+            "option_help": {
+              "child": "Short limbs, a large head.",
+              "teen": "Lean, not yet filled out.",
+              "adult": "Adult proportions.",
+              "giant": "Heavy limbs, a small head."
+            }
+          },
+          {
+            "id": "build",
+            "label": "Build",
+            "type": "enum",
+            "options": ["slim", "average", "stocky"],
+            "default": "average",
+            "help": "How heavily it's built."
+          },
+          {"id": "low_poly", "label": "Low poly", "type": "bool", "default": false, "help": "Flat facets and few triangles, for a low-poly game."},
+          {"id": "outfit", "label": "Outfit", "type": "text", "required": false, "help": "What it wears, if the description doesn't say."}
+        ]
+      },
+      {
+        "id": "creature",
+        "label": "Creature",
+        "fields": [
+          {
+            "id": "style",
+            "label": "Look",
+            "type": "enum",
+            "options": ["stylized", "realistic"],
+            "default": "stylized",
+            "help": "How it's drawn.",
+            "option_images": {"stylized": "samples/look-stylized.png", "realistic": "samples/look-realistic.png"}
+          },
+          {"id": "legs", "label": "Legs", "type": "enum", "options": ["two", "four", "many"], "default": "four", "help": "How it stands."}
+        ]
+      },
+      {
+        "id": "prop",
+        "label": "Prop",
+        "fields": [
+          {
+            "id": "style",
+            "label": "Look",
+            "type": "enum",
+            "options": ["stylized", "realistic"],
+            "default": "stylized",
+            "help": "How it's drawn.",
+            "option_images": {"stylized": "samples/look-stylized.png", "realistic": "samples/look-realistic.png"}
+          }
+        ]
+      },
+      {"id": "place", "label": "Place", "fields": []}
+    ]
+  },
+  "account": {"signed_in": true, "plan": "free", "allowance": {"images": {"left": 4}, "model_credits": {"left": 2}}},
+  "states": [
+    {"name": "New"},
+    {
+      "name": "New, filled in",
+      "form": {
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "fields": {"height": "child", "build": "slim"},
+        "references": ["samples/reference.png"]
+      },
+      "ui": {"options_open": true}
+    },
+    {
+      "name": "Generating",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": true,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "generating",
+            "approved": false,
+            "state_label": "",
+            "caption": "",
+            "views": [{"label": "Front"}, {"label": "Side"}, {"label": "Back"}],
+            "thumb": "",
+            "working": "Generating views"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Generating views…",
+        "views_status": "Next: choose model settings",
+        "review": ""
+      }
+    },
+    {
+      "name": "Views ready",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Views ready to review",
+        "views_status": "Next: choose model settings",
+        "review": "Review"
+      }
+    },
+    {
+      "name": "Generating v2",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": true,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "generating",
+            "approved": false,
+            "state_label": "",
+            "caption": "",
+            "views": [{"label": "Front"}, {"label": "Side"}, {"label": "Back"}],
+            "thumb": "",
+            "working": "Making the revision"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Making the revision…",
+        "views_status": "Next: choose model settings",
+        "review": ""
+      }
+    },
+    {
+      "name": "Two versions",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Views ready to review",
+        "views_status": "Next: choose model settings",
+        "review": "Review"
+      }
+    },
+    {
+      "name": "Views failed",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "failed",
+            "approved": false,
+            "state_label": "Didn't come out",
+            "caption": "",
+            "views": [{"label": "Front"}, {"label": "Side"}, {"label": "Back"}],
+            "thumb": "",
+            "error": {"message": "The picture service turned this one down (not counted). Try another direction."}
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "",
+        "views_status": "Views not yet approved",
+        "review": ""
+      }
+    },
+    {
+      "name": "Model settings",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "model",
+        "steps_done": 2,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": true,
+            "state_label": "Approved",
+            "caption": " · Approved",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": "set_2",
+        "thumb": "samples/v1-front.png",
+        "status_line": "Views approved",
+        "views_status": "Views v2 approved",
+        "review": "",
+        "model": {
+          "engine": "wundur",
+          "detail": "standard",
+          "engines": [
+            {
+              "id": "wundur",
+              "label": "Wundur (preview)",
+              "uses": "Several views",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": ["smooth", "faceted"],
+              "help": "Wundur's own generator. Fast, with clean topology on stylized shapes. Best for characters, props.",
+              "license": "Wundur preview: not yet cleared for commercial use."
+            },
+            {
+              "id": "atlas",
+              "label": "Atlas",
+              "uses": "1 view",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": [],
+              "help": "A steady all-rounder from one view. Best for props.",
+              "license": ""
+            },
+            {
+              "id": "meridian",
+              "label": "Meridian Pro",
+              "uses": "Several views",
+              "cost_label": "3 credits · Locked",
+              "locked": true,
+              "finishes": [],
+              "help": "The most detail, slowest. Best for hero characters.",
+              "license": ""
+            }
+          ],
+          "details": [
+            {"id": "light", "label": "8k", "help": "Up to 8,000 triangles · For mobile and crowds."},
+            {"id": "standard", "label": "30k", "help": "Up to 30,000 triangles · A good default for most games."},
+            {"id": "heavy", "label": "100k", "help": "Up to 100,000 triangles · For close-ups."}
+          ],
+          "attempt": null,
+          "building": false,
+          "stage_label": "",
+          "note": "",
+          "history": "",
+          "can_build": true,
+          "status": "Free to build · Import: 1 credit",
+          "status_tip": "",
+          "locked_note": "Meridian Pro is part of the beta. Ask for access and we'll let you know."
+        }
+      }
+    },
+    {
+      "name": "Building",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "model",
+        "steps_done": 2,
+        "busy": true,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": true,
+            "state_label": "Approved",
+            "caption": " · Approved",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": "set_2",
+        "thumb": "samples/v1-front.png",
+        "status_line": "Building the model…",
+        "views_status": "Views v2 approved",
+        "review": "",
+        "model": {
+          "engine": "wundur",
+          "detail": "standard",
+          "engines": [
+            {
+              "id": "wundur",
+              "label": "Wundur (preview)",
+              "uses": "Several views",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": ["smooth", "faceted"],
+              "help": "Wundur's own generator. Fast, with clean topology on stylized shapes. Best for characters, props.",
+              "license": "Wundur preview: not yet cleared for commercial use."
+            },
+            {
+              "id": "atlas",
+              "label": "Atlas",
+              "uses": "1 view",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": [],
+              "help": "A steady all-rounder from one view. Best for props.",
+              "license": ""
+            },
+            {
+              "id": "meridian",
+              "label": "Meridian Pro",
+              "uses": "Several views",
+              "cost_label": "3 credits · Locked",
+              "locked": true,
+              "finishes": [],
+              "help": "The most detail, slowest. Best for hero characters.",
+              "license": ""
+            }
+          ],
+          "details": [
+            {"id": "light", "label": "8k", "help": "Up to 8,000 triangles · For mobile and crowds."},
+            {"id": "standard", "label": "30k", "help": "Up to 30,000 triangles · A good default for most games."},
+            {"id": "heavy", "label": "100k", "help": "Up to 100,000 triangles · For close-ups."}
+          ],
+          "attempt": null,
+          "building": true,
+          "stage_label": "Painting the back · 40%",
+          "note": "Running, usually about a minute. It carries on if you close the card.",
+          "history": "",
+          "can_build": true,
+          "status": "Free to build · Import: 1 credit",
+          "status_tip": "",
+          "locked_note": "Meridian Pro is part of the beta. Ask for access and we'll let you know."
+        }
+      }
+    },
+    {
+      "name": "Model ready",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "model",
+        "steps_done": 2,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": true,
+            "state_label": "Approved",
+            "caption": " · Approved",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": "set_2",
+        "thumb": "samples/v1-front.png",
+        "status_line": "Model ready to import",
+        "views_status": "Views v2 approved",
+        "review": "Review",
+        "model": {
+          "engine": "wundur",
+          "detail": "standard",
+          "engines": [
+            {
+              "id": "wundur",
+              "label": "Wundur (preview)",
+              "uses": "Several views",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": ["smooth", "faceted"],
+              "help": "Wundur's own generator. Fast, with clean topology on stylized shapes. Best for characters, props.",
+              "license": "Wundur preview: not yet cleared for commercial use."
+            },
+            {
+              "id": "atlas",
+              "label": "Atlas",
+              "uses": "1 view",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": [],
+              "help": "A steady all-rounder from one view. Best for props.",
+              "license": ""
+            },
+            {
+              "id": "meridian",
+              "label": "Meridian Pro",
+              "uses": "Several views",
+              "cost_label": "3 credits · Locked",
+              "locked": true,
+              "finishes": [],
+              "help": "The most detail, slowest. Best for hero characters.",
+              "license": ""
+            }
+          ],
+          "details": [
+            {"id": "light", "label": "8k", "help": "Up to 8,000 triangles · For mobile and crowds."},
+            {"id": "standard", "label": "30k", "help": "Up to 30,000 triangles · A good default for most games."},
+            {"id": "heavy", "label": "100k", "help": "Up to 100,000 triangles · For close-ups."}
+          ],
+          "attempt": {
+            "id": "mdl_1",
+            "number": 1,
+            "status": "succeeded",
+            "imported": false,
+            "line": "Wundur (preview) · 30k · Smooth · up to 30k triangles",
+            "preview_url": "https://files.example/mdl_1-preview.glb",
+            "import_label": "Import · 1 credit"
+          },
+          "building": false,
+          "stage_label": "",
+          "note": "",
+          "history": "",
+          "can_build": true,
+          "status": "Model v1 ready · Import: 1 credit",
+          "status_tip": "Building again is free and makes another version with the generator picked (3 left).",
+          "locked_note": "Meridian Pro is part of the beta. Ask for access and we'll let you know."
+        }
+      }
+    },
+    {
+      "name": "Model failed",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "model",
+        "steps_done": 2,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": true,
+            "state_label": "Approved",
+            "caption": " · Approved",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": "set_2",
+        "thumb": "samples/v1-front.png",
+        "status_line": "Something went wrong",
+        "views_status": "Views v2 approved",
+        "review": "",
+        "model": {
+          "engine": "wundur",
+          "detail": "standard",
+          "engines": [
+            {
+              "id": "wundur",
+              "label": "Wundur (preview)",
+              "uses": "Several views",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": ["smooth", "faceted"],
+              "help": "Wundur's own generator. Fast, with clean topology on stylized shapes. Best for characters, props.",
+              "license": "Wundur preview: not yet cleared for commercial use."
+            },
+            {
+              "id": "atlas",
+              "label": "Atlas",
+              "uses": "1 view",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": [],
+              "help": "A steady all-rounder from one view. Best for props.",
+              "license": ""
+            },
+            {
+              "id": "meridian",
+              "label": "Meridian Pro",
+              "uses": "Several views",
+              "cost_label": "3 credits · Locked",
+              "locked": true,
+              "finishes": [],
+              "help": "The most detail, slowest. Best for hero characters.",
+              "license": ""
+            }
+          ],
+          "details": [
+            {"id": "light", "label": "8k", "help": "Up to 8,000 triangles · For mobile and crowds."},
+            {"id": "standard", "label": "30k", "help": "Up to 30,000 triangles · A good default for most games."},
+            {"id": "heavy", "label": "100k", "help": "Up to 100,000 triangles · For close-ups."}
+          ],
+          "attempt": {
+            "id": "mdl_1",
+            "number": 1,
+            "status": "failed",
+            "imported": false,
+            "line": "Wundur (preview) · 30k · Smooth",
+            "error": {"message": "The generator couldn't close the mesh (not counted)."}
+          },
+          "building": false,
+          "stage_label": "",
+          "note": "",
+          "history": "",
+          "can_build": true,
+          "status": "Free to build · Import: 1 credit",
+          "status_tip": "",
+          "locked_note": "Meridian Pro is part of the beta. Ask for access and we'll let you know."
+        }
+      }
+    },
+    {
+      "name": "Imported",
+      "ui": {"saved": ["assets/goblin-scout/goblin-scout.glb", "assets/goblin-scout/goblin-scout-albedo.png"]},
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "imported",
+        "steps_done": 3,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          },
+          {
+            "id": "set_2",
+            "number": 2,
+            "status": "ready",
+            "approved": true,
+            "state_label": "Approved",
+            "caption": " · Approved",
+            "views": [
+              {"label": "Front", "url": "samples/v2-front.png"},
+              {"label": "Side", "url": "samples/v2-side.png"},
+              {"label": "Back", "url": "samples/v2-back.png"}
+            ],
+            "thumb": "samples/v2-front.png"
+          }
+        ],
+        "approved_set": "set_2",
+        "thumb": "samples/v1-front.png",
+        "status_line": "Imported",
+        "views_status": "Views v2 approved",
+        "review": "",
+        "model": {
+          "engine": "wundur",
+          "detail": "standard",
+          "engines": [
+            {
+              "id": "wundur",
+              "label": "Wundur (preview)",
+              "uses": "Several views",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": ["smooth", "faceted"],
+              "help": "Wundur's own generator. Fast, with clean topology on stylized shapes. Best for characters, props.",
+              "license": "Wundur preview: not yet cleared for commercial use."
+            },
+            {
+              "id": "atlas",
+              "label": "Atlas",
+              "uses": "1 view",
+              "cost_label": "1 credit",
+              "locked": false,
+              "finishes": [],
+              "help": "A steady all-rounder from one view. Best for props.",
+              "license": ""
+            },
+            {
+              "id": "meridian",
+              "label": "Meridian Pro",
+              "uses": "Several views",
+              "cost_label": "3 credits · Locked",
+              "locked": true,
+              "finishes": [],
+              "help": "The most detail, slowest. Best for hero characters.",
+              "license": ""
+            }
+          ],
+          "details": [
+            {"id": "light", "label": "8k", "help": "Up to 8,000 triangles · For mobile and crowds."},
+            {"id": "standard", "label": "30k", "help": "Up to 30,000 triangles · A good default for most games."},
+            {"id": "heavy", "label": "100k", "help": "Up to 100,000 triangles · For close-ups."}
+          ],
+          "attempt": {
+            "id": "mdl_1",
+            "number": 1,
+            "status": "succeeded",
+            "imported": true,
+            "line": "Wundur (preview) · 30k · Smooth · up to 30k triangles",
+            "preview_url": "https://files.example/mdl_1-preview.glb",
+            "import_label": "Import · 1 credit"
+          },
+          "building": false,
+          "stage_label": "",
+          "note": "",
+          "history": "",
+          "can_build": true,
+          "status": "Imported into the project.",
+          "status_tip": "",
+          "locked_note": "Meridian Pro is part of the beta. Ask for access and we'll let you know."
+        },
+        "delivered": [
+          {"url": "https://files.example/goblin-scout.glb", "name": "goblin-scout.glb"},
+          {"url": "https://files.example/goblin-scout-albedo.png", "name": "goblin-scout-albedo.png"}
+        ]
+      }
+    },
+    {
+      "name": "Folded",
+      "ui": {"folded": true},
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Views ready to review",
+        "views_status": "Next: choose model settings",
+        "review": "Review"
+      }
+    },
+    {
+      "name": "Folded, busy",
+      "ui": {"folded": true},
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": true,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "generating",
+            "approved": false,
+            "state_label": "",
+            "caption": "",
+            "views": [{"label": "Front"}, {"label": "Side"}, {"label": "Back"}],
+            "thumb": "",
+            "working": "Generating views"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "Generating views…",
+        "views_status": "Next: choose model settings",
+        "review": ""
+      }
+    },
+    {
+      "name": "Out of images",
+      "data": {
+        "id": "ast_7c1",
+        "slug": "goblin-scout",
+        "name": "Goblin scout",
+        "subtitle": "Humanoid · Stylized",
+        "kind": "humanoid",
+        "description": "A wiry goblin scout in patched leather armour with a short bow, alert and a little hunched.",
+        "settings_line": "Height: child · Build: slim · Low poly: no",
+        "references": [{"url": "samples/reference.png"}],
+        "stage": "views",
+        "steps_done": 1,
+        "busy": false,
+        "sets": [
+          {
+            "id": "set_1",
+            "number": 1,
+            "status": "ready",
+            "approved": false,
+            "state_label": "Ready to review",
+            "caption": "",
+            "views": [
+              {"label": "Front", "url": "samples/v1-front.png"},
+              {"label": "Side", "url": "samples/v1-side.png"},
+              {"label": "Back", "url": "samples/v1-back.png"}
+            ],
+            "thumb": "samples/v1-front.png"
+          }
+        ],
+        "approved_set": null,
+        "thumb": "samples/v1-front.png",
+        "status_line": "",
+        "views_status": "Next: choose model settings",
+        "review": ""
+      },
+      "card": {"error": "You've used this month's images. They come back on 1 December.", "error_code": "quota_exceeded"}
+    },
+    {"name": "Signed out", "account": {"signed_in": false}},
+    {"name": "No catalog", "catalog": null}
+  ],
+  "replies": {
+    "create": {"after": 1.2, "state": "Generating"},
+    "change": {"after": 1.2, "state": "Generating v2"},
+    "retry": {"after": 1.2, "state": "Generating v2"},
+    "approve": {"after": 0.8, "state": "Model settings"},
+    "build": {"after": 0.8, "state": "Building"},
+    "discard": {"after": 0.6, "state": "Model settings"},
+    "import": {"after": 1.5, "state": "Imported"},
+    "import:save": {"after": 0.6, "data": ["assets/goblin-scout/goblin-scout.glb", "assets/goblin-scout/goblin-scout-albedo.png"]},
+    "refresh": [
+      {"if": "data.model.building", "after": 3, "state": "Model ready"},
+      {"if": "data.sets.1", "after": 2.5, "state": "Two versions"},
+      {"after": 2.5, "state": "Views ready"}
+    ]
+  }
+}

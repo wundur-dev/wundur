@@ -28,6 +28,8 @@ gpui-fast = ["gpui-kit/gpui-fast"]
 wundur-core = { workspace = true }
 # The native 3D viewer (model_view): models drawn without a web view.
 wundur-render = { workspace = true }
+# Cards drawn from manifests, and the colours the app shares with the card preview.
+wundur-cards = { workspace = true }
 image = { version = "0.25", default-features = false }
 anyhow = { workspace = true }
 dirs = { workspace = true }

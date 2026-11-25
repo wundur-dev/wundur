@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "id": "sound-effect",
+  "version": "1",
+  "label": "Sound effect…",
+  "icon": "audio-lines",
+  "form": {"prompt": "", "seconds": 2, "loop": false},
+  "ui": {"step": "edit"},
+  "actions": {
+    "make": [
+      {"check": "form.prompt", "message": "Say what the sound is first."},
+      {"check": "form.seconds >= 0.5 && form.seconds <= 30", "message": "A sound is 0.5 to 30 seconds long."},
+      {
+        "call": {
+          "method": "POST",
+          "path": "/v1/audio/sound-effects",
+          "body": {"text": "{form.prompt}", "duration_seconds": "{form.seconds}", "loop": "{form.loop}"},
+          "spends": true,
+          "working": "Making it"
+        }
+      },
+      {"save": {"files": [{"url": "{data.url}", "name": "{form.prompt|slug}.mp3"}], "folder": "assets/generated", "into": "ui.saved"}},
+      {"set": {"ui.step": "done"}}
+    ]
+  },
+  "parts": {
+    "header": {
+      "type": "row",
+      "padding": [12, 12, 8, 12],
+      "gap": 8,
+      "align": "center",
+      "children": [
+        {
+          "type": "row",
+          "width": 26,
+          "height": 26,
+          "shrink": 0,
+          "radius": 8,
+          "background": "surface",
+          "align": "center",
+          "justify": "center",
+          "children": [{"type": "icon", "name": "audio-lines", "size": "sm"}]
+        },
+        {"type": "text", "text": "New sound effect", "weight": "semibold"},
+        {"type": "text", "text": "Wundur account", "size": "xs", "color": "muted"}
+      ]
+    }
+  },
+  "card": {
+    "type": "column",
+    "children": [
+      {"type": "use", "part": "header"},
+      {
+        "type": "row",
+        "when": "!account.signed_in",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "align": "center",
+        "children": [
+          {
+            "type": "text",
+            "grow": 1,
+            "size": "xs",
+            "color": "muted",
+            "text": "Images and sound effects come from your Wundur account. Sign in to make them here."
+          },
+          {"type": "button", "id": "cancel", "label": "Cancel", "style": "ghost", "click": {"close": true}},
+          {"type": "button", "id": "sign-in", "label": "Sign in", "style": "primary", "click": {"app": "sign_in"}}
+        ]
+      },
+      {
+        "type": "column",
+        "when": "account.signed_in && ui.step == 'edit'",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "children": [
+          {
+            "type": "input",
+            "id": "prompt",
+            "bind": "form.prompt",
+            "placeholder": "The sound, e.g. a wooden door creaking open in a stone hall",
+            "disabled": "card.busy"
+          },
+          {
+            "type": "row",
+            "wrap": true,
+            "align": "center",
+            "gap": 6,
+            "children": [
+              {
+                "type": "input",
+                "id": "seconds",
+                "bind": "form.seconds",
+                "number": true,
+                "size": "sm",
+                "width": 70,
+                "placeholder": "Seconds",
+                "disabled": "card.busy"
+              },
+              {"type": "text", "size": "xs", "color": "muted", "text": "seconds (0.5–30)"},
+              {"type": "spacer", "grow": 0, "width": 10},
+              {"type": "toggle", "id": "loop", "bind": "form.loop", "label": "Loop", "disabled": "card.busy"}
+            ]
+          },
+          {"type": "text", "id": "error", "when": "card.error", "size": "xs", "color": "danger", "text": "{card.error}"},
+          {
+            "type": "row",
+            "padding": [4, 0, 0, 0],
+            "gap": 8,
+            "align": "center",
+            "children": [
+              {"type": "text", "when": "!card.busy", "size": "xs", "color": "muted", "text": "Uses the seconds you ask for."},
+              {"type": "text", "when": "card.busy", "size": "xs", "color": "muted", "text": "{card.working|or:Working}…"},
+              {"type": "spacer"},
+              {"type": "button", "id": "cancel", "label": "Cancel", "style": "ghost", "disabled": "card.busy", "click": {"close": true}},
+              {"type": "button", "id": "make", "label": "Make", "style": "primary", "loading": "card.busy", "click": "make"}
+            ]
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "when": "account.signed_in && ui.step == 'done'",
+        "padding": [0, 12, 12, 12],
+        "gap": 8,
+        "children": [
+          {
+            "type": "text",
+            "size": "xs",
+            "color": "muted",
+            "text": "Saved {ui.saved.0} · {data.duration_seconds} s. Seconds of sound effects left this month: {data.sound_seconds_left}"
+          },
+          {
+            "type": "row",
+            "gap": 8,
+            "align": "center",
+            "children": [
+              {"type": "button", "id": "play", "label": "Play", "icon": "play", "click": {"play": "{ui.saved.0}"}},
+              {"type": "button", "id": "open", "label": "Open", "style": "ghost", "click": {"open": "{ui.saved.0}"}},
+              {"type": "spacer"},
+              {"type": "button", "id": "done", "label": "Done", "style": "ghost", "click": {"close": true}},
+              {"type": "button", "id": "again", "label": "Make another", "click": {"set": {"ui.step": "edit"}}}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
