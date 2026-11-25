@@ -87,6 +87,8 @@ pub struct CardView {
     /// Whether the layout asks how wide the card is (`card.width`, `responsive`).
     measures: bool,
     polling: bool,
+    /// Goes up with each round of catching up, so an older round stops.
+    checks: u64,
 }
 
 impl EventEmitter<CardEvent> for CardView {}
@@ -151,7 +153,7 @@ const DEPTH: usize = 32;
 impl CardView {
     /// A card for `manifest`, new. Pictures named without a folder are looked for in `base`.
     pub fn new(manifest: Arc<Manifest>, base: impl Into<PathBuf>, _: &mut Context<Self>) -> Self {
-        Self { state: CardState::new(&manifest), measures: measures(&manifest), manifest, base: base.into(), hooks: Hooks::default(), bound: HashMap::new(), width: Rc::new(Cell::new(0.)), polling: false }
+        Self { state: CardState::new(&manifest), measures: measures(&manifest), manifest, base: base.into(), hooks: Hooks::default(), bound: HashMap::new(), width: Rc::new(Cell::new(0.)), polling: false, checks: 0 }
     }
 
     pub fn set_hooks(&mut self, hooks: Hooks) {
@@ -189,8 +191,46 @@ impl CardView {
     /// A call or a save came back.
     pub fn finish(&mut self, id: u64, result: Result<Value, Failure>, cx: &mut Context<Self>) {
         let manifest = self.manifest.clone();
+        let refresh = self.state.is_refresh(id);
         let effects = self.state.finish(&manifest, id, result);
         self.settle(effects, cx);
+        // An action's call came back, done or refused: what it says may already be behind
+        // (work it started that doesn't show yet, a refusal because the card was out of date).
+        if !refresh {
+            self.catch_up(cx);
+        }
+    }
+
+    /// Ask the service how things stand now, and a few more times over the next while: for a
+    /// card read back from its record, and after each action's call. The manifest's refresh
+    /// only runs while its own condition holds, which the card's data has to say first; this
+    /// is for when the data is what's behind. It never spends (a refresh doesn't).
+    pub fn catch_up(&mut self, cx: &mut Context<Self>) {
+        let Some(every) = self.manifest.refresh.as_ref().map(|r| r.every) else { return };
+        self.checks += 1;
+        let round = self.checks;
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Soon, then less soon: about 1, 3 and 8 times the manifest's pace.
+            for wait in [1., 2., 5.] {
+                cx.background_executor().timer(Duration::from_secs_f64(every * wait)).await;
+                let more = this.update(cx, |card, cx| {
+                    let manifest = card.manifest.clone();
+                    // A newer round took over, or the card says it's busy and is being
+                    // refreshed as usual.
+                    if card.checks != round || card.state.refreshes(&manifest) {
+                        return false;
+                    }
+                    if let Some(effect) = card.state.refresh_once(&manifest) {
+                        cx.emit(CardEvent::Effect(effect));
+                    }
+                    true
+                });
+                if !more.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn act(&mut self, action: Value, locals: Locals, cx: &mut Context<Self>) {
@@ -222,6 +262,8 @@ impl CardView {
         }
         let every = self.manifest.refresh.as_ref().map_or(2.5, |r| r.every);
         self.polling = true;
+        // The card says it's busy, so this takes over from any round of catching up.
+        self.checks += 1;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 cx.background_executor().timer(Duration::from_secs_f64(every)).await;

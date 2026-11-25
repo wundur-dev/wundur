@@ -200,6 +200,53 @@ async fn responsive_rules_follow_the_card_s_width(cx: &mut TestAppContext) {
     assert!(narrow.has("narrow", cx) && !narrow.has("wide", cx));
 }
 
+/// The service's answer to an action can be behind the work it started ("nothing running"
+/// when a drawing is about to be). The card asks again by itself, and from then on its own
+/// refresh takes over.
+#[gpui_kit::test]
+async fn a_card_catches_up_when_an_answer_was_behind(cx: &mut TestAppContext) {
+    let shown = show(
+        json!({
+            "id": "levels",
+            "refresh": { "call": { "path": "/v1/things/{data.id}" }, "while": "data.busy", "every": 4 },
+            "actions": { "draw": [{ "call": { "method": "POST", "path": "/v1/things", "spends": true } }] },
+            "card": { "type": "column", "children": [{ "type": "button", "id": "draw", "label": "Draw", "click": "draw" }, { "type": "text", "id": "done", "text": "Done", "when": "data.status == 'ready'" }] },
+        }),
+        520.,
+        cx,
+    );
+    let last_call = |shown: &Shown| match shown.effects.borrow().last() {
+        Some(Effect::Call { id, request }) => (*id, request.clone()),
+        other => panic!("{other:?}"),
+    };
+    shown.click("draw", cx);
+    let (id, _) = last_call(&shown);
+    // The answer: not busy, though the work has only just been asked for.
+    cx.update(|cx| shown.card.update(cx, |card, cx| card.finish(id, Ok(json!({ "id": "t1", "busy": false, "status": "waiting" })), cx)));
+    assert_eq!(shown.effects.borrow().len(), 1, "nothing more yet");
+
+    cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    let (id, request) = last_call(&shown);
+    assert_eq!((request.name.as_str(), request.method.as_str(), request.path.as_str(), request.spends), ("refresh", "GET", "/v1/things/t1", false), "asked again by itself, and never a call that spends");
+    assert_eq!(shown.effects.borrow().len(), 2);
+
+    // Now the service says it's busy: the usual refresh carries on until it's done.
+    cx.update(|cx| shown.card.update(cx, |card, cx| card.finish(id, Ok(json!({ "id": "t1", "busy": true, "status": "drawing" })), cx)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    let (id, _) = last_call(&shown);
+    assert_eq!(shown.effects.borrow().len(), 3);
+    cx.update(|cx| shown.card.update(cx, |card, cx| card.finish(id, Ok(json!({ "id": "t1", "busy": false, "status": "ready" })), cx)));
+    shown.frame(cx);
+    assert!(shown.has("done", cx));
+
+    // Done and not busy: after a refresh's own answer nothing more is asked.
+    cx.executor().advance_clock(std::time::Duration::from_secs(120));
+    cx.run_until_parked();
+    assert_eq!(shown.effects.borrow().len(), 3);
+}
+
 /// A layout nested as deep as a real card's (the 3D asset's is about a dozen boxes deep) is
 /// drawn on a thread with a small stack, as a test's is.
 #[gpui_kit::test]

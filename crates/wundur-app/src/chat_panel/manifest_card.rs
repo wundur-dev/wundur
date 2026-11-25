@@ -189,7 +189,9 @@ impl ChatPanel {
                     s.restore(&Value::Object(kept));
                     s.put("account", account);
                     s.put("catalog", catalog);
-                })
+                });
+                // Read back from its record: what it holds may be from before a restart.
+                card.catch_up(cx);
             });
             let folder = dir.clone();
             let events = cx.subscribe(&view, move |panel, _, event: &CardEvent, cx| panel.card_event(&folder, event, cx));

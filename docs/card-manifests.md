@@ -311,6 +311,13 @@ order) to `into`. Only `https` links are downloaded.
 While `while` holds, the app repeats the call every `every` seconds and puts the answer in
 `data`. It doesn't make the card busy, and a failure is tried again silently. It never spends.
 
+The app also makes this call on its own, whatever `while` says, to catch a card up when its
+data may be behind: three times over about eight times `every` after each of an action's
+calls comes back (done or refused), and when a card is read back from its record. So a card
+whose answer said "nothing is running" a moment before the work started still finds out. This
+is a safety net, not the contract: an answer to a call that starts work should already say
+`busy` and show the work as started.
+
 ## What the API must provide
 
 1. **One shape per card.** Every call a card makes answers with the same resource: the card's
