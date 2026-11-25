@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # A stand-in for the Wundur API's hosted asset flow, for testing the app without the real service.
 #   scripts/fake-asset-api.py 18765   then point a test copy at it: settings.json {"account":{"api_base":"http://127.0.0.1:18765"}}
+# It also offers the manifests in cards/ as workflows (GET /v1/workflows), except the 3D asset's, and
+# answers the image and sound effect cards' calls, so manifest cards can be tried without the service.
 # Needs Pillow (pip install pillow). Never logs requests or headers.
-import json, time, sys, io, itertools
+import json, time, sys, io, itertools, hashlib, pathlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image, ImageDraw
 PORT = int(sys.argv[1])
@@ -52,6 +54,21 @@ def png(label, color):
     d.ellipse((110, 60, 190, 140), fill="white"); d.rectangle((120, 150, 180, 400), fill="white")
     d.text((20, 560), label, fill="white"); b = io.BytesIO(); im.save(b, "PNG"); return b.getvalue()
 FILES = {}
+# The workflows offered: the reference manifests beside this script's folder, each with its version (a
+# hash of its content) set as the service sets it.
+def workflows():
+    found = {}
+    for path in sorted((pathlib.Path(__file__).resolve().parent.parent / "cards").glob("*.json")):
+        if path.name.endswith(".scenario.json") or path.stem == "asset-3d": continue
+        m = json.loads(path.read_text())
+        m["version"] = hashlib.sha256(json.dumps({k: v for k, v in m.items() if k != "version"}, sort_keys=True).encode()).hexdigest()[:8]
+        found[m["id"]] = m
+    return found
+# A second of quiet, as a WAV: enough for a sound card to save and play.
+def quiet_wav():
+    import struct
+    n = 8000
+    return b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 8000, 8000, 1, 8) + b"data" + struct.pack("<I", n) + bytes([128]) * n
 def asset_view(a):
     now = time.time()
     for s in a["sets"]:
@@ -87,11 +104,24 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, raw=FILES.get(p[1], b"glTF-test"), ctype="application/octet-stream")
         if p == ["v1", "catalog"]: return self.send(200, CATALOG)
         if p[:3] == ["v1", "catalog", "styles"]: return self.send(200, raw=style_jpg(p[3].rsplit(".", 1)[0]), ctype="image/jpeg")
+        if p == ["v1", "workflows"]:
+            return self.send(200, {"workflows": [{"id": m["id"], "version": m["version"], "schema": m.get("schema", 1), "label": m.get("label", ""), "icon": m.get("icon", "")} for m in workflows().values()]})
+        if p[:2] == ["v1", "workflows"] and len(p) == 3:
+            m = workflows().get(p[2])
+            return self.send(200, m) if m else self.send(404, {"error": {"code": "unknown_workflow", "message": "No such workflow."}})
         if p == ["v1", "me"]: return self.send(200, {"plan": "free", "allowance": {"images": {"used": 1, "limit": 5, "left": 4}, "model_credits": {"used": 0, "limit": 3, "left": 3}}})
         if p[:2] == ["v1", "assets"] and len(p) == 3 and p[2] in assets: return self.send(200, asset_view(assets[p[2]]))
         self.send(404, {"error": {"code": "not_found", "message": "No such thing."}})
     def do_POST(self):
-        p = self.path.strip("/").split("/"); b = self.body()
+        p = self.path.split("?")[0].strip("/").split("/"); b = self.body()
+        # The image and sound effect cards' calls. A prompt of "refuse" is refused, to see a card say so.
+        if p in (["v1", "images", "generations"], ["v1", "audio", "sound-effects"]):
+            if (b.get("prompt") or b.get("text") or "").strip() == "refuse":
+                return self.send(402, {"error": {"code": "image_allowance_used", "message": "This month's images are used up."}})
+            time.sleep(1.5)
+            if p[1] == "images":
+                FILES["made.png"] = png(b.get("prompt", "")[:18], (212, 168, 60)); return self.send(200, {"url": f"{BASE}/files/made.png", "images_left": 3})
+            FILES["made.wav"] = quiet_wav(); return self.send(200, {"url": f"{BASE}/files/made.wav", "duration_seconds": b.get("duration_seconds", 2), "sound_seconds_left": 117})
         if p == ["v1", "assets"]:
             refs = b.get("references", [])
             if len(refs) > 3: return self.send(422, {"error": {"code": "invalid_request", "message": "At most 3 references."}})

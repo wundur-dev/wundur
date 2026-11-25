@@ -32,6 +32,7 @@ mod asset_card;
 pub(crate) use make_card::play as play_sound;
 mod hosted_card;
 mod make_card;
+mod manifest_card;
 pub use make_card::MakeKind;
 mod composer;
 mod items;
@@ -153,6 +154,10 @@ pub struct ChatPanel {
     /// Hosted cards whose Asset brief is open (it starts folded to one line).
     open_briefs: std::collections::HashSet<PathBuf>,
     makes: HashMap<u64, make_card::MakeCard>,
+    /// The cards drawn from manifests, by their record's folder, and the ones told which chat
+    /// they're in (see `manifest_card`).
+    cards: HashMap<PathBuf, manifest_card::CardHost>,
+    claimed_cards: HashSet<PathBuf>,
     asset_revision: u64,
     pub index: Arc<FileIndex>,
     last_revision: u64,
@@ -371,6 +376,8 @@ impl ChatPanel {
             claimed_assets: HashSet::new(),
             open_briefs: Default::default(),
             makes: HashMap::new(),
+            cards: HashMap::new(),
+            claimed_cards: HashSet::new(),
             asset_revision: 0,
             index: Arc::new(FileIndex::default()),
             last_revision: 0,
@@ -945,18 +952,39 @@ impl ChatPanel {
                     .xsmall()
                     .ghost()
                     .tab_stop(false)
-                    .tooltip("Create: a 3D asset, an image or a sound effect")
-                    .dropdown_menu(move |menu, _, _| {
+                    .tooltip("Create something in this chat with your Wundur account")
+                    .dropdown_menu(move |mut menu, _, cx| {
                         use gpui_kit::component::menu::PopupMenuItem;
+                        // Everything here is made on the account: signed out, the way in.
+                        if !crate::hosted_store::signed_in() {
+                            return menu.item(PopupMenuItem::new("Sign in to create…").icon(gpui_kit::assets::IconName::CircleUser).on_click(|_, _, cx| crate::settings_account::show_sign_in(cx)));
+                        }
                         let on = |f: fn(&mut ChatPanel, &mut Context<ChatPanel>)| {
                             let weak = weak.clone();
                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                 let _ = weak.update(cx, f);
                             }
                         };
-                        menu.item(PopupMenuItem::new("3D asset…").icon(gpui_kit::assets::IconName::Box).on_click(on(|p, cx| p.start_asset_form(cx))))
-                            .item(PopupMenuItem::new("Image…").icon(gpui_kit::assets::IconName::Image).on_click(on(|p, cx| p.start_make(MakeKind::Image, cx))))
-                            .item(PopupMenuItem::new("Sound effect…").icon(gpui_kit::assets::IconName::AudioLines).on_click(on(|p, cx| p.start_make(MakeKind::Sound, cx))))
+                        // The cards built into the app, each unless the service offers a
+                        // workflow of the same id (its manifest's card takes its place); then
+                        // the service's other workflows, in its order.
+                        let offered = crate::card_store::offered(cx);
+                        let from_service = |menu: gpui_kit::component::menu::PopupMenu, l: wundur_core::cards::remote::Listed| {
+                            let (weak, id) = (weak.clone(), l.id.clone());
+                            let icon = wundur_cards::style::icon(&l.icon).unwrap_or(gpui_kit::assets::IconName::Sparkles);
+                            menu.item(PopupMenuItem::new(l.label.clone()).icon(icon).on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |p, cx| p.start_card(&id, cx));
+                            }))
+                        };
+                        for entry in manifest_card::create_menu(offered) {
+                            menu = match entry {
+                                manifest_card::Entry::Service(l) => from_service(menu, l),
+                                manifest_card::Entry::BuiltIn("asset-3d") => menu.item(PopupMenuItem::new("3D asset…").icon(gpui_kit::assets::IconName::Box).on_click(on(|p, cx| p.start_asset_form(cx)))),
+                                manifest_card::Entry::BuiltIn("image") => menu.item(PopupMenuItem::new("Image…").icon(gpui_kit::assets::IconName::Image).on_click(on(|p, cx| p.start_make(MakeKind::Image, cx)))),
+                                manifest_card::Entry::BuiltIn(_) => menu.item(PopupMenuItem::new("Sound effect…").icon(gpui_kit::assets::IconName::AudioLines).on_click(on(|p, cx| p.start_make(MakeKind::Sound, cx)))),
+                            };
+                        }
+                        menu
                     })
             })
             .child(

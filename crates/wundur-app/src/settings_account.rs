@@ -182,6 +182,7 @@ pub fn refresh(cx: &mut App) {
                     });
                     if changed {
                         crate::hosted_store::catalog_changed(cx);
+                        crate::card_store::changed(cx);
                     }
                 }
                 // Neither a session nor a key left: signed out (nothing to revoke).
@@ -191,6 +192,7 @@ pub fn refresh(cx: &mut App) {
                         *s = AccountUi { signed_in: Some(false), error: Some("Your sign-in has expired. Sign in again.".into()), last_fetch: s.last_fetch, ..Default::default() };
                     });
                     crate::hosted_store::catalog_changed(cx);
+                    crate::card_store::changed(cx);
                 }
                 // Not known now: keep what was shown; the next refresh tries again.
                 Err(Error::Store(e)) => update(cx, |s| {
@@ -257,6 +259,7 @@ pub fn request_access(note: String, done: impl FnOnce(Result<String, String>, &m
                     });
                     if changed {
                         crate::hosted_store::catalog_changed(cx);
+                        crate::card_store::changed(cx);
                     }
                     done(Ok(message), cx);
                 }
@@ -301,6 +304,7 @@ pub fn signed_out(note: Option<String>, cx: &mut App) {
                 *s = AccountUi { signed_in: Some(false), error: note, last_fetch: s.last_fetch, ..Default::default() };
             });
             crate::hosted_store::catalog_changed(cx);
+            crate::card_store::changed(cx);
         });
     })
     .detach();
@@ -400,6 +404,7 @@ fn finished(signed: SignedIn, cx: &mut App) {
     });
     // A different account (or the first): its own catalog.
     crate::hosted_store::catalog_changed(cx);
+    crate::card_store::changed(cx);
     if !fetched {
         refresh(cx);
     }

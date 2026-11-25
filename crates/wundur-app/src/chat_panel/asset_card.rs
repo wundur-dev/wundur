@@ -53,6 +53,9 @@ impl ChatPanel {
         if cmd == "make" {
             return self.make_command(arg, window, cx);
         }
+        if cmd == "card" {
+            return self.card_command(arg, cx);
+        }
         if cmd == "new" {
             self.start_asset_form(cx);
             self.ensure_asset_fields(window, cx);
@@ -124,6 +127,7 @@ impl ChatPanel {
     pub(super) fn ensure_asset_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_hosted_form(window, cx);
         self.ensure_make_fields(window, cx);
+        self.ensure_cards(cx);
         self.claim_assets(cx);
         let (dirs, form): (Vec<PathBuf>, bool) = {
             let chat = &self.session.read(cx).chat;
