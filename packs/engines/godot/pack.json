@@ -21,6 +21,23 @@
       }
     ],
     "run": "Open project.godot in Godot, then press Play (F5).",
-    "sprite_tools": true
+    "sprite_tools": true,
+    "fit": {
+      "platforms": {
+        "web": {"level": "works", "note": "exports to the web, with a larger download"},
+        "desktop": {"level": "best", "note": "native desktop builds"},
+        "mobile": {"level": "best", "note": "native mobile apps, without a web view's frame cap"},
+        "consoles": {"level": "works", "note": "consoles only through a porting company"}
+      },
+      "workflow": {
+        "code": {"level": "works", "note": "scenes are text files the agent can edit"},
+        "editor": {"level": "best", "note": "a light, free editor"}
+      },
+      "cameras": {
+        "first-person": {"level": "best", "note": "3D characters and physics built in"},
+        "third-person": {"level": "best", "note": "3D characters and physics built in"}
+      },
+      "agent_fit": 2
+    }
   }
 }

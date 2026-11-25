@@ -25,6 +25,7 @@ pub mod account;
 pub mod account_tools;
 pub mod asset_flow;
 pub mod drafts;
+pub mod engine_fit;
 pub mod engines;
 pub mod acp;
 pub mod agent;

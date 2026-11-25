@@ -92,6 +92,8 @@ pub struct EngineSpec {
     pub create: String,
     /// Sprite sheet tools fit its 2D projects.
     pub sprite_tools: bool,
+    /// What it is good at, for "Help me choose" ([`crate::engine_fit`]).
+    pub fit: crate::engine_fit::Fit,
 }
 
 /// Where an engine's files are.

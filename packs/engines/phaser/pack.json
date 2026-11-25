@@ -21,6 +21,22 @@
       }
     ],
     "run": "npm install && npm run dev",
-    "sprite_tools": true
+    "sprite_tools": true,
+    "fit": {
+      "platforms": {
+        "web": {"level": "best", "note": "made for the browser, and plays right in Wundur"},
+        "desktop": {"level": "works", "note": "desktop through a wrapper app"},
+        "mobile": {
+          "level": "works",
+          "note": "on phones it runs in a web view, capped at 60 fps on iPhone, and heavy scenes struggle"
+        },
+        "consoles": {"level": "no"}
+      },
+      "workflow": {
+        "code": {"level": "best", "note": "all code, so the agent can build every part"},
+        "editor": {"level": "no"}
+      },
+      "agent_fit": 3
+    }
   }
 }
