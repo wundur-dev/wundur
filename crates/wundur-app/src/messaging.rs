@@ -323,8 +323,9 @@ fn review(me: &Entity<AgentSession>, args: &Value, cx: &mut App) -> (String, boo
     let peers = peers(cx);
     let Some(from) = peers.iter().find(|p| &p.session == me) else { return ("This session is not in the window's list.".into(), true) };
     let mine = me.read(cx).backend.id().to_string();
-    // The real agents (the scripted test one only when asked for by name).
-    let all = crate::backends::all(cx);
+    // The real agents installed here (the scripted test one only when asked for by name).
+    let host = me.read(cx).host();
+    let all = crate::backends::offered(host.as_ref(), cx);
     let asked = args.get("agent").and_then(Value::as_str).map(str::to_lowercase).filter(|a| !a.trim().is_empty());
     let backend = match &asked {
         Some(a) => all.iter().find(|b| b.name().to_lowercase().contains(a.trim()) || b.id().contains(a.trim())).cloned(),
@@ -332,7 +333,7 @@ fn review(me: &Entity<AgentSession>, args: &Value, cx: &mut App) -> (String, boo
     };
     let Some(backend) = backend else {
         let names = all.iter().filter(|b| b.id() != "scripted").map(|b| format!("\"{}\"", b.name())).collect::<Vec<_>>().join(", ");
-        return (format!("Wundur has no agent called that. It has: {names}."), true);
+        return (format!("No agent called that is installed. Installed: {names}."), true);
     };
     let state = cx.default_global::<Messaging>();
     state.next += 1;

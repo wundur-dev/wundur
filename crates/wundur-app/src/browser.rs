@@ -65,6 +65,14 @@ struct Forking {
     _sub: Subscription,
 }
 
+/// Of `backends`, those not `missing` (`None`: not looked for yet, so only `chosen`); with
+/// none left, `chosen`.
+fn offered_of(backends: &[Arc<dyn Backend>], missing: Option<&[String]>, chosen: &Arc<dyn Backend>) -> Vec<Arc<dyn Backend>> {
+    let Some(missing) = missing else { return vec![chosen.clone()] };
+    let there: Vec<_> = backends.iter().filter(|b| !missing.iter().any(|m| m == b.id())).cloned().collect();
+    if there.is_empty() { vec![chosen.clone()] } else { there }
+}
+
 /// The folder list's width.
 const SIDEBAR: f32 = 252.;
 /// The form's widest.
@@ -521,6 +529,13 @@ impl Browser {
         self.missing.as_ref().is_some_and(|m| m.iter().any(|x| x == id))
     }
 
+    /// The agents to choose from: those installed on the host. Until that is known, only the
+    /// chosen one (an agent that is not there is never listed, not even for a moment); with
+    /// none installed, the chosen one, whose installer shows.
+    fn offered(&self) -> Vec<Arc<dyn Backend>> {
+        offered_of(&self.backends, self.missing.as_deref(), &self.backend)
+    }
+
     /// Which agents are installed on the host, looked for again every few seconds (one
     /// installed while this shows is offered at once). Until the person picks one, an agent that
     /// is not installed gives way to the first that is.
@@ -805,11 +820,10 @@ impl Browser {
                     .child(Icon::new(gpui_kit::assets::IconName::GitBranch).small())
                     .child(b)
             }));
-        // The agent: the available ones, the default first chosen.
+        // The agent: the installed ones, the default first chosen.
         let me = cx.entity().downgrade();
-        let backends = self.backends.clone();
+        let backends = self.offered();
         let chosen = self.backend.id().to_string();
-        let missing = self.missing.clone().unwrap_or_default();
         let agent = Button::new("agent")
             .outline()
             .w_full()
@@ -818,8 +832,7 @@ impl Browser {
             .dropdown_menu(move |mut menu, _, _| {
                 for b in backends.iter() {
                     let (me, b2) = (me.clone(), b.clone());
-                    let label = if missing.iter().any(|m| m == b.id()) { format!("{} (not installed)", b.name()) } else { b.name().to_string() };
-                    menu = menu.item(PopupMenuItem::new(label).checked(b.id() == chosen).on_click(move |_, _, cx| {
+                    menu = menu.item(PopupMenuItem::new(b.name().to_string()).checked(b.id() == chosen).on_click(move |_, _, cx| {
                         let _ = me.update(cx, |br, cx| br.choose_backend(b2.clone(), cx));
                     }));
                 }
@@ -1316,5 +1329,37 @@ mod tests {
         assert_eq!(fork_name("  "), "Fork");
         let long = "a".repeat(80);
         assert!(fork_name(&long).ends_with("… (fork)"));
+    }
+
+    /// A backend called `id` (never started here).
+    struct Named(&'static str);
+
+    impl Backend for Named {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn capabilities(&self) -> wundur_core::agent::Capabilities {
+            Default::default()
+        }
+        fn new_agent(&self) -> Box<dyn wundur_core::agent::Agent> {
+            unimplemented!("not started in these tests")
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn only_installed_agents_are_offered() {
+        let all: Vec<Arc<dyn Backend>> = vec![Arc::new(Named("a")), Arc::new(Named("b")), Arc::new(Named("c"))];
+        let ids = |v: Vec<Arc<dyn Backend>>| v.iter().map(|b| b.id()).collect::<Vec<_>>();
+        let chosen = all[0].clone();
+        // Not looked for yet: only the chosen one, so a missing agent never flashes up.
+        assert_eq!(ids(offered_of(&all, None, &chosen)), ["a"]);
+        // The missing ones are left out.
+        assert_eq!(ids(offered_of(&all, Some(&["b".to_string()]), &chosen)), ["a", "c"]);
+        // None installed: the chosen one, whose installer shows.
+        let none = ["a", "b", "c"].map(String::from);
+        assert_eq!(ids(offered_of(&all, Some(&none), &chosen)), ["a"]);
     }
 }
