@@ -130,6 +130,9 @@ pub enum Item {
     /// A run of one of the person's tools (see [`crate::cli_tools`]) the agent asked for:
     /// `command` as it runs, `state` whether the person allowed it.
     ToolRun { id: u64, tool: String, command: String, state: SendState },
+    /// Files the agent asked the person to choose between (`ask_to_choose`, see
+    /// [`crate::choices`]): `id` the window's for it.
+    Choice { id: u64, choice: crate::choices::Choice },
     /// The agent is not signed in: the card offering its own sign-in, and where that is.
     SignIn(SignIn),
     /// The agent is not installed on this machine: the card offering its own installer, and
@@ -1178,6 +1181,7 @@ pub fn to_markdown(items: &[Item], agent: &str) -> String {
             Item::Earlier { messages, .. } => format!("*[{} earlier not loaded]*", plural(*messages, "message")),
             Item::Outgoing { to, text, .. } => format!("**To {to}:** {}", text.trim()),
             Item::ToolRun { tool, command, .. } => format!("**Tool {tool}:** `{command}`"),
+            Item::Choice { choice, .. } => format!("**Asked to choose:** {} ({})", choice.question, choice.names.join(", ")),
             // Wundur's own cards, not part of the conversation.
             Item::SignIn(_) | Item::Install(_) | Item::NewAsset | Item::Make(_) | Item::Card(_) => continue,
             Item::Asset(dir) => format!("*[Game asset: {}]*", dir.display()),

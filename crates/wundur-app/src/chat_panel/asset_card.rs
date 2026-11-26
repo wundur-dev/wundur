@@ -15,8 +15,8 @@ use crate::asset_store;
 
 /// The new-asset form's fields.
 pub(super) struct NewAssetForm {
-    name: Entity<InputState>,
-    brief: Entity<InputState>,
+    pub(super) name: Entity<InputState>,
+    pub(super) brief: Entity<InputState>,
     kind: &'static str,
     error: Option<String>,
 }
@@ -55,6 +55,9 @@ impl ChatPanel {
         }
         if cmd == "card" {
             return self.card_command(arg, cx);
+        }
+        if matches!(cmd, "choose" | "present" | "answer" | "agent-cards") {
+            return self.agent_card_command(cmd, arg, window, cx);
         }
         if cmd == "new" {
             self.start_asset_form(cx);
@@ -195,6 +198,7 @@ impl ChatPanel {
 
     pub(super) fn close_asset_form(&mut self, cx: &mut Context<Self>, replace: Option<PathBuf>) {
         self.new_asset = None;
+        self.presented_form_closed(replace.as_deref(), cx);
         self.session.update(cx, |s, cx| {
             if let Some(at) = s.chat.items.iter().position(|i| matches!(i, Item::NewAsset)) {
                 match replace {

@@ -26,6 +26,7 @@ pub fn item_text(item: &Item) -> Cow<'_, str> {
         Item::AgentMessage { title, text, .. } => Cow::Owned(format!("{title}\n{text}")),
         Item::Outgoing { to, text, .. } => Cow::Owned(format!("{to}\n{text}")),
         Item::ToolRun { tool, command, .. } => Cow::Owned(format!("{tool}\n{command}")),
+        Item::Choice { choice, .. } => Cow::Owned(format!("{}\n{}", choice.question, choice.names.join("\n"))),
         Item::SignIn(_) | Item::Install(_) | Item::NewAsset | Item::Make(_) | Item::Card(_) => Cow::Borrowed(""),
         Item::Asset(dir) => Cow::Owned(dir.display().to_string()),
         Item::TurnChanges(changes) => {

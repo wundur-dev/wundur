@@ -1067,10 +1067,23 @@ impl ChatPanel {
                 Item::Install(state) => self.render_install(*state, cx),
                 Item::TurnChanges(changes) => self.render_turn_changes(ix, changes, cx),
                 Item::Summary { state, .. } => self.render_summary(state, cx),
-                Item::Asset(dir) => self.render_asset_card(dir, cx),
-                Item::NewAsset => self.render_new_asset(cx),
-                Item::Make(id) => self.render_make(*id, cx),
-                Item::Card(dir) => self.render_card(dir, cx),
+                Item::Asset(dir) => {
+                    let card = self.render_asset_card(dir, cx);
+                    self.with_question(choice_card::Shown::Asset(dir.clone()), card, cx)
+                }
+                Item::NewAsset => {
+                    let card = self.render_new_asset(cx);
+                    self.with_question(choice_card::Shown::AssetForm, card, cx)
+                }
+                Item::Make(id) => {
+                    let card = self.render_make(*id, cx);
+                    self.with_question(choice_card::Shown::Make(*id), card, cx)
+                }
+                Item::Card(dir) => {
+                    let card = self.render_card(dir, cx);
+                    self.with_question(choice_card::Shown::Card(dir.clone()), card, cx)
+                }
+                Item::Choice { id, choice } => self.render_choice(*id, choice, cx),
             };
             out.push(el);
         }
