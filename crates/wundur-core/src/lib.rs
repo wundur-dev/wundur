@@ -51,6 +51,7 @@ pub mod links;
 pub mod markdown_marks;
 pub mod mcp;
 pub mod model_look;
+pub mod sprites;
 pub mod outbox;
 pub mod output_colors;
 pub mod packs;

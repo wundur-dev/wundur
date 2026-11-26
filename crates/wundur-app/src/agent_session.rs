@@ -104,6 +104,8 @@ pub enum SessionEvent {
     ShowPage(PathBuf),
     /// Show a 3D model in the model viewer, optionally playing an animation (part of its name).
     ShowModel(PathBuf, Option<String>),
+    /// Open a sprite sheet (its JSON) in the sheet view (`pack_sprites`, `show_sprite_sheet`).
+    ShowSprites(PathBuf),
     /// The last turn was undone and taken out of the conversation: the person's message, to
     /// put back in the message box.
     Undone(Option<String>),

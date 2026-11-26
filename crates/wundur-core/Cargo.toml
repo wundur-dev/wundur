@@ -32,7 +32,7 @@ getrandom = "0.3"
 rquickjs = { version = "0.9", features = ["loader"] }
 # Tool packs can draw 3D models to pictures (kx.renderModel), for an agent to look at.
 wundur-render = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 # Removing a skill puts it in the system Trash (Finder, Recycle Bin), so it can be got back.
 trash = "5"
 

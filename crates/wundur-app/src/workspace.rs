@@ -62,6 +62,7 @@ enum Made {
     Agent(Entity<ChatPanel>),
     Web(Entity<WebPanel>),
     Model(Entity<crate::model_view::ModelView>),
+    Sprites(Entity<crate::sprite_view::SpriteView>),
 }
 
 /// Factories by dock area, so the global panel registry can find the right window.
@@ -157,6 +158,16 @@ pub fn register_panels(cx: &mut App) {
         f.made.borrow_mut().push(Made::Model(view.clone()));
         panel_handle(view)
     });
+    register_panel(cx, "Sprites", |ctx, window, cx| {
+        let f = factory(&ctx, cx).expect("a workspace for this dock");
+        let path = match ctx.info() {
+            PanelInfo::Panel(v) => v.get("path").and_then(|p| p.as_str()).map(PathBuf::from).unwrap_or_default(),
+            _ => PathBuf::new(),
+        };
+        let view = cx.new(|cx| crate::sprite_view::SpriteView::new(path, window, cx));
+        f.made.borrow_mut().push(Made::Sprites(view.clone()));
+        panel_handle(view)
+    });
     register_panel(cx, "Web", |ctx, window, cx| {
         let f = factory(&ctx, cx).expect("a workspace for this dock");
         let url = match ctx.info() {
@@ -204,6 +215,8 @@ pub struct Workspace {
     webs: Vec<Entity<WebPanel>>,
     /// 3D models, drawn natively (see `model_view`).
     models: Vec<Entity<crate::model_view::ModelView>>,
+    /// Sprite sheets (see `sprite_view`).
+    sprites: Vec<Entity<crate::sprite_view::SpriteView>>,
     /// Game assets being made (see `asset_panel`).
     assets: Vec<Entity<crate::asset_panel::AssetPanel>>,
     doc_ctx: DocContext,
@@ -343,6 +356,7 @@ impl Workspace {
                         view.update(cx, |v, cx| v.play_named(clip, window, cx));
                     }
                 }
+                SessionEvent::ShowSprites(path) => ws.open_sprites(path.clone(), window, cx),
                 SessionEvent::ShowPage(path) => ws.open_web(wundur_core::web::file_url(path), window, cx),
                 // The undone message goes back in the box, to change and send again.
                 SessionEvent::Undone(text) => {
@@ -394,6 +408,7 @@ impl Workspace {
             agent_views: Vec::new(),
             webs: Vec::new(),
             models: Vec::new(),
+            sprites: Vec::new(),
             assets: Vec::new(),
             _watch: watch,
             shown_once: false,
@@ -554,6 +569,7 @@ impl Workspace {
                 Made::Web(view) => self.adopt_web(view, window, cx),
                 Made::Asset(view) => self.adopt_asset(view, window, cx),
                 Made::Model(view) => self.adopt_model(view, window, cx),
+                Made::Sprites(view) => self.adopt_sprites(view, window, cx),
             }
         }
         // A layout saved before the Changes panel: it joins the Files group, behind Files.
@@ -870,6 +886,10 @@ impl Workspace {
         // A 3D model opens in the model viewer.
         if crate::model_view::is_model(&path) {
             return self.open_model(path, window, cx);
+        }
+        // A sprite sheet's JSON opens the sheet (a link to a line in it opens the text).
+        if line.is_none() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) && crate::sprite_view::is_sheet(&path) {
+            return self.open_sprites(path, window, cx);
         }
         // An asset's record opens the asset.
         if crate::asset_panel::is_record(&path)
@@ -1238,6 +1258,38 @@ impl Workspace {
         self.panel_subs.insert(id, vec![sub]);
         self.touch_code(id);
         self.models.push(view);
+    }
+
+    /// Show the sprite sheet at `path` (its JSON) in the sheet view: the tab it's already in,
+    /// read again, if any.
+    pub fn open_sprites(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let json = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) { path.clone() } else { path.with_extension("json") };
+        if let Some(view) = self.sprites.iter().find(|m| m.read(cx).path == json).cloned() {
+            view.update(cx, |v, cx| v.reload(window, cx));
+            self.show_panel(PanelId::from(view.entity_id()), window, cx);
+            return;
+        }
+        let view = cx.new(|cx| crate::sprite_view::SpriteView::new(path, window, cx));
+        self.adopt_sprites(view.clone(), window, cx);
+        self.place_code(panel_handle(view.clone()), window, cx);
+        let handle = view.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    fn adopt_sprites(&mut self, view: Entity<crate::sprite_view::SpriteView>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::sprite_view::SpriteEvent;
+        let id = view.entity_id();
+        let sub = cx.subscribe_in(&view, window, |ws, view, ev: &SpriteEvent, _, cx| match ev {
+            SpriteEvent::Activated => ws.touch_code(view.entity_id()),
+            SpriteEvent::Closed => {
+                ws.sprites.retain(|m| m != view);
+                ws.panel_subs.remove(&view.entity_id());
+                cx.notify();
+            }
+        });
+        self.panel_subs.insert(id, vec![sub]);
+        self.touch_code(id);
+        self.sprites.push(view);
     }
 
     pub fn open_web(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
