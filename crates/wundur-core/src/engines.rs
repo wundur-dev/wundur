@@ -407,16 +407,20 @@ pub fn projects_folder(setting: Option<&Path>) -> PathBuf {
 /// The default projects folder's name, in the home folder.
 pub const DEFAULT_PROJECTS_FOLDER: &str = "Wundur Projects";
 
-/// The folder name for a project called `name`: the name, less what a folder name can't have
-/// and what trips build tools up in a path (Vite fails on a quote in one).
+/// The folder name for a project called `name`: lowercase, with a dash between words
+/// (`Sky Hop!` → `sky-hop`), so its path has no spaces or anything a shell or build tool trips
+/// on. Letters beyond ASCII stay (`Café` → `café`); empty when the name has no letters or
+/// digits. The project keeps its name as typed; only the folder is plain.
 pub fn folder_name(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\'' | '`' | '<' | '>' | '|' | '?' | '*' | '$'))
-        .map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { '-' } else { c })
-        .collect();
-    cleaned.trim_start_matches('.').trim().to_string()
+    let mut out = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
 }
 
 /// A package name for a project called `name` (`my-game`): lowercase letters, digits and
@@ -645,10 +649,12 @@ mod tests {
 
     #[test]
     fn names_make_folders_and_slugs() {
-        assert_eq!(folder_name("  My Game "), "My Game");
+        assert_eq!(folder_name("  My Game "), "my-game");
         assert_eq!(folder_name("a/b:c"), "a-b-c");
         assert_eq!(folder_name(".hidden"), "hidden");
-        assert_eq!(folder_name("Sky \"Hop\" $1?"), "Sky Hop 1");
+        assert_eq!(folder_name("Sky \"Hop\" $1?"), "sky-hop-1");
+        assert_eq!(folder_name("Café Run"), "café-run");
+        assert_eq!(folder_name("???"), "");
         assert_eq!(slug("My Cool Game!"), "my-cool-game");
         assert_eq!(slug("???"), "game");
         assert_eq!(safe_name("A \"quoted\" <name>"), "A quoted name");
@@ -694,7 +700,7 @@ mod tests {
         let dir = scratch("phaser");
         let new = NewProject { name: "Sky \"Hop\"".into(), parent: dir.clone(), game: Some((engine("wundur/engine-phaser"), Dimension::TwoD)) };
         let made = create(&new, &|_| {}).unwrap();
-        assert_eq!(made.folder, dir.join("Sky Hop"));
+        assert_eq!(made.folder, dir.join("sky-hop"));
         let pkg = std::fs::read_to_string(made.folder.join("package.json")).unwrap();
         assert!(pkg.contains("\"name\": \"sky-hop\""), "{pkg}");
         assert!(std::fs::read_to_string(made.folder.join("index.html")).unwrap().contains("<title>Sky Hop</title>"));
