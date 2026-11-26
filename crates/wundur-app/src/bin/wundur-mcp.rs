@@ -80,6 +80,7 @@ Its tools:\n\
 - ask_for_review: ask another agent for a read-only second opinion on work in this folder.\n\
 - list_sessions, send_message: reach the person's other open sessions (other agents, other folders); the person sees every message and may have to allow it.\n\
 - look_at_model: look at 3D models (GLB/glTF) yourself, from fixed angles, several side by side, with their facts and warnings; check every model you make or change with it. show_model: open one in the person's model viewer.\n\
+- pack_sprites: cut the sprites out of a sheet (one you made, with a plain or transparent background) and pack them into a game-ready sheet with its JSON; it opens for the person. show_sprite_sheet: open an existing sheet.\n\
 - The person's tool packs (make_image, edit_image, model_from_*, rig_model, music, sound_effect, voice_line and others) make game assets and more: search for them when a task needs one.";
 
 /// The tools, as MCP describes them.
@@ -200,6 +201,43 @@ fn tools() -> Value {
                     "animation": { "type": "string", "description": "An animation to play as it opens (part of its name, e.g. walk)." },
                 },
                 "required": ["model"],
+            },
+        },
+        {
+            "name": "pack_sprites",
+            "description": "Cut the separate sprites out of one or more pictures (a sheet an image tool made, with a plain or transparent background) and pack them into one sprite sheet: a PNG and a JSON beside it in TexturePacker's JSON hash layout (Phaser, PixiJS and the Godot and Unity importers read it), with one animation through the frames in order. Two ways to pack: frames (default: every sprite in a cell of one size, bottoms on one baseline, so an animation doesn't jump; for a walk cycle, an attack) and atlas (each trimmed and packed tight; for props, icons, tiles). Sprites are found as shapes on the background, close shapes joined, specks dropped, in reading order; give grid when the sheet is a regular grid (each sprite then keeps its place in its cell). The result includes a picture of the sources with each sprite's box and number: look at it to check the cut. A background that isn't flat (a gradient, noise, a fake checkerboard) won't cut well: remove it first (edit_image). Free and local (well under a second). Opens the sheet for the person unless show is false.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "images": { "type": "string", "description": "The pictures: one path (in the project, absolute, or ~/...), or several separated by commas; their sprites are packed together in this order." },
+                    "mode": { "type": "string", "enum": ["frames", "atlas"], "description": "frames (default): one cell size, aligned, for animation. atlas: trimmed and tight, for unrelated sprites." },
+                    "grid": { "type": "string", "description": "Cut by a regular grid instead of finding shapes: columns x rows, like 4x2." },
+                    "split": { "type": "boolean", "description": "false: use each picture whole as one sprite (separate frame files to pack together). Default true." },
+                    "anchor": { "type": "string", "enum": ["bottom", "center"], "description": "frames: where each sprite sits in its cell (default bottom: feet on one baseline)." },
+                    "columns": { "type": "integer", "description": "frames: how many columns (default: the squarest sheet)." },
+                    "padding": { "type": "integer", "description": "Clear pixels around each sprite (default 2), so neighbours don't bleed in when drawn scaled." },
+                    "names": { "type": "string", "description": "Names for the sprites, comma-separated in order (default: name_00, name_01...)." },
+                    "name": { "type": "string", "description": "The base name for sprites and the animation (default: from the first picture's file name)." },
+                    "out": { "type": "string", "description": "Where to write the sheet's PNG (the JSON goes beside it). Default: beside the first picture, as <name>-packed.png." },
+                    "merge": { "type": "integer", "description": "Shapes this many pixels apart or closer are one sprite (default: from the picture's size, about 8 for 1024). Raise it when one sprite comes out as several boxes; lower it when two sprites share a box." },
+                    "tolerance": { "type": "integer", "description": "How far from the background colour a pixel must be to be part of a sprite, 0-255 (default 32)." },
+                    "min_pixels": { "type": "integer", "description": "Shapes smaller than this many pixels are dropped as specks (default: from the picture's size)." },
+                    "power_of_two": { "type": "boolean", "description": "atlas: round the sheet's sides up to powers of two (some older engines need it)." },
+                    "max_size": { "type": "integer", "description": "The largest side allowed (default 4096)." },
+                    "show": { "type": "boolean", "description": "Open the sheet in the person's sprite sheet view (default true)." },
+                },
+                "required": ["images"],
+            },
+        },
+        {
+            "name": "show_sprite_sheet",
+            "description": "Show a sprite sheet to the person: opens it in Wundur's sprite sheet view, a tab beside the chat with each frame boxed and the frames playing in order as an animation. Takes the sheet's JSON (TexturePacker's layout, which pack_sprites writes) or its PNG with the JSON beside it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sheet": { "type": "string", "description": "The sheet: its JSON or PNG, a path in the project, absolute, or ~/..." },
+                },
+                "required": ["sheet"],
             },
         },
         {

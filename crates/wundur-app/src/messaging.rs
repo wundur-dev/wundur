@@ -100,6 +100,28 @@ pub fn tool_call(session: Entity<AgentSession>, call: Call, cx: &mut App) {
         "complete_task" => complete_task(&args, cx),
         "list_tasks" => list_tasks(&session, cx),
         "show_model" => show_model(&session, &args, cx),
+        "show_sprite_sheet" => show_sprite_sheet(&session, &args, cx),
+        // Cut and packed off the UI thread; the sheet opens for the person when it is done.
+        "pack_sprites" => {
+            let cwd = session.read(cx).cwd().to_path_buf();
+            let show = args.get("show").and_then(Value::as_bool).unwrap_or(true);
+            let reply = call.reply;
+            let weak = session.downgrade();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let packed = cx.background_spawn(async move { wundur_core::sprites::pack_sprites(&cwd, &args) }).await;
+                let images = crate::tool_runs::images_as_content(packed.check.as_slice());
+                let mut text = packed.text;
+                if show && let Some(sheet) = packed.sheet {
+                    text.push_str("\nOpened the sheet in the person's sprite sheet view.");
+                    let _ = weak.update(cx, |_, cx| cx.emit(crate::agent_session::SessionEvent::ShowSprites(sheet)));
+                }
+                if let Some(reply) = reply {
+                    reply.send(&json!({ "text": text, "error": packed.failed, "images": images }).to_string());
+                }
+            })
+            .detach();
+            return;
+        }
         // Drawn off the UI thread; answered when the picture is made.
         "look_at_model" => {
             let cwd = session.read(cx).cwd().to_path_buf();
@@ -146,6 +168,25 @@ fn show_model(me: &Entity<AgentSession>, args: &Value, cx: &mut App) -> (String,
     };
     me.update(cx, |_, cx| cx.emit(crate::agent_session::SessionEvent::ShowModel(path, clip)));
     (said, false)
+}
+
+/// Open a sprite sheet in the person's sheet view, from `me`'s agent.
+fn show_sprite_sheet(me: &Entity<AgentSession>, args: &Value, cx: &mut App) -> (String, bool) {
+    let given = args.get("sheet").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    if given.is_empty() {
+        return ("show_sprite_sheet needs a sheet: its JSON, or its PNG with the JSON beside it.".into(), true);
+    }
+    let cwd = me.read(cx).cwd().to_path_buf();
+    let path = match (given.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ if Path::new(&given).is_absolute() => PathBuf::from(&given),
+        _ => cwd.join(&given),
+    };
+    if let Err(e) = wundur_core::sprites::read_sheet(&path) {
+        return (format!("Couldn't read the sheet: {e}. It needs a JSON in TexturePacker's layout (pack_sprites writes one)."), true);
+    }
+    me.update(cx, |_, cx| cx.emit(crate::agent_session::SessionEvent::ShowSprites(path)));
+    (format!("Opened {given} in the person's sprite sheet view."), false)
 }
 
 /// A list of tasks for the person, from `me`'s agent.
