@@ -68,7 +68,7 @@ pub fn open(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let agents: Vec<Arc<dyn Backend>> = crate::backends::all(cx);
+    let agents: Vec<Arc<dyn Backend>> = crate::backends::offered(host.as_ref(), cx);
     let entity = cx.new(|cx| {
         let input = cx.new(|cx| {
             let s = InputState::new(window, cx).placeholder("https://github.com/owner/repo, or owner/repo");

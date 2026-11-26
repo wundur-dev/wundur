@@ -9,6 +9,7 @@ use wundur_core::agent::{Backend, Registry};
 use wundur_core::backends::claude::ClaudeBackend;
 use wundur_core::backends::cursor::CursorBackend;
 use wundur_core::backends::scripted::ScriptedBackend;
+use wundur_core::host::Host;
 
 pub struct Backends(pub Registry);
 
@@ -35,6 +36,22 @@ pub fn backend(id: Option<&str>, cx: &App) -> Arc<dyn Backend> {
 
 pub fn all(cx: &App) -> Vec<Arc<dyn Backend>> {
     cx.global::<Backends>().0.all().to_vec()
+}
+
+/// The backends to offer on `host`: those installed there, or that can't tell. A remote host
+/// is asked over SSH, which is too slow for the window's thread: there all are offered (the
+/// New session screen asks off the thread and hides the missing ones itself).
+pub fn offered(host: &dyn Host, cx: &App) -> Vec<Arc<dyn Backend>> {
+    let all = all(cx);
+    if host.is_remote() {
+        return all;
+    }
+    installed_of(all, host)
+}
+
+/// Of `list`, those installed on `host` (or that can't tell), in order.
+pub fn installed_of(list: Vec<Arc<dyn Backend>>, host: &dyn Host) -> Vec<Arc<dyn Backend>> {
+    list.into_iter().filter(|b| b.installed(host) != Some(false)).collect()
 }
 
 #[cfg(test)]
