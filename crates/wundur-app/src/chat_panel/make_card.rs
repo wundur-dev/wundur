@@ -47,6 +47,15 @@ pub(super) struct MakeCard {
     state: MakeState,
 }
 
+impl MakeCard {
+    /// Tests: what it holds.
+    pub(super) fn describe(&self, cx: &App) -> String {
+        let prompt = self.prompt.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+        let seconds = self.seconds.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+        format!("{:?} prompt {prompt:?} quality {} size {} transparent {} seconds {seconds:?} loop {}", self.kind, self.quality, self.size, self.transparent, self.looped)
+    }
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 const QUALITIES: [(&str, &str); 3] = [("low", "Draft"), ("medium", "Good"), ("high", "Best")];
@@ -105,7 +114,39 @@ impl ChatPanel {
         }
     }
 
+    /// Fill a card in as the agent asked (`present_card`): its prompt and options; a value
+    /// the card doesn't offer is left as it was.
+    pub(super) fn fill_make(&mut self, id: u64, fill: &serde_json::Map<String, serde_json::Value>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(card) = self.makes.get_mut(&id) else { return };
+        if let Some(q) = fill.get("quality").and_then(|v| v.as_str()).and_then(|q| QUALITIES.iter().find(|(k, _)| *k == q)) {
+            card.quality = q.0;
+        }
+        if let Some(s) = fill.get("size").and_then(|v| v.as_str()).and_then(|s| SIZES.iter().find(|(k, _)| *k == s)) {
+            card.size = s.0;
+        }
+        if let Some(t) = fill.get("transparent").and_then(|v| v.as_bool()) {
+            card.transparent = t;
+        }
+        if let Some(l) = fill.get("loop").and_then(|v| v.as_bool()) {
+            card.looped = l;
+        }
+        let (prompt, seconds) = (card.prompt.clone(), card.seconds.clone());
+        if let (Some(input), Some(p)) = (prompt, fill.get("prompt").and_then(|v| v.as_str())) {
+            let p = p.to_string();
+            input.update(cx, |i, cx| i.set_value(p, window, cx));
+        }
+        let secs = fill.get("seconds").and_then(|v| v.as_f64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_string)));
+        if let (Some(input), Some(s)) = (seconds, secs) {
+            input.update(cx, |i, cx| i.set_value(s, window, cx));
+        }
+    }
+
     fn close_make(&mut self, id: u64, cx: &mut Context<Self>) {
+        // Presented by the agent and closed before anything was made: it's told.
+        let made = matches!(self.makes.get(&id).map(|c| &c.state), Some(MakeState::Done { .. }));
+        if !made {
+            self.report_presented(&choice_card::Shown::Make(id), "The person closed the card without making anything.".into(), cx);
+        }
         self.makes.remove(&id);
         self.session.update(cx, |s, cx| {
             s.chat.items.retain(|i| !matches!(i, Item::Make(n) if *n == id));
@@ -139,8 +180,18 @@ impl ChatPanel {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let ran = cx.background_spawn(async move { wundur_core::account_tools::run(name, &args, &cwd) }).await;
             let _ = this.update(cx, |p, cx| {
+                let mut made = None;
                 if let Some(card) = p.makes.get_mut(&id) {
+                    if !ran.failed {
+                        made = Some(ran.files.clone());
+                    }
                     card.state = if ran.failed { MakeState::Failed(ran.text) } else { MakeState::Done { files: ran.files, text: ran.text } };
+                }
+                // Presented by the agent: it's told what the person made.
+                if let Some(files) = made {
+                    let cwd = p.session.read(cx).cwd().to_path_buf();
+                    let names: Vec<String> = files.iter().map(|f| choice_card::show_path(f, &cwd)).collect();
+                    p.report_presented(&choice_card::Shown::Make(id), format!("The person made it: {}.", names.join(", ")), cx);
                 }
                 p.list.remeasure();
                 cx.notify();

@@ -159,6 +159,8 @@ pub struct AgentSession {
     /// Messages from other sessions on their way to the agent: they go as turns, but show as
     /// the other session's card, not as the person's message.
     quiet: Vec<String>,
+    /// Cards the agent asked to show (`present_card`), for the chat to open when it next draws.
+    pub present: Vec<crate::agent_cards::Present>,
     /// Waiting for an agent process elsewhere (this pid) to exit before resuming here.
     pub waiting_for: Option<u32>,
     _reader: Option<Task<()>>,
@@ -236,6 +238,7 @@ impl AgentSession {
             confined: false,
             read_only: false,
             quiet: Vec::new(),
+            present: Vec::new(),
             waiting_for: None,
             _reader: None,
             hooks: None,
@@ -514,6 +517,15 @@ impl AgentSession {
         );
         self.quiet.push(framed.clone());
         self.send(&framed, cx);
+        cx.notify();
+    }
+
+    /// Something Wundur tells the agent for the person (an answer it asked for, what the person
+    /// made on a card it showed): a new turn for the agent (after the one it is in), not shown
+    /// as the person's message (its card is in the chat already).
+    pub fn tell_agent(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.quiet.push(text.to_string());
+        self.send(text, cx);
         cx.notify();
     }
 

@@ -29,6 +29,7 @@ use wundur_core::conversation::{one_line, to_markdown};
 
 mod agents;
 mod asset_card;
+mod choice_card;
 pub(crate) use make_card::play as play_sound;
 mod hosted_card;
 mod make_card;
@@ -158,6 +159,13 @@ pub struct ChatPanel {
     /// they're in (see `manifest_card`).
     cards: HashMap<PathBuf, manifest_card::CardHost>,
     claimed_cards: HashSet<PathBuf>,
+    /// The agent's `ask_to_choose` cards: the files selected and the note box, by question.
+    choice_picks: HashMap<u64, Vec<usize>>,
+    choice_notes: HashMap<u64, Entity<InputState>>,
+    /// Stills of the 3D models they show (`None` while drawing, or when it failed).
+    model_stills: HashMap<PathBuf, Option<PathBuf>>,
+    /// Cards the agent presented (`present_card`), waiting for the person.
+    presented: HashMap<choice_card::Shown, choice_card::Presented>,
     asset_revision: u64,
     pub index: Arc<FileIndex>,
     last_revision: u64,
@@ -378,6 +386,10 @@ impl ChatPanel {
             makes: HashMap::new(),
             cards: HashMap::new(),
             claimed_cards: HashSet::new(),
+            choice_picks: HashMap::new(),
+            choice_notes: HashMap::new(),
+            model_stills: HashMap::new(),
+            presented: HashMap::new(),
             asset_revision: 0,
             index: Arc::new(FileIndex::default()),
             last_revision: 0,
@@ -1064,6 +1076,7 @@ impl Focusable for ChatPanel {
 
 impl Render for ChatPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_agent_cards(window, cx);
         self.ensure_asset_fields(window, cx);
         crate::perf::count(crate::perf::Count::Chat);
         // Laid out again below, if the working line shows.

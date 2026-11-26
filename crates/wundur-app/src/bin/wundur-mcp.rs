@@ -1,6 +1,7 @@
 //! `wundur-mcp <socket> <token>`: the tool server (MCP, over stdin and stdout) an agent is
 //! started with while Wundur drives its session. Its tools reach the other sessions in the
-//! window: `list_sessions`, `send_message` and `ask_for_review`, and the tools the person made
+//! window: `list_sessions`, `send_message` and `ask_for_review`, the cards it shows the person
+//! (`ask_to_choose`, `present_card`), and the tools the person made
 //! from command-line programs in Settings (asked of the window when the agent lists them). It knows only what the tools are called and what
 //! they take; each call goes to the window over its local socket as one line,
 //! `{"token": ..., "event": "mcp", "payload": {"tool": ..., "arguments": ...}}`, and the
@@ -81,7 +82,9 @@ Its tools:\n\
 - list_sessions, send_message: reach the person's other open sessions (other agents, other folders); the person sees every message and may have to allow it.\n\
 - look_at_model: look at 3D models (GLB/glTF) yourself, from fixed angles, several side by side, with their facts and warnings; check every model you make or change with it. show_model: open one in the person's model viewer.\n\
 - pack_sprites: cut the sprites out of a sheet (one you made, with a plain or transparent background) and pack them into a game-ready sheet with its JSON; it opens for the person. show_sprite_sheet: open an existing sheet.\n\
-- The person's tool packs (make_image, edit_image, model_from_*, rig_model, music, sound_effect, voice_line and others) make game assets and more: search for them when a task needs one.";
+- The person's tool packs (make_image, edit_image, model_from_*, rig_model, music, sound_effect, voice_line and others) make game assets and more: search for them when a task needs one.\n\
+- ask_to_choose: when the person should pick between pictures or models you made (variants, an edit and its original), or confirm one, show them with this rather than describing them or asking in text. Ask when it is a matter of their taste or you are unsure; skip it when they said to just go ahead.\n\
+- present_card: show the person one of Wundur's cards (3D asset, image, sound effect, and others their account offers), filled in from what you know, when they should make or approve the thing themselves. They press its button, which is where it is spent; what they make comes back to you as a message.";
 
 /// The tools, as MCP describes them.
 fn tools() -> Value {
@@ -238,6 +241,33 @@ fn tools() -> Value {
                     "sheet": { "type": "string", "description": "The sheet: its JSON or PNG, a path in the project, absolute, or ~/..." },
                 },
                 "required": ["sheet"],
+            },
+        },
+        {
+            "name": "ask_to_choose",
+            "description": "Show the person pictures or 3D models you made, in the chat, and ask them to choose: which variant, whether one will do, or the edit or the original. You pick what to show and how (show); Wundur lays them out and gives the person that way's buttons and a note box, so the answer always has the same shape: {\"picked\": [paths], \"note\": \"...\"} (picked is empty when they reject). Use it whenever the choice is a matter of the person's taste (a style, a character's look, an icon) or you are unsure which is right, instead of describing the options in text. Don't use it when they told you to go ahead without asking. Free: nothing is made or spent. By default the call waits for their answer (a few minutes at most); if they haven't answered by then, or with wait: false, it returns at once and their answer comes to this session as a new message.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "What they are choosing, short: \"Which coin fits the HUD?\", \"Is this the knight you had in mind?\"." },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "The pictures (PNG, JPEG, WebP, GIF) or models (GLB, glTF) to show, paths in the project, in the order to show them. For before_after: the original first, then the edit." },
+                    "show": { "type": "string", "enum": ["one", "compare", "grid", "before_after"], "description": "How to show them. one: a single file, large, to Confirm or Reject. compare: 2 or 3 side by side at the same size, to pick one. grid: 2 to 12 small, to pick one or more. before_after: an original and its edit, to keep one. Default: one for a single file, compare for 2 or 3, grid for more." },
+                    "wait": { "type": "boolean", "description": "Wait for the answer (default true). false: show it and carry on; the answer comes as a new message." },
+                },
+                "required": ["question", "files"],
+            },
+        },
+        {
+            "name": "present_card",
+            "description": "Show the person one of Wundur's cards in the chat, filled in from what you know: the cards they could open themselves from the Create menu. Built in: asset-3d (a 3D game asset, made from views the person approves; fill kind, name, description), image (fill prompt, quality: low|medium|high, size: 1024x1024|1536x1024|1024x1536, transparent), sound-effect (fill prompt, seconds, loop); their Wundur account may offer more (a wrong name lists them, with what each can be filled with). Use it when the person should make or approve the thing themselves, or asked to. They change what they like and press the card's button: anything spent is spent by their click, from their account. What they make (the files, in the project) comes back to this session as a new message, so finish your turn or carry on; don't present the same card again. Needs them signed in to Wundur. You can't design cards: only these, filled in.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "card": { "type": "string", "description": "Which card: asset-3d, image, sound-effect, or another the account offers." },
+                    "fill": { "type": "object", "description": "Values to fill in, by name (only the ones the card has), e.g. {\"prompt\": \"a gold coin icon, pixel art\", \"transparent\": true}." },
+                    "question": { "type": "string", "description": "Optional: shown above the card, e.g. \"Here's the knight from your description: change anything, then make it.\"" },
+                },
+                "required": ["card"],
             },
         },
         {

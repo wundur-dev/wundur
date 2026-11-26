@@ -122,6 +122,9 @@ pub fn tool_call(session: Entity<AgentSession>, call: Call, cx: &mut App) {
             .detach();
             return;
         }
+        "present_card" => crate::agent_cards::present_card(session.clone(), &args, cx),
+        // Answered when the person picks (or at once, when it doesn't wait).
+        "ask_to_choose" => return crate::agent_cards::ask_to_choose(session, &args, call.reply, cx),
         // Drawn off the UI thread; answered when the picture is made.
         "look_at_model" => {
             let cwd = session.read(cx).cwd().to_path_buf();

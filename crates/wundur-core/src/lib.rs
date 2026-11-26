@@ -33,6 +33,7 @@ pub mod assets;
 pub mod backends;
 pub mod cards;
 pub mod changes;
+pub mod choices;
 pub mod cli_tools;
 pub mod command_changes;
 pub mod compose;

@@ -36,6 +36,7 @@ mod asset_store;
 mod hosted_store;
 mod card_store;
 mod actions;
+mod agent_cards;
 mod app_icon;
 mod attention;
 mod browser;

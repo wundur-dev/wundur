@@ -52,6 +52,17 @@ pub(super) fn create_menu(offered: Vec<remote::Listed>) -> Vec<Entry> {
     menu
 }
 
+/// What a card saved, as the agent reads it: the paths in the project.
+fn saved_names(saved: &Value) -> String {
+    let names: Vec<String> = saved
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string).or_else(|| v.get("path").and_then(Value::as_str).map(str::to_string)))
+        .collect();
+    if names.is_empty() { saved.to_string() } else { names.join(", ") }
+}
+
 /// Whether a file is a picture the viewer shows.
 fn is_picture(path: &Path) -> bool {
     matches!(path.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref(), Some("png" | "jpg" | "jpeg" | "webp" | "gif"))
@@ -274,15 +285,24 @@ impl ChatPanel {
                 .detach();
             }
             Effect::Save { id, files, folder, .. } => {
-                cx.spawn(async move |_, cx: &mut AsyncApp| {
+                let dir = dir.to_path_buf();
+                cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     let saved = cx.background_spawn(async move { remote::save(&files, &folder, &project) }).await;
+                    // Presented by the agent: it's told what the person saved.
+                    if let Ok(list) = &saved {
+                        let what = format!("The person saved: {}.", saved_names(list));
+                        let _ = this.update(cx, |p, cx| p.report_presented(&choice_card::Shown::Card(dir), what, cx));
+                    }
                     view.update(cx, |card, cx| card.finish(id, saved, cx));
                 })
                 .detach();
             }
             Effect::Open(target) => self.card_file(&project, target, false, cx),
             Effect::Play(target) => self.card_file(&project, target, true, cx),
-            Effect::Close => self.close_card(dir, cx),
+            Effect::Close => {
+                self.report_presented(&choice_card::Shown::Card(dir.to_path_buf()), "The person closed the card.".into(), cx);
+                self.close_card(dir, cx)
+            }
             Effect::App(what) => match what.as_str() {
                 "sign_in" => crate::settings_account::show_sign_in(cx),
                 "upgrade" => crate::shell::open_settings_page("account", cx),
